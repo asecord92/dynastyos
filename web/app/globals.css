@@ -1,30 +1,12 @@
 @import "tailwindcss";
 
-/* ---------- Force consistent light theme across all devices ---------- */
-
-:root {
-  /* Use Tailwind's gray-100 + gray-900 equivalents */
-  --background: #f3f4f6; /* gray-100 */
-  --foreground: #111827; /* gray-900 */
-}
-
-/* Remove OS-based theme switching for consistency */
-/* (We are intentionally not using prefers-color-scheme) */
-
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
+/* optional: your defaults */
 html,
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  height: 100%;
+}
 
-  /* Improve cross-platform font rendering */
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+body {
+  color: #0f172a;
+  background: #f6f8fa;
 }

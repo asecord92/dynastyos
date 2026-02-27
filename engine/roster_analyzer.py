@@ -6,6 +6,47 @@ import pandas as pd
 
 from .rules import LeagueRules
 
+def recommend_contract_action(status: str, salary: float, cap_remaining: float):
+    s = (status or "").strip().lower()
+    sal = float(salary or 0)
+
+    # cap pressure
+    pressure = "high" if cap_remaining < 0 else "medium" if cap_remaining < 20 else "low"
+
+    rationale = []
+    recommendation = "option"
+
+    if sal <= 2:
+        recommendation = "extend" if s == "act" else "option"
+        rationale.append("Low salary (cheap keep)")
+        if s != "act":
+            rationale.append("Not active; option preserves flexibility")
+        return recommendation, rationale
+
+    if s == "res" and sal >= 4:
+        recommendation = "cut" if pressure in ["high", "medium"] else "option"
+        rationale.append("Reserve status with mid/high salary")
+        if recommendation == "cut":
+            rationale.append("Cap pressure makes cutting attractive")
+        return recommendation, rationale
+
+    if sal >= 10:
+        recommendation = "cut" if pressure == "high" else "option"
+        rationale.append("High salary; avoid locking in")
+        if recommendation == "cut":
+            rationale.append("Over cap; prioritize relief")
+        return recommendation, rationale
+
+    recommendation = "option"
+    rationale.append("Mid-range salary; option keeps flexibility")
+    if pressure == "low" and s == "act" and sal <= 5:
+        recommendation = "extend"
+        rationale.append("Active + reasonable salary")
+    if pressure == "high" and sal >= 6:
+        recommendation = "cut"
+        rationale.append("Over cap; cutting frees meaningful space")
+
+    return recommendation, rationale
 
 def _detect_header_rows(lines: List[str]) -> List[int]:
     """
@@ -78,6 +119,28 @@ def analyze_roster_from_csv(csv_path: str, rules: LeagueRules) -> Dict[str, Any]
         ["Player", "Status", "Salary", "Contract"]
     ].sort_values(by="Salary", ascending=False)
 
+    decision_records = []
+    for _, row in decision_df.iterrows():
+        rec, rationale = recommend_contract_action(
+            status=row.get("Status", ""),
+            salary=row.get("Salary",0),
+            cap_remaining=cap_remaining
+        )
+        sal = float(row.get("Salary", 0)or 0)
+
+        decision_records.append(
+            {
+                "player": row.get("Player", ""),
+                "status": row.get("Status", ""),
+                "salary": sal,
+                "contract": row.get("Contract", ""),
+                "recommendation": rec,
+                "rationale": rationale,
+                "cap_relief_if_cut": sal,
+                "cap_remaining_if_cut": round(cap_remaining + sal, 2),
+            }
+        )
+
     # Normalize decision queue columns to snake_case
     decision_df = decision_df.rename(
         columns={
@@ -103,11 +166,11 @@ def analyze_roster_from_csv(csv_path: str, rules: LeagueRules) -> Dict[str, Any]
         )
     )
     return {
-        "cap": {
-            "used": round(active_cap_used, 2),
-            "limit": rules.in_season_cap,
-            "remaining": round(cap_remaining, 2),
-        },
-        "decision_queue": decision_df.to_dict(orient="records"),
-        "roster": roster_df.to_dict(orient="records"),
+    "cap": {
+        "used": round(active_cap_used, 2),
+        "limit": rules.in_season_cap,
+        "remaining": round(cap_remaining, 2),
+    },
+    "decision_queue": decision_records,
+    "roster": roster_df.to_dict(orient="records"),
 }
