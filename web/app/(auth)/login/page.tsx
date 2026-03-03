@@ -1,150 +1,188 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { supabase } from "../../lib/supabaseClient";
 
-function GoogleIcon() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true">
-      <path
-        fill="#FFC107"
-        d="M43.611 20.083H42V20H24v8h11.303C33.647 32.657 29.221 36 24 36c-6.627 0-12-5.373-12-12s5.373-12 12-12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.047 6.053 29.221 4 24 4 12.955 4 4 12.955 4 24s8.955 20 20 20 20-8.955 20-20c0-1.341-.138-2.651-.389-3.917z"
-      />
-      <path
-        fill="#FF3D00"
-        d="M6.306 14.691l6.571 4.819C14.655 16.108 19.001 12 24 12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.047 6.053 29.221 4 24 4c-7.682 0-14.31 4.337-17.694 10.691z"
-      />
-      <path
-        fill="#4CAF50"
-        d="M24 44c5.117 0 9.86-1.965 13.409-5.164l-6.198-5.243C29.154 35.118 26.715 36 24 36c-5.199 0-9.613-3.317-11.272-7.946l-6.517 5.02C9.561 39.556 16.229 44 24 44z"
-      />
-      <path
-        fill="#1976D2"
-        d="M43.611 20.083H42V20H24v8h11.303c-.785 2.22-2.271 4.103-4.092 5.346l.002-.001 6.198 5.243C36.971 39.205 44 34 44 24c0-1.341-.138-2.651-.389-3.917z"
-      />
-    </svg>
-  );
+function safeRedirectPath(input: string | null): string {
+  if (!input) return "/";
+  if (!input.startsWith("/")) return "/";
+  if (input.startsWith("//")) return "/";
+  return input;
 }
 
 export default function LoginPage() {
   const router = useRouter();
+  const params = useSearchParams();
+
+  const redirectedFrom = useMemo(
+    () => safeRedirectPath(params.get("redirectedFrom")),
+    [params]
+  );
 
   const [email, setEmail] = useState("");
-  const [status, setStatus] = useState<"idle" | "sending" | "sent" | "error">("idle");
-  const [errorMsg, setErrorMsg] = useState<string>("");
+  const [loadingMagic, setLoadingMagic] = useState(false);
+  const [loadingGoogle, setLoadingGoogle] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  const canSend = useMemo(() => {
-    const trimmed = email.trim();
-    return trimmed.length > 3 && trimmed.includes("@");
-  }, [email]);
-
-  // Redirect logged-in users away from /login
   useEffect(() => {
+    let mounted = true;
     supabase.auth.getSession().then(({ data }) => {
-      if (data.session) router.replace("/");
+      if (!mounted) return;
+      if (data.session) router.replace(redirectedFrom);
     });
-  }, [router]);
+    return () => {
+      mounted = false;
+    };
+  }, [router, redirectedFrom]);
 
   async function sendMagicLink() {
-    setErrorMsg("");
-    setStatus("sending");
+    setErrorMsg(null);
+    setLoadingMagic(true);
 
     const { error } = await supabase.auth.signInWithOtp({
-      email: email.trim(),
+      email,
       options: {
-        // after clicking the email link, user returns to the app
-        emailRedirectTo: `${window.location.origin}/`,
+        emailRedirectTo: `${window.location.origin}${redirectedFrom}`,
+      },
+    });
+
+    setLoadingMagic(false);
+
+    if (error) {
+      setErrorMsg(error.message);
+      return;
+    }
+
+    router.push(
+      `/check-email?email=${encodeURIComponent(email)}&redirectedFrom=${encodeURIComponent(
+        redirectedFrom
+      )}`
+    );
+  }
+
+  async function signInWithGoogle() {
+    setErrorMsg(null);
+    setLoadingGoogle(true);
+
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: {
+        redirectTo: `${window.location.origin}${redirectedFrom}`,
       },
     });
 
     if (error) {
-      setStatus("error");
-      // common: email rate limit exceeded
-      setErrorMsg(error.message || "Something went wrong.");
-      return;
-    }
-
-    setStatus("sent");
-    router.push(`/check-email?email=${encodeURIComponent(email.trim())}`);
-  }
-
-  async function signInWithGoogle() {
-    setErrorMsg("");
-    const { error } = await supabase.auth.signInWithOAuth({
-      provider: "google",
-      options: { redirectTo: `${window.location.origin}/` },
-    });
-
-    if (error) {
-      setStatus("error");
-      setErrorMsg(error.message || "Google sign-in failed.");
+      setLoadingGoogle(false);
+      setErrorMsg(error.message);
     }
   }
+
+  const disabled = loadingMagic || loadingGoogle;
 
   return (
-    <main className="min-h-screen bg-[#f6f8fa] flex items-center justify-center px-4">
-      <div className="w-full max-w-[340px]">
-        {/* Header */}
-        <div className="text-center mb-4">
-          <div className="mx-auto mb-3 h-12 w-12 rounded-full bg-black text-white flex items-center justify-center text-lg font-semibold">
+    <main className="min-h-screen flex items-center justify-center bg-gray-100 px-4">
+      <div className="w-full max-w-[420px]">
+        {/* Logo */}
+        <div className="flex justify-center mb-6">
+          <div className="h-12 w-12 rounded-full bg-black text-white flex items-center justify-center font-semibold text-lg">
             D
           </div>
-          <h1 className="text-2xl font-semibold text-gray-900">Sign in to DynastyOS</h1>
-          <p className="text-sm text-gray-600 mt-1">Secord Labs</p>
         </div>
 
+        {/* Title */}
+        <h1 className="text-3xl font-semibold text-center text-gray-900">
+          Sign in to DynastyOS
+        </h1>
+        <p className="text-center text-gray-500 mt-1">Secord Labs</p>
+
         {/* Card */}
-        <div className="bg-white border border-gray-300 rounded-md p-4 shadow-sm">
-          <label className="block text-sm font-medium text-gray-700 mb-2">
-            Email address
-          </label>
-
-          <input
-            type="email"
-            placeholder="you@email.com"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm
-                       focus:outline-none focus:ring-2 focus:ring-gray-200"
-          />
-
-          <button
-            onClick={sendMagicLink}
-            disabled={!canSend || status === "sending"}
-            className="mt-4 w-full rounded-md bg-[#2da44e] hover:bg-[#2c974b]
-                       text-white text-sm font-medium py-2
-                       transition active:scale-[0.98] active:translate-y-[1px]
-                       disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {status === "sending" ? "Sending…" : "Send magic link"}
-          </button>
-
-          {/* Inline error */}
-          {status === "error" && (
-            <div className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+        <div className="mt-8 bg-white border border-gray-200 rounded-xl shadow-sm p-6">
+          {errorMsg && (
+            <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
               {errorMsg}
             </div>
           )}
 
+          {/* Email Input */}
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-gray-700">
+              Email address
+            </label>
+
+            <input
+              type="email"
+              placeholder="you@email.com"
+              className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm
+                         focus:outline-none focus:ring-2 focus:ring-gray-200"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              disabled={disabled}
+            />
+          </div>
+
+          {/* Magic Link Button */}
+          <button
+            onClick={sendMagicLink}
+            disabled={!email || disabled}
+            className="mt-4 w-full rounded-md py-2 text-sm font-semibold text-white
+                       bg-emerald-600 hover:bg-emerald-700
+                       transition active:scale-[0.98] active:translate-y-[1px]
+                       disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {loadingMagic ? "Sending…" : "Send magic link"}
+          </button>
+
           {/* Divider */}
-          <div className="flex items-center my-5 text-xs text-gray-500">
+          <div className="flex items-center my-6 text-sm text-gray-500">
             <div className="flex-grow border-t border-gray-200" />
             <span className="px-3">OR</span>
             <div className="flex-grow border-t border-gray-200" />
           </div>
 
+          {/* Google Button */}
           <button
             onClick={signInWithGoogle}
-            className="w-full rounded-md border border-gray-300 bg-white hover:bg-gray-50
-                       text-sm font-medium py-2 flex items-center justify-center gap-2
-                       transition active:scale-[0.98] active:translate-y-[1px]"
+            disabled={disabled}
+            className="w-full flex items-center justify-center gap-3 rounded-md py-2 text-sm font-semibold
+                       border border-gray-300 bg-white hover:bg-gray-50 text-gray-900
+                       transition active:scale-[0.98] active:translate-y-[1px]
+                       disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            <GoogleIcon />
-            Continue with Google
+            {loadingGoogle ? (
+              "Opening Google…"
+            ) : (
+              <>
+                {/* Google SVG */}
+                <svg
+                  className="h-5 w-5"
+                  viewBox="0 0 48 48"
+                  xmlns="http://www.w3.org/2000/svg"
+                >
+                  <path
+                    fill="#EA4335"
+                    d="M24 9.5c3.1 0 5.9 1.1 8.1 3.2l6-6C34.6 3.2 29.7 1 24 1 14.6 1 6.5 6.6 2.7 14.7l7.5 5.8C12.1 14 17.6 9.5 24 9.5z"
+                  />
+                  <path
+                    fill="#34A853"
+                    d="M46.1 24.6c0-1.6-.1-3.1-.4-4.6H24v9h12.4c-.5 2.7-2 5-4.2 6.6l6.5 5c3.8-3.5 6-8.7 6-16z"
+                  />
+                  <path
+                    fill="#FBBC05"
+                    d="M10.2 28.5c-.6-1.8-.6-3.7 0-5.5l-7.5-5.8C.9 20.5 0 22.2 0 24c0 1.8.9 3.5 2.7 6.8l7.5-2.3z"
+                  />
+                  <path
+                    fill="#4285F4"
+                    d="M24 47c6.5 0 12-2.1 16-6.3l-6.5-5c-1.8 1.2-4.2 2-9.5 2-6.4 0-11.9-4.5-13.8-10.5l-7.5 5.8C6.5 41.4 14.6 47 24 47z"
+                  />
+                </svg>
+
+                Continue with Google
+              </>
+            )}
           </button>
 
-          <p className="mt-4 text-xs text-gray-500 text-center">
+          <p className="text-xs text-center text-gray-500 mt-6">
             Built for dynasty degenerates
           </p>
         </div>
