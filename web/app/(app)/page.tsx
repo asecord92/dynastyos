@@ -1,50 +1,33 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import type { AnalyzeResult } from "../lib/types";
-import { UploadAnalyze } from "../components/UploadAnalyze";
 import { CapCards } from "../components/CapCards";
 import { DecisionQueueTable } from "../components/DecisionQueueTable";
 import { RosterTable } from "../components/RosterTable";
 import { isMinors, isPitcher } from "../lib/rosterUtils";
 import { useRosterFilterSort } from "../useRosterFilterSort";
+import { useSnapshot } from "../lib/useSnapshot";
 
 export default function DashboardPage() {
-  const [data, setData] = useState<AnalyzeResult | null>(null);
+  const { data, loading, leagueId } = useSnapshot();
 
   const roster = data?.roster ?? [];
-
-  const [rosterTab, setRosterTab] = useState<"hitting" | "pitching" | "minors">(
-    "hitting"
-  );
+  const [rosterTab, setRosterTab] = useState<"hitting" | "pitching" | "minors">("hitting");
 
   const minors = useMemo(() => roster.filter((p) => isMinors(p.status)), [roster]);
   const majors = useMemo(() => roster.filter((p) => !isMinors(p.status)), [roster]);
 
-  const majorsHitting = useMemo(
-    () => majors.filter((p) => !isPitcher(p.eligible)),
-    [majors]
-  );
-  const majorsPitching = useMemo(
-    () => majors.filter((p) => isPitcher(p.eligible)),
-    [majors]
-  );
+  const majorsHitting = useMemo(() => majors.filter((p) => !isPitcher(p.eligible)), [majors]);
+  const majorsPitching = useMemo(() => majors.filter((p) => isPitcher(p.eligible)), [majors]);
 
-  const minorsHitting = useMemo(
-    () => minors.filter((p) => !isPitcher(p.eligible)),
-    [minors]
-  );
-  const minorsPitching = useMemo(
-    () => minors.filter((p) => isPitcher(p.eligible)),
-    [minors]
-  );
+  const minorsHitting = useMemo(() => minors.filter((p) => !isPitcher(p.eligible)), [minors]);
+  const minorsPitching = useMemo(() => minors.filter((p) => isPitcher(p.eligible)), [minors]);
 
   const hittingFS = useRosterFilterSort(majorsHitting);
   const pitchingFS = useRosterFilterSort(majorsPitching);
   const minorsHitFS = useRosterFilterSort(minorsHitting);
   const minorsPitchFS = useRosterFilterSort(minorsPitching);
 
-  // sync minors search/sort (so one control drives both minors tables)
   useEffect(() => {
     minorsPitchFS.setQuery(minorsHitFS.query);
   }, [minorsHitFS.query]);
@@ -66,16 +49,25 @@ export default function DashboardPage() {
       <header className="space-y-1">
         <h1 className="text-3xl font-semibold">Dashboard</h1>
         <p className="text-gray-700">
-          Upload Fantrax CSV → cap summary, decision queue, roster view.
+          Cap summary, decision queue, and roster view for your league.
         </p>
       </header>
 
-      <UploadAnalyze
-        onData={(d) => {
-          setData(d);
-          setRosterTab("hitting");
-        }}
-      />
+      {!leagueId && (
+        <div className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-xl p-4">
+          Select a league from the nav to load your roster.
+        </div>
+      )}
+
+      {loading && (
+        <div className="text-sm text-gray-500">Loading latest snapshot...</div>
+      )}
+
+      {!loading && leagueId && !data && (
+        <div className="text-sm text-gray-500 bg-white border rounded-2xl p-6 shadow-sm">
+          No snapshot found for this league yet. Go to Settings to upload a CSV.
+        </div>
+      )}
 
       {data && (
         <>
@@ -155,9 +147,7 @@ export default function DashboardPage() {
                 <div>
                   <div className="flex justify-between items-center mb-3">
                     <h3 className="text-lg font-semibold">Minors Hitting</h3>
-                    <span className="text-sm text-gray-700">
-                      {minorsHitting.length}
-                    </span>
+                    <span className="text-sm text-gray-700">{minorsHitting.length}</span>
                   </div>
                   <RosterTable
                     rows={minorsHitFS.rows}
@@ -170,9 +160,7 @@ export default function DashboardPage() {
                 <div>
                   <div className="flex justify-between items-center mb-3">
                     <h3 className="text-lg font-semibold">Minors Pitching</h3>
-                    <span className="text-sm text-gray-700">
-                      {minorsPitching.length}
-                    </span>
+                    <span className="text-sm text-gray-700">{minorsPitching.length}</span>
                   </div>
                   <RosterTable
                     rows={minorsPitchFS.rows}

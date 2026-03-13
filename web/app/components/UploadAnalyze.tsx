@@ -2,23 +2,27 @@
 
 import { useState } from "react";
 import type { AnalyzeResult } from "../lib/types";
+import { useLeague } from "../lib/useLeague";
+import { supabase } from "../lib/supabaseClient";
 
 export function UploadAnalyze({
   onData,
 }: {
   onData: (data: AnalyzeResult) => void;
 }) {
+  const { leagueId } = useLeague();
   const [file, setFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   async function analyze() {
-    if (!file) return;
+    if (!file || !leagueId) return;
 
     setLoading(true);
     setError(null);
 
     try {
+      // Step 1: Send CSV to FastAPI
       const form = new FormData();
       form.append("file", file);
 
@@ -30,6 +34,27 @@ export function UploadAnalyze({
       if (!res.ok) throw new Error(await res.text());
 
       const json = (await res.json()) as AnalyzeResult;
+
+      // Step 2: Save snapshot to Supabase
+      const { data: sessionData } = await supabase.auth.getSession();
+      const user = sessionData.session?.user;
+
+      if (user) {
+        const { error: snapError } = await supabase
+          .from("snapshots")
+          .insert({
+            league_id: leagueId,
+            owner_user_id: user.id,
+            source: "csv",
+            data: json,
+          });
+
+        if (snapError) {
+          console.error("Failed to save snapshot:", snapError.message);
+        }
+      }
+
+      // Step 3: Hand result to parent
       onData(json);
     } catch (e: any) {
       setError(e?.message ?? "Something went wrong");
@@ -40,6 +65,12 @@ export function UploadAnalyze({
 
   return (
     <div className="bg-white border rounded-2xl p-6 shadow-sm space-y-4">
+      {!leagueId && (
+        <div className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-xl p-3">
+          Select a league from the nav to analyze your roster.
+        </div>
+      )}
+
       <div className="flex items-center gap-4">
         <input
           id="csv-upload"
@@ -63,7 +94,7 @@ export function UploadAnalyze({
 
       <button
         onClick={analyze}
-        disabled={!file || loading}
+        disabled={!file || !leagueId || loading}
         className="px-4 py-2 rounded-xl bg-black text-white disabled:opacity-40"
       >
         {loading ? "Analyzing..." : "Analyze"}

@@ -1,12 +1,10 @@
 "use client";
 
-import { useState } from "react";
-import type { AnalyzeResult } from "../../lib/types";
-import { UploadAnalyze } from "../../components/UploadAnalyze";
+import { useSnapshot } from "../../lib/useSnapshot";
 import { CapReliefTool } from "../../components/CapReliefTool";
 
 export default function CapReliefPage() {
-  const [data, setData] = useState<AnalyzeResult | null>(null);
+  const { data, loading, leagueId } = useSnapshot();
 
   return (
     <main className="space-y-8">
@@ -17,7 +15,21 @@ export default function CapReliefPage() {
         </p>
       </header>
 
-      <UploadAnalyze onData={setData} />
+      {!leagueId && (
+        <div className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-xl p-4">
+          Select a league from the nav to load your roster.
+        </div>
+      )}
+
+      {loading && (
+        <div className="text-sm text-gray-500">Loading latest snapshot...</div>
+      )}
+
+      {!loading && leagueId && !data && (
+        <div className="text-sm text-gray-500 bg-white border rounded-2xl p-6 shadow-sm">
+          No snapshot found for this league yet. Go to Settings to upload a CSV.
+        </div>
+      )}
 
       {data && <CapReliefTool data={data} />}
     </main>
