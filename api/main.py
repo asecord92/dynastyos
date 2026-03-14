@@ -9,9 +9,13 @@ from engine.fantrax_mapper import map_roster_to_analyze_result
 
 app = FastAPI(title="DynastyOS API")
 
+import os
+
+allow_origins = os.getenv("ALLOWED_ORIGINS", "*").split(",")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allow_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

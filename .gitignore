@@ -19,3 +19,6 @@ Thumbs.db
 
 # Temporary files
 *.log
+
+# Fantrax cache
+.fantrax_player_id_cache.json

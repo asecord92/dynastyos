@@ -160,7 +160,7 @@ export function AppNav() {
   }
 
   return (
-    <div className="border-b bg-white">
+    <div className="border-b bg-white sticky top-0 z-40">
       <div className="w-full px-6 py-3 grid items-center gap-4" style={{gridTemplateColumns: "1fr auto 1fr"}}>
 
         {/* Left — Logo */}
