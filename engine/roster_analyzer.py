@@ -73,7 +73,12 @@ def _read_section_df(lines: List[str], header_row: int, next_header_row: int | N
     return pd.read_csv(io.StringIO(section_text))
 
 
-def analyze_roster_from_csv(csv_path: str, rules: LeagueRules) -> Dict[str, Any]:
+def analyze_roster_from_csv(
+    csv_path: str,
+    rules: LeagueRules,
+    cap_override: float | None = None,
+    mode: str = "in_season",
+) -> Dict[str, Any]:
     # Read raw file lines (keeps us in control of where each table starts/ends)
     with open(csv_path, "r", encoding="utf-8-sig", newline="") as f:
         lines = f.readlines()
@@ -109,10 +114,18 @@ def analyze_roster_from_csv(csv_path: str, rules: LeagueRules) -> Dict[str, Any]
     if "ID" in df.columns:
         df = df.drop_duplicates(subset=["ID"], keep="first")
 
+    # Determine cap limit
+    if cap_override is not None:
+        cap_limit = cap_override
+    elif mode == "offseason":
+        cap_limit = rules.offseason_cap
+    else:
+        cap_limit = rules.in_season_cap
+
     # Cap math: Act + Res count; Min does not
     active_mask = df["Status"].isin(["Act", "Res"])
     active_cap_used = float(df.loc[active_mask, "Salary"].sum())
-    cap_remaining = float(rules.in_season_cap - active_cap_used)
+    cap_remaining = float(cap_limit - active_cap_used)
 
     # Decision queue: 3rd-year contracts
     decision_df = df[df["Contract"].str.contains("3rd", case=False, na=False)][
@@ -123,10 +136,10 @@ def analyze_roster_from_csv(csv_path: str, rules: LeagueRules) -> Dict[str, Any]
     for _, row in decision_df.iterrows():
         rec, rationale = recommend_contract_action(
             status=row.get("Status", ""),
-            salary=row.get("Salary",0),
+            salary=row.get("Salary", 0),
             cap_remaining=cap_remaining
         )
-        sal = float(row.get("Salary", 0)or 0)
+        sal = float(row.get("Salary", 0) or 0)
 
         decision_records.append(
             {
@@ -161,16 +174,17 @@ def analyze_roster_from_csv(csv_path: str, rules: LeagueRules) -> Dict[str, Any]
                 "Eligible": "eligible",
                 "Status": "status",
                 "Salary": "salary",
-                "Contract": "contract", 
+                "Contract": "contract",
             }
         )
     )
+
     return {
-    "cap": {
-        "used": round(active_cap_used, 2),
-        "limit": rules.in_season_cap,
-        "remaining": round(cap_remaining, 2),
-    },
-    "decision_queue": decision_records,
-    "roster": roster_df.to_dict(orient="records"),
-}
+        "cap": {
+            "used": round(active_cap_used, 2),
+            "limit": cap_limit,
+            "remaining": round(cap_remaining, 2),
+        },
+        "decision_queue": decision_records,
+        "roster": roster_df.to_dict(orient="records"),
+    }

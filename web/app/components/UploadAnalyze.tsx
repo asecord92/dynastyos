@@ -22,11 +22,20 @@ export function UploadAnalyze({
     setError(null);
 
     try {
-      // Step 1: Send CSV to FastAPI
+      // Step 1: Fetch the league's current mode
+      const { data: leagueData } = await supabase
+        .from("leagues")
+        .select("mode")
+        .eq("id", leagueId)
+        .single();
+
+      const mode = leagueData?.mode ?? "in_season";
+
+      // Step 2: Send CSV to FastAPI with mode param
       const form = new FormData();
       form.append("file", file);
 
-      const res = await fetch("/api/roster/analyze", {
+      const res = await fetch(`/api/roster/analyze?mode=${mode}`, {
         method: "POST",
         body: form,
       });
@@ -35,7 +44,7 @@ export function UploadAnalyze({
 
       const json = (await res.json()) as AnalyzeResult;
 
-      // Step 2: Save snapshot to Supabase
+      // Step 3: Save snapshot to Supabase
       const { data: sessionData } = await supabase.auth.getSession();
       const user = sessionData.session?.user;
 
@@ -54,7 +63,7 @@ export function UploadAnalyze({
         }
       }
 
-      // Step 3: Hand result to parent
+      // Step 4: Hand result to parent
       onData(json);
     } catch (e: any) {
       setError(e?.message ?? "Something went wrong");
@@ -64,7 +73,7 @@ export function UploadAnalyze({
   }
 
   return (
-    <div className="bg-white border rounded-2xl p-6 shadow-sm space-y-4">
+    <div className="space-y-4">
       {!leagueId && (
         <div className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-xl p-3">
           Select a league from the nav to analyze your roster.
