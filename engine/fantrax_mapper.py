@@ -32,16 +32,18 @@ def map_roster_to_analyze_result(
         salary = float(item.get("salary", 0))
         contract_name = item.get("contract", {}).get("name", "")
         player_id = item.get("id", "")
-        player_name = player_names.get(player_id, f"Unknown ({player_id})")
+        player_data = player_names.get(player_id, {})
+        player_name = player_data.get("name", f"Unknown ({player_id})")
+        player_team = player_data.get("team", "")
 
         roster.append({
             "player": player_name,
-            "team": "",        # not provided by this endpoint
+            "team": player_team,
             "eligible": item.get("position", ""),
             "status": status,
             "salary": salary,
             "contract": contract_name,
-        })
+            })
 
     # Cap math — same logic as roster_analyzer.py
     active_cap_used = sum(

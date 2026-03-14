@@ -53,7 +53,10 @@ def get_player_ids(sport: str) -> dict[str, str]:
     raw = resp.json()
 
     # Response is { playerId: { name, team, position, ... }, ... }
-    players = {pid: info.get("name", "") for pid, info in raw.items()}
+    players = {
+    pid: {"name": info.get("name", ""), "team": info.get("team", "")}
+    for pid, info in raw.items()
+}
 
     # Write cache
     with open(PLAYER_ID_CACHE_PATH, "w") as f:
