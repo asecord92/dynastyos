@@ -1,15 +1,15 @@
 from fastapi import FastAPI, UploadFile, File, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+import os
 import tempfile
 
 from engine.rules import LeagueRules
 from engine.roster_analyzer import analyze_roster_from_csv
 from engine.fantrax_client import get_leagues, get_team_rosters, get_player_ids
 from engine.fantrax_mapper import map_roster_to_analyze_result
+from engine.player_resolver import resolve_player
 
 app = FastAPI(title="DynastyOS API")
-
-import os
 
 allow_origins = os.getenv("ALLOWED_ORIGINS", "*").split(",")
 
@@ -81,8 +81,26 @@ async def roster_sync(
                 detail="Could not find your team in the league roster data.",
             )
 
-        # Step 3: Get player ID -> name map (cached 24hr)
+        # Step 3: Get player ID -> {name, team} map (cached 24hr)
         player_names = get_player_ids(sport)
+
+        # Step 3.5: Resolve Fantrax IDs to MLB IDs for players not yet mapped
+        unresolved = []
+        for item in team_roster.get("rosterItems", []):
+            fantrax_id = item.get("id", "")
+            player_data = player_names.get(fantrax_id, {})
+            name = player_data.get("name", "")
+            team = player_data.get("team", "")
+            if not name:
+                continue
+            mapping = resolve_player(fantrax_id, name, team)
+            if mapping:
+                print(f"[sync] Resolved {name} → MLB ID {mapping['mlb_id']} ({mapping['confidence']})")
+            else:
+                unresolved.append({"fantrax_id": fantrax_id, "name": name})
+
+        if unresolved:
+            print(f"[sync] Could not resolve {len(unresolved)} players: {unresolved}")
 
         # Step 4: Map to AnalyzeResult shape
         result = map_roster_to_analyze_result(team_roster, player_names, rules)
