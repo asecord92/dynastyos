@@ -12,6 +12,22 @@ def format_name(fantrax_name: str) -> str:
     return fantrax_name
 
 
+def search_mlb(name: str) -> list:
+    """Search MLB Stats API by name with currentTeam hydration."""
+    try:
+        resp = httpx.get(
+            f"{MLB_STATS_BASE}/people/search",
+            params={"names": name, "hydrate": "currentTeam"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        people = resp.json().get("people", [])
+        return [p for p in people if p.get("active", False)]
+    except Exception as e:
+        print(f"[resolver] MLB API error searching '{name}': {e}")
+        return []
+
+
 def get_existing_mapping(fantrax_id: str) -> dict | None:
     """Check if a mapping already exists in Supabase."""
     try:
@@ -33,6 +49,26 @@ def save_mapping(mapping: dict) -> None:
         print(f"[resolver] Supabase write error for {mapping.get('fantrax_id')}: {e}")
 
 
+def pick_match(people: list, team: str) -> tuple[dict, str] | tuple[None, None]:
+    """
+    Given a list of MLB API people, try to pick the right one.
+    Returns (person, confidence) or (None, None).
+    """
+    if len(people) == 1:
+        return people[0], "exact"
+
+    # Multiple results — disambiguate by team
+    team_lower = team.lower()
+    for person in people:
+        current_team = person.get("currentTeam", {})
+        team_name = current_team.get("name", "").lower()
+        team_abbr = current_team.get("abbreviation", "").lower()
+        if team_lower in (team_name, team_abbr) or team_lower in team_name:
+            return person, "fuzzy"
+
+    return None, None
+
+
 def resolve_player(
     fantrax_id: str,
     name: str,
@@ -48,57 +84,41 @@ def resolve_player(
     if existing:
         return existing
 
+    # Attempt 1 — full name search ("Leodalis De Vries")
     formatted_name = format_name(name)
+    people = search_mlb(formatted_name)
 
-    try:
-        resp = httpx.get(
-            f"{MLB_STATS_BASE}/people/search",
-            params={"names": formatted_name, "hydrate": "currentTeam"},
-            timeout=10,
-        )
-        resp.raise_for_status()
-        people = resp.json().get("people", [])
-    except Exception as e:
-        print(f"[resolver] MLB API error for {name}: {e}")
-        return None
-
-    # Filter to active players only
-    people = [p for p in people if p.get("active", False)]
+    # Attempt 2 — last name only fallback for players who go by a nickname
+    if len(people) == 0:
+        last_name = name.split(", ")[0]  # "De Vries, Leodalis" → "De Vries"
+        first_name = name.split(", ")[1] if ", " in name else ""
+        candidates = search_mlb(last_name)
+        # Filter by first name appearing in fullFMLName
+        if first_name:
+            people = [
+                p for p in candidates
+                if first_name.lower() in p.get("fullFMLName", "").lower()
+            ]
+        else:
+            people = candidates
 
     if len(people) == 0:
         print(f"[resolver] No match found for {name}")
         return None
 
-    if len(people) == 1:
-        person = people[0]
-        mlb_team = person.get("currentTeam", {}).get("name", "")
-        mapping = {
-            "fantrax_id": fantrax_id,
-            "mlb_id": person["id"],
-            "full_name": person["fullName"],
-            "mlb_team": mlb_team,
-            "confidence": "exact",
-        }
-        save_mapping(mapping)
-        return mapping
+    person, confidence = pick_match(people, team)
 
-    # Multiple results — try to disambiguate by team
-    team_lower = team.lower()
-    for person in people:
-        current_team = person.get("currentTeam", {})
-        team_name = current_team.get("name", "").lower()
-        team_abbr = current_team.get("abbreviation", "").lower()
-        if team_lower in (team_name, team_abbr) or team_lower in team_name:
-            mlb_team = current_team.get("name", "")
-            mapping = {
-                "fantrax_id": fantrax_id,
-                "mlb_id": person["id"],
-                "full_name": person["fullName"],
-                "mlb_team": mlb_team,
-                "confidence": "fuzzy",
-            }
-            save_mapping(mapping)
-            return mapping
+    if person is None:
+        print(f"[resolver] Ambiguous match for {name} (team: {team}) — manual review needed")
+        return None
 
-    print(f"[resolver] Ambiguous match for {name} (team: {team}) — manual review needed")
-    return None
+    mlb_team = person.get("currentTeam", {}).get("name", "")
+    mapping = {
+        "fantrax_id": fantrax_id,
+        "mlb_id": person["id"],
+        "full_name": person["fullName"],
+        "mlb_team": mlb_team,
+        "confidence": confidence,
+    }
+    save_mapping(mapping)
+    return mapping
