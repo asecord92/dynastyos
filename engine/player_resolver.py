@@ -113,11 +113,15 @@ def resolve_player(
         return None
 
     mlb_team = person.get("currentTeam", {}).get("name", "")
+    position_code = person.get("primaryPosition", {}).get("code", "")
+    player_type = "pitcher" if position_code == "1" else "hitter"
+
     mapping = {
         "fantrax_id": fantrax_id,
         "mlb_id": person["id"],
         "full_name": person["fullName"],
         "mlb_team": mlb_team,
+        "player_type": player_type,
         "confidence": confidence,
     }
     save_mapping(mapping)
