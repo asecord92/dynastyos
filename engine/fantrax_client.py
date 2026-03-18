@@ -38,13 +38,46 @@ def get_player_ids(sport: str) -> dict[str, str]:
     """
     # Return from cache if still valid
     if os.path.exists(PLAYER_ID_CACHE_PATH):
-        with open(PLAYER_ID_CACHE_PATH, "r") as f:
-            cache = json.load(f)
-        if (
-            cache.get("sport") == sport
-            and time.time() - cache.get("fetched_at", 0) < PLAYER_ID_CACHE_TTL
-        ):
-            return cache["players"]
+        try:
+            with open(PLAYER_ID_CACHE_PATH, "r") as f:
+                cache = json.load(f)
+            if (
+                cache.get("sport") == sport
+                and time.time() - cache.get("fetched_at", 0) < PLAYER_ID_CACHE_TTL
+                and cache.get("players")
+            ):
+                return cache["players"]
+        except Exception as e:
+            print(f"[player_ids] Cache read failed: {e}")
+
+    # Fetch fresh
+    url = f"{FANTRAX_BASE}/getPlayerIds"
+    resp = httpx.get(url, params={"sport": sport}, timeout=30)
+    resp.raise_for_status()
+    raw = resp.json()
+
+    if not raw:
+        raise RuntimeError(f"getPlayerIds returned empty response for sport={sport}")
+
+    players = {
+        pid: {"name": info.get("name", ""), "team": info.get("team", "")}
+        for pid, info in raw.items()
+        if isinstance(info, dict)
+    }
+
+    if not players:
+        raise RuntimeError(f"getPlayerIds parsed to empty dict for sport={sport}")
+
+    print(f"[player_ids] Fetched {len(players)} players for {sport}")
+
+    # Write cache
+    try:
+        with open(PLAYER_ID_CACHE_PATH, "w") as f:
+            json.dump({"sport": sport, "fetched_at": time.time(), "players": players}, f)
+    except Exception as e:
+        print(f"[player_ids] Cache write failed (non-fatal): {e}")
+
+    return players
         
 def get_league_info(league_id: str) -> dict:
     """
