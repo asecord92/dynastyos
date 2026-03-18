@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
+import { useRouter } from "next/navigation";
 import { supabase } from "../../lib/supabaseClient";
 import { useLeague } from "../../lib/useLeague";
 import { UploadAnalyze } from "../../components/UploadAnalyze";
@@ -13,10 +14,87 @@ type FantraxLeague = {
   sport: string;
 };
 
+type LeagueRow = {
+  mode: string;
+  fantrax_league_id: string | null;
+  name: string;
+  competitive_window: string | null;
+  cap_philosophy: string | null;
+  team_weaknesses: string[] | null;
+  goals: string | null;
+};
+
+const SCORING_CATEGORIES = ["R", "HR", "RBI", "SB", "OBP", "QS", "SV", "K", "ERA", "WHIP"];
+const COMPETITIVE_WINDOWS = ["contending", "building", "rebuilding"] as const;
+
+function UnsavedModal({ onSave, onDiscard, onCancel }: {
+  onSave: () => void;
+  onDiscard: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onCancel} />
+      <div className="relative bg-white rounded-2xl shadow-xl p-6 w-full max-w-sm mx-4 space-y-4">
+        <h2 className="text-lg font-semibold text-gray-900">Unsaved changes</h2>
+        <p className="text-sm text-gray-500">
+          You have unsaved changes to your Team Philosophy. What would you like to do?
+        </p>
+        <div className="flex flex-col gap-2">
+          <button
+            onClick={onSave}
+            className="w-full px-4 py-2 rounded-xl bg-black text-white text-sm font-medium hover:bg-gray-800 transition"
+          >
+            Save and continue
+          </button>
+          <button
+            onClick={onDiscard}
+            className="w-full px-4 py-2 rounded-xl border border-gray-200 text-gray-700 text-sm font-medium hover:border-gray-400 transition"
+          >
+            Discard changes
+          </button>
+          <button
+            onClick={onCancel}
+            className="w-full px-4 py-2 rounded-xl text-gray-400 text-sm hover:text-gray-600 transition"
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function SettingsPage() {
   const { leagueId, setLeague } = useLeague();
+  const router = useRouter();
   const [toastVisible, setToastVisible] = useState(false);
 
+  // Saved (server) values — used to detect dirty state
+  const [savedWindow, setSavedWindow] = useState<string | null>(null);
+  const [savedWeaknesses, setSavedWeaknesses] = useState<string[]>([]);
+  const [savedCapPhilosophy, setSavedCapPhilosophy] = useState("");
+  const [savedGoals, setSavedGoals] = useState("");
+
+  // Working (local) values
+  const [leagueName, setLeagueName] = useState("");
+  const [competitiveWindow, setCompetitiveWindow] = useState<string | null>(null);
+  const [teamWeaknesses, setTeamWeaknesses] = useState<string[]>([]);
+  const [capPhilosophy, setCapPhilosophy] = useState("");
+  const [goals, setGoals] = useState("");
+
+  // Dirty state
+  const isDirty =
+    competitiveWindow !== savedWindow ||
+    JSON.stringify([...teamWeaknesses].sort()) !== JSON.stringify([...savedWeaknesses].sort()) ||
+    capPhilosophy !== savedCapPhilosophy ||
+    goals !== savedGoals;
+
+  // Unsaved modal state
+  const [showModal, setShowModal] = useState(false);
+  const pendingNavRef = useRef<string | null>(null);
+
+  // Fantrax connect state
   const [secretId, setSecretId] = useState("");
   const [fantraxLeagues, setFantraxLeagues] = useState<FantraxLeague[]>([]);
   const [selectedFantraxLeagueId, setSelectedFantraxLeagueId] = useState("");
@@ -24,29 +102,130 @@ export default function SettingsPage() {
   const [connectMsg, setConnectMsg] = useState<string | null>(null);
   const [connectStep, setConnectStep] = useState<"idle" | "pick" | "done">("idle");
 
+  // Data state
   const [mode, setMode] = useState<"in_season" | "offseason">("in_season");
 
+  // CSV state
   const [csvLeagueName, setCsvLeagueName] = useState("");
   const [csvMsg, setCsvMsg] = useState<string | null>(null);
   const [leagues, setLeagues] = useState<{ id: string; name: string }[]>([]);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
+  // Load league row
   useEffect(() => {
     if (!leagueId) return;
     supabase
       .from("leagues")
-      .select("mode, fantrax_secret_id, fantrax_league_id")
+      .select("mode, fantrax_league_id, name, competitive_window, cap_philosophy, team_weaknesses, goals")
       .eq("id", leagueId)
       .single()
-      .then(({ data }) => {
-        if (data?.mode) setMode(data.mode as "in_season" | "offseason");
-        if (data?.fantrax_league_id) setConnectStep("done");
+      .then(({ data }: { data: LeagueRow | null }) => {
+        if (!data) return;
+        if (data.mode) setMode(data.mode as "in_season" | "offseason");
+        if (data.fantrax_league_id) setConnectStep("done");
+        setLeagueName(data.name ?? "");
+
+        const cw = data.competitive_window ?? null;
+        const tw = data.team_weaknesses ?? [];
+        const cp = data.cap_philosophy ?? "";
+        const g = data.goals ?? "";
+
+        setCompetitiveWindow(cw);
+        setTeamWeaknesses(tw);
+        setCapPhilosophy(cp);
+        setGoals(g);
+
+        setSavedWindow(cw);
+        setSavedWeaknesses(tw);
+        setSavedCapPhilosophy(cp);
+        setSavedGoals(g);
       });
   }, [leagueId]);
+
+  // Browser unload guard
+  useEffect(() => {
+    const handler = (e: BeforeUnloadEvent) => {
+      if (isDirty) {
+        e.preventDefault();
+        e.returnValue = "";
+      }
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [isDirty]);
+
+  // Intercept nav link clicks when dirty
+  useEffect(() => {
+    if (!isDirty) return;
+    const handler = (e: MouseEvent) => {
+      const target = (e.target as HTMLElement).closest("a");
+      if (!target || !target.href) return;
+      const url = new URL(target.href);
+      if (url.pathname === window.location.pathname) return;
+      e.preventDefault();
+      pendingNavRef.current = url.pathname + url.search;
+      setShowModal(true);
+    };
+    document.addEventListener("click", handler, true);
+    return () => document.removeEventListener("click", handler, true);
+  }, [isDirty]);
 
   function showToast() {
     setToastVisible(true);
     setTimeout(() => setToastVisible(false), 2000);
+  }
+
+  async function savePhilosophy() {
+    if (!leagueId) return;
+    const { error } = await supabase
+      .from("leagues")
+      .update({
+        competitive_window: competitiveWindow,
+        team_weaknesses: teamWeaknesses,
+        cap_philosophy: capPhilosophy || null,
+        goals: goals || null,
+      })
+      .eq("id", leagueId);
+    if (!error) {
+      setSavedWindow(competitiveWindow);
+      setSavedWeaknesses(teamWeaknesses);
+      setSavedCapPhilosophy(capPhilosophy);
+      setSavedGoals(goals);
+      showToast();
+    }
+  }
+
+  function toggleWeakness(cat: string) {
+    setTeamWeaknesses((prev) =>
+      prev.includes(cat) ? prev.filter((c) => c !== cat) : [...prev, cat]
+    );
+  }
+
+  // Modal actions
+  async function handleModalSave() {
+    await savePhilosophy();
+    setShowModal(false);
+    if (pendingNavRef.current) {
+      router.push(pendingNavRef.current);
+      pendingNavRef.current = null;
+    }
+  }
+
+  function handleModalDiscard() {
+    setCompetitiveWindow(savedWindow);
+    setTeamWeaknesses(savedWeaknesses);
+    setCapPhilosophy(savedCapPhilosophy);
+    setGoals(savedGoals);
+    setShowModal(false);
+    if (pendingNavRef.current) {
+      router.push(pendingNavRef.current);
+      pendingNavRef.current = null;
+    }
+  }
+
+  function handleModalCancel() {
+    setShowModal(false);
+    pendingNavRef.current = null;
   }
 
   async function saveMode(newMode: "in_season" | "offseason") {
@@ -57,33 +236,30 @@ export default function SettingsPage() {
       .eq("id", leagueId);
     if (!error) showToast();
   }
+
   async function loadLeagues() {
-  const { data } = await supabase
-    .from("leagues")
-    .select("id, name")
-    .order("created_at", { ascending: false });
-  if (data) setLeagues(data);
-}
-
-async function deleteLeague(id: string) {
-  const { error } = await supabase
-    .from("leagues")
-    .delete()
-    .eq("id", id);
-
-  if (!error) {
-    setConfirmDeleteId(null);
-    if (id === leagueId) setLeague("");
-    window.dispatchEvent(new Event("dynastyos:leagues-updated"));
-    await loadLeagues();
+    const { data } = await supabase
+      .from("leagues")
+      .select("id, name")
+      .order("created_at", { ascending: false });
+    if (data) setLeagues(data);
   }
-}
 
-useEffect(() => {
-  loadLeagues();
-  window.addEventListener("dynastyos:leagues-updated", loadLeagues);
-  return () => window.removeEventListener("dynastyos:leagues-updated", loadLeagues);
-}, []);
+  async function deleteLeague(id: string) {
+    const { error } = await supabase.from("leagues").delete().eq("id", id);
+    if (!error) {
+      setConfirmDeleteId(null);
+      if (id === leagueId) setLeague("");
+      window.dispatchEvent(new Event("dynastyos:leagues-updated"));
+      await loadLeagues();
+    }
+  }
+
+  useEffect(() => {
+    loadLeagues();
+    window.addEventListener("dynastyos:leagues-updated", loadLeagues);
+    return () => window.removeEventListener("dynastyos:leagues-updated", loadLeagues);
+  }, []);
 
   async function fetchFantraxLeagues() {
     if (!secretId) return;
@@ -93,13 +269,13 @@ useEffect(() => {
       const res = await fetch(`/api/fantrax/leagues?user_secret_id=${secretId}`);
       if (!res.ok) throw new Error(await res.text());
       const json = await res.json();
-      const leagues: FantraxLeague[] = json.leagues ?? [];
-      if (leagues.length === 0) {
+      const fetched: FantraxLeague[] = json.leagues ?? [];
+      if (fetched.length === 0) {
         setConnectMsg("No leagues found for this Secret ID.");
         return;
       }
-      setFantraxLeagues(leagues);
-      setSelectedFantraxLeagueId(leagues[0].leagueId);
+      setFantraxLeagues(fetched);
+      setSelectedFantraxLeagueId(fetched[0].leagueId);
       setConnectStep("pick");
     } catch (e: any) {
       setConnectMsg(e?.message ?? "Something went wrong.");
@@ -112,16 +288,13 @@ useEffect(() => {
     if (!selectedFantraxLeagueId) return;
     setConnectLoading(true);
     setConnectMsg(null);
-
-    const picked = fantraxLeagues.find(l => l.leagueId === selectedFantraxLeagueId);
+    const picked = fantraxLeagues.find((l) => l.leagueId === selectedFantraxLeagueId);
     if (!picked) return;
-
     try {
       const { data: sessionData } = await supabase.auth.getSession();
       const user = sessionData.session?.user;
       if (!user) throw new Error("Not logged in.");
 
-      // Check for duplicate
       const { data: existing } = await supabase
         .from("leagues")
         .select("id")
@@ -160,10 +333,8 @@ useEffect(() => {
         `/api/roster/sync?user_secret_id=${secretId}&fantrax_league_id=${picked.leagueId}`,
         { method: "POST" }
       );
-
       if (syncRes.ok) {
         const syncJson = await syncRes.json();
-        const { data: sessionData } = await supabase.auth.getSession();
         const { data: syncSessionData } = await supabase.auth.getSession();
         const syncUser = syncSessionData.session?.user;
         if (syncUser) {
@@ -175,7 +346,6 @@ useEffect(() => {
           });
         }
       }
-
     } catch (e: any) {
       setConnectMsg(e?.message ?? "Something went wrong.");
     } finally {
@@ -212,6 +382,116 @@ useEffect(() => {
       >
         Saved
       </div>
+
+      {/* Unsaved modal */}
+      {showModal && (
+        <UnsavedModal
+          onSave={handleModalSave}
+          onDiscard={handleModalDiscard}
+          onCancel={handleModalCancel}
+        />
+      )}
+
+      {/* Team Philosophy */}
+      {leagueId && (
+        <div className="grid grid-cols-[200px_1fr] gap-8 py-8 border-t border-gray-200">
+          <div>
+            <div className="text-xs font-semibold uppercase tracking-widest text-gray-400">Team Philosophy</div>
+            {leagueName && (
+              <p className="text-sm text-gray-500 mt-1 font-medium">{leagueName}</p>
+            )}
+            <p className="text-sm text-gray-400 mt-2 leading-relaxed">
+              Context used by the AI advisor across all tools.
+            </p>
+          </div>
+          <div className="bg-white border rounded-2xl p-6 shadow-sm space-y-6">
+
+            {/* Competitive Window */}
+            <div className="space-y-2">
+              <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+                Competitive Window
+              </label>
+              <div className="flex gap-2">
+                {COMPETITIVE_WINDOWS.map((w) => (
+                  <button
+                    key={w}
+                    onClick={() => setCompetitiveWindow(w)}
+                    className={`px-4 py-2 rounded-xl text-sm font-medium border transition ${
+                      competitiveWindow === w
+                        ? "bg-black text-white border-black"
+                        : "bg-white text-gray-600 border-gray-200 hover:border-gray-400"
+                    }`}
+                  >
+                    {w.charAt(0).toUpperCase() + w.slice(1)}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Team Weaknesses */}
+            <div className="space-y-2">
+              <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+                Category Weaknesses
+              </label>
+              <div className="flex flex-wrap gap-2">
+                {SCORING_CATEGORIES.map((cat) => (
+                  <button
+                    key={cat}
+                    onClick={() => toggleWeakness(cat)}
+                    className={`px-3 py-1.5 rounded-lg text-sm font-medium border transition ${
+                      teamWeaknesses.includes(cat)
+                        ? "bg-black text-white border-black"
+                        : "bg-white text-gray-600 border-gray-200 hover:border-gray-400"
+                    }`}
+                  >
+                    {cat}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Cap Philosophy */}
+            <div className="space-y-2">
+              <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+                Cap Philosophy
+              </label>
+              <textarea
+                value={capPhilosophy}
+                onChange={(e) => setCapPhilosophy(e.target.value)}
+                placeholder="e.g. Stay aggressive under cap, prioritize upside over floor, avoid long commitments to injury-prone players"
+                rows={3}
+                className="w-full px-3 py-2 rounded-xl border border-gray-200 bg-white text-sm outline-none focus:border-gray-400 resize-none"
+              />
+            </div>
+
+            {/* Goals */}
+            <div className="space-y-2">
+              <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+                Season Goals
+              </label>
+              <textarea
+                value={goals}
+                onChange={(e) => setGoals(e.target.value)}
+                placeholder="e.g. Win the championship this year, upgrade SB and QS before the deadline"
+                rows={3}
+                className="w-full px-3 py-2 rounded-xl border border-gray-200 bg-white text-sm outline-none focus:border-gray-400 resize-none"
+              />
+            </div>
+
+            {/* Save button */}
+            <div className="flex justify-end pt-2">
+              <button
+                onClick={savePhilosophy}
+                disabled={!isDirty}
+                className="px-5 py-2 rounded-xl bg-black text-white text-sm font-medium disabled:opacity-30 disabled:cursor-not-allowed transition"
+              >
+                Save
+              </button>
+            </div>
+
+          </div>
+        </div>
+      )}
 
       {/* Fantrax */}
       <div className="grid grid-cols-[200px_1fr] gap-8 py-8 border-t border-gray-200">
@@ -298,13 +578,10 @@ useEffect(() => {
             )}
           </div>
 
-          {/* Your Leagues card */}
           {leagues.length > 0 && (
             <div className="bg-white border rounded-2xl p-6 shadow-sm space-y-3">
               <h3 className="text-lg font-semibold">Your Leagues</h3>
-              <p className="text-sm text-gray-500">
-                Manage your connected leagues.
-              </p>
+              <p className="text-sm text-gray-500">Manage your connected leagues.</p>
               <div className="space-y-2">
                 {leagues.map((l) => (
                   <div
@@ -319,7 +596,6 @@ useEffect(() => {
                         </span>
                       )}
                     </div>
-
                     {confirmDeleteId === l.id ? (
                       <div className="flex items-center gap-2">
                         <span className="text-xs text-gray-500">Sure?</span>
@@ -361,7 +637,7 @@ useEffect(() => {
               Configure how roster data is calculated and displayed.
             </p>
           </div>
-          <div className="bg-white border rounded-2xl p-6 shadow-sm space-y-3 ">
+          <div className="bg-white border rounded-2xl p-6 shadow-sm space-y-3">
             <h3 className="text-lg font-semibold">Cap Mode</h3>
             <p className="text-sm text-gray-500">
               Controls which cap limit is used when analyzing a CSV upload.
@@ -397,7 +673,7 @@ useEffect(() => {
             Fallback option if you're not using Fantrax sync.
           </p>
         </div>
-        <div className="space-y-4 ">
+        <div className="space-y-4">
           <div className="bg-white border rounded-2xl p-6 shadow-sm space-y-3">
             <h3 className="text-lg font-semibold">Create League Manually</h3>
             <p className="text-sm text-gray-500">
@@ -438,7 +714,6 @@ useEffect(() => {
         </div>
       </div>
 
-      {/* Bottom border */}
       <div className="border-t border-gray-200" />
     </main>
   );
