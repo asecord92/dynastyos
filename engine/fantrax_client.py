@@ -45,6 +45,16 @@ def get_player_ids(sport: str) -> dict[str, str]:
             and time.time() - cache.get("fetched_at", 0) < PLAYER_ID_CACHE_TTL
         ):
             return cache["players"]
+        
+def get_league_info(league_id: str) -> dict:
+    """
+    Returns full league info including team names/IDs, scoring system,
+    roster constraints, draft settings, and season dates.
+    """
+    url = f"{FANTRAX_BASE}/getLeagueInfo"
+    resp = httpx.get(url, params={"leagueId": league_id}, timeout=15)
+    resp.raise_for_status()
+    return resp.json()
 
     # Fetch fresh
     url = f"{FANTRAX_BASE}/getPlayerIds"
