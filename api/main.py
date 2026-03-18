@@ -24,22 +24,21 @@ app.add_middleware(
 rules = LeagueRules()
 
 def extract_league_profile(league_info: dict, team_id: str) -> dict:
-    """
-    Pull the auto-populate fields out of a getLeagueInfo response.
-    Returns a dict ready to upsert into the leagues table.
-    """
     draft = league_info.get("draftSettings", {})
     roster = league_info.get("rosterInfo", {})
 
+    def to_int(val):
+        return int(val) if val is not None else None
+
     return {
         "fantrax_team_id": team_id,
-        "draft_budget": draft.get("budget"),
-        "season_year": league_info.get("seasonYear"),
+        "draft_budget": to_int(draft.get("budget")),
+        "season_year": to_int(league_info.get("seasonYear")),
         "season_start": league_info.get("startDate"),
         "season_end": league_info.get("endDate"),
-        "roster_max": roster.get("maxTotalPlayers"),
-        "roster_active": roster.get("maxTotalActivePlayers"),
-        "roster_reserve": roster.get("maxTotalReservePlayers"),
+        "roster_max": to_int(roster.get("maxTotalPlayers")),
+        "roster_active": to_int(roster.get("maxTotalActivePlayers")),
+        "roster_reserve": to_int(roster.get("maxTotalReservePlayers")),
     }
 
 @app.get("/health")
