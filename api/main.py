@@ -1,7 +1,10 @@
 from fastapi import FastAPI, UploadFile, File, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 import os
 import tempfile
+import anthropic
+from datetime import datetime
 
 from engine.rules import LeagueRules
 from engine.roster_analyzer import analyze_roster_from_csv
@@ -9,7 +12,7 @@ from engine.fantrax_client import get_leagues, get_team_rosters, get_player_ids,
 from engine.supabase_client import get_supabase
 from engine.fantrax_mapper import map_roster_to_analyze_result
 from engine.player_resolver import resolve_player
-from datetime import datetime
+from engine.trade_analyzer import build_trade_context, build_trade_prompt, SYSTEM_PROMPT
 
 app = FastAPI(title="DynastyOS API")
 
@@ -24,6 +27,7 @@ app.add_middleware(
 )
 
 rules = LeagueRules()
+
 
 def extract_league_profile(league_info: dict, team_id: str) -> dict:
     draft = league_info.get("draftSettings", {})
@@ -42,6 +46,7 @@ def extract_league_profile(league_info: dict, team_id: str) -> dict:
         "roster_active": to_int(roster.get("maxTotalActivePlayers")),
         "roster_reserve": to_int(roster.get("maxTotalReservePlayers")),
     }
+
 
 @app.get("/health")
 def health():
@@ -91,7 +96,7 @@ async def roster_sync(
         team_id = league_entry["teamId"]
         sport = league_entry.get("sport", "MLB")
 
-# Step 2: Get all rosters and filter to the user's team
+        # Step 2: Get all rosters and filter to the user's team
         rosters = get_team_rosters(fantrax_league_id)
         team_roster = rosters.get(team_id)
         if not team_roster:
@@ -134,14 +139,6 @@ async def roster_sync(
             print(f"[sync] Persisted {len(roster_upserts)} team rosters")
         except Exception as e:
             print(f"[sync] Roster persistence failed (non-fatal): {e}")
-        # Step 2.5: Fetch league info and persist structural profile fields
-        try:
-            league_info = get_league_info(fantrax_league_id)
-            profile = extract_league_profile(league_info, team_id)
-            sb = get_supabase()
-            sb.table("leagues").update(profile).eq("fantrax_league_id", fantrax_league_id).execute()
-        except Exception as e:
-            print(f"[sync] League profile update failed (non-fatal): {e}")
 
         # Step 3: Get player ID -> {name, team} map (cached 24hr)
         player_names = get_player_ids(sport)
@@ -171,6 +168,47 @@ async def roster_sync(
 
     except HTTPException:
         raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/trade/analyze")
+async def trade_analyze(
+    league_id: str = Query(...),
+    my_team_id: str = Query(...),
+    opponent_team_id: str = Query(...),
+    offering_ids: str = Query(...),
+    receiving_ids: str = Query(...),
+):
+    try:
+        offering = [x.strip() for x in offering_ids.split(",") if x.strip()]
+        receiving = [x.strip() for x in receiving_ids.split(",") if x.strip()]
+
+        context = build_trade_context(
+            league_id=league_id,
+            my_team_id=my_team_id,
+            opponent_team_id=opponent_team_id,
+            offering_ids=offering,
+            receiving_ids=receiving,
+        )
+        prompt = build_trade_prompt(context)
+
+        client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+
+        def stream():
+            with client.messages.stream(
+                model="claude-opus-4-5",
+                max_tokens=2000,
+                system=SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": prompt}],
+            ) as s:
+                for text in s.text_stream:
+                    yield text
+
+        return StreamingResponse(stream(), media_type="text/plain")
+
     except Exception as e:
         import traceback
         traceback.print_exc()
