@@ -72,10 +72,10 @@ function PlayerSearch({
               <span className={`font-medium ${selected.includes(p.id) ? "text-white" : "text-gray-900"}`}>
                 {p.name}
               </span>
-              <span className={`text-xs ${selected.includes(p.id) ? "text-gray-400" : "text-gray-400"}`}>
+              <span className="text-xs text-gray-400">
                 {p.position}
               </span>
-              <span className={`text-xs ${selected.includes(p.id) ? "text-gray-400" : "text-gray-400"}`}>
+              <span className="text-xs text-gray-400">
                 {p.contract} yr
               </span>
             </div>
@@ -193,7 +193,6 @@ export default function TradePage() {
   const [streamText, setStreamText] = useState("");
   const [error, setError] = useState<string | null>(null);
 
-  // Load all rosters and player names for this league
   useEffect(() => {
     if (!leagueId) return;
 
@@ -217,14 +216,21 @@ export default function TradePage() {
 
       if (rosterRows) setTeams(rosterRows as TeamRoster[]);
 
-      // Load player name map from player_id_map
+      // Load player name map — resolved players first, fill gaps from fantrax_players
       const { data: idMapRows } = await supabase
         .from("player_id_map")
         .select("fantrax_id, full_name");
 
-      if (idMapRows) {
+      const { data: fantraxPlayerRows } = await supabase
+        .from("fantrax_players")
+        .select("fantrax_id, name");
+
+      if (idMapRows || fantraxPlayerRows) {
         const map: Record<string, string> = {};
-        idMapRows.forEach((r) => { map[r.fantrax_id] = r.full_name; });
+        // fantrax_players first (lower priority)
+        fantraxPlayerRows?.forEach((r) => { map[r.fantrax_id] = r.name; });
+        // resolved players override (higher priority — better names)
+        idMapRows?.forEach((r) => { map[r.fantrax_id] = r.full_name; });
         setPlayerNameMap(map);
       }
     }
@@ -232,10 +238,8 @@ export default function TradePage() {
     load();
   }, [leagueId]);
 
-  // Build player options when teams or name map changes
   useEffect(() => {
     if (!myTeamId || teams.length === 0) return;
-
     const myTeam = teams.find((t) => t.fantrax_team_id === myTeamId);
     if (myTeam) {
       setMyPlayers(buildPlayerOptions(myTeam.roster_items, playerNameMap));
@@ -315,7 +319,7 @@ export default function TradePage() {
     }
   }
 
-  const canAnalyze = leagueId && myTeamId && opponentTeamId && offering.length > 0 && receiving.length > 0 && !loading;
+  const canAnalyze = !!(leagueId && myTeamId && opponentTeamId && offering.length > 0 && receiving.length > 0 && !loading);
 
   return (
     <main className="space-y-8">
@@ -338,7 +342,6 @@ export default function TradePage() {
           <div className="bg-white border rounded-2xl p-6 shadow-sm space-y-6">
             <h2 className="text-lg font-semibold">Build Trade</h2>
 
-            {/* Opponent selector */}
             <div className="space-y-2">
               <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">
                 Opponent Team
@@ -359,7 +362,6 @@ export default function TradePage() {
               </select>
             </div>
 
-            {/* Player selectors */}
             {opponentTeamId && (
               <>
                 <PlayerSearch

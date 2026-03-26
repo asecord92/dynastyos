@@ -31,10 +31,10 @@ def get_team_rosters(league_id: str) -> dict[str, Any]:
     return resp.json().get("rosters", {})
 
 
-def get_player_ids(sport: str) -> dict[str, str]:
+def get_player_ids(sport: str) -> dict[str, dict]:
     """
-    Returns a dict mapping Fantrax player ID -> player name for the given sport.
-    Results are cached to disk for 24 hours.
+    Returns a dict mapping Fantrax player ID -> {name, team} for the given sport.
+    Results are cached to disk for 24 hours and synced to Supabase.
     """
     # Return from cache if still valid
     if os.path.exists(PLAYER_ID_CACHE_PATH):
@@ -70,39 +70,29 @@ def get_player_ids(sport: str) -> dict[str, str]:
 
     print(f"[player_ids] Fetched {len(players)} players for {sport}")
 
-    # Write cache
+    # Write disk cache
     try:
         with open(PLAYER_ID_CACHE_PATH, "w") as f:
             json.dump({"sport": sport, "fetched_at": time.time(), "players": players}, f)
     except Exception as e:
         print(f"[player_ids] Cache write failed (non-fatal): {e}")
 
-    return players
-        
-def get_league_info(league_id: str) -> dict:
-    """
-    Returns full league info including team names/IDs, scoring system,
-    roster constraints, draft settings, and season dates.
-    """
-    url = f"{FANTRAX_BASE}/getLeagueInfo"
-    resp = httpx.get(url, params={"leagueId": league_id}, timeout=15)
-    resp.raise_for_status()
-    return resp.json()
-
-    # Fetch fresh
-    url = f"{FANTRAX_BASE}/getPlayerIds"
-    resp = httpx.get(url, params={"sport": sport}, timeout=30)
-    resp.raise_for_status()
-    raw = resp.json()
-
-    # Response is { playerId: { name, team, position, ... }, ... }
-    players = {
-    pid: {"name": info.get("name", ""), "team": info.get("team", "")}
-    for pid, info in raw.items()
-}
-
-    # Write cache
-    with open(PLAYER_ID_CACHE_PATH, "w") as f:
-        json.dump({"sport": sport, "fetched_at": time.time(), "players": players}, f)
+    # Sync to Supabase fantrax_players table
+    try:
+        from .supabase_client import get_supabase
+        sb = get_supabase()
+        upserts = [
+            {"fantrax_id": pid, "name": data["name"], "sport": sport}
+            for pid, data in players.items()
+            if data.get("name")
+        ]
+        # Batch in chunks of 500 to avoid payload limits
+        chunk_size = 500
+        for i in range(0, len(upserts), chunk_size):
+            chunk = upserts[i:i + chunk_size]
+            sb.table("fantrax_players").upsert(chunk, on_conflict="fantrax_id").execute()
+        print(f"[player_ids] Synced {len(upserts)} players to Supabase")
+    except Exception as e:
+        print(f"[player_ids] Supabase sync failed (non-fatal): {e}")
 
     return players
