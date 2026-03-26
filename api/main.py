@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, Query, HTTPException
+from fastapi import FastAPI, UploadFile, File, Query, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 import os
@@ -48,6 +48,36 @@ def extract_league_profile(league_info: dict, team_id: str) -> dict:
     }
 
 
+def resolve_all_players(rosters: dict, player_names: dict) -> None:
+    """
+    Background task: resolve Fantrax IDs to MLB IDs for all players
+    across all league rosters. Runs after the sync response is sent.
+    """
+    print("[bg] Starting full league player resolution...")
+    all_items = []
+    for tdata in rosters.values():
+        all_items.extend(tdata.get("rosterItems", []))
+
+    resolved = 0
+    unresolved = []
+    for item in all_items:
+        fantrax_id = item.get("id", "")
+        player_data = player_names.get(fantrax_id, {})
+        name = player_data.get("name", "")
+        team = player_data.get("team", "")
+        if not name:
+            continue
+        mapping = resolve_player(fantrax_id, name, team)
+        if mapping:
+            resolved += 1
+        else:
+            unresolved.append(name)
+
+    print(f"[bg] Resolution complete: {resolved} resolved, {len(unresolved)} unresolved")
+    if unresolved:
+        print(f"[bg] Unresolved: {unresolved}")
+
+
 @app.get("/health")
 def health():
     return {"ok": True}
@@ -77,6 +107,7 @@ async def fantrax_leagues(user_secret_id: str = Query(...)):
 
 @app.post("/roster/sync")
 async def roster_sync(
+    background_tasks: BackgroundTasks,
     user_secret_id: str = Query(...),
     fantrax_league_id: str = Query(...),
 ):
@@ -143,13 +174,9 @@ async def roster_sync(
         # Step 3: Get player ID -> {name, team} map (cached 24hr)
         player_names = get_player_ids(sport)
 
-# Step 3.5: Resolve Fantrax IDs to MLB IDs for ALL league players
-        all_roster_items = []
-        for tid, tdata in rosters.items():
-            all_roster_items.extend(tdata.get("rosterItems", []))
-
+        # Step 3.5: Resolve your team's players synchronously (needed for step 4)
         unresolved = []
-        for item in all_roster_items:
+        for item in team_roster.get("rosterItems", []):
             fantrax_id = item.get("id", "")
             player_data = player_names.get(fantrax_id, {})
             name = player_data.get("name", "")
@@ -164,6 +191,9 @@ async def roster_sync(
 
         if unresolved:
             print(f"[sync] Could not resolve {len(unresolved)} players: {unresolved}")
+
+        # Step 3.6: Resolve all OTHER league players in the background
+        background_tasks.add_task(resolve_all_players, rosters, player_names)
 
         # Step 4: Map to AnalyzeResult shape
         result = map_roster_to_analyze_result(team_roster, player_names, rules)
@@ -217,11 +247,3 @@ async def trade_analyze(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
-@app.post("/admin/clear-player-cache")
-def clear_player_cache():
-    import os
-    from engine.fantrax_client import PLAYER_ID_CACHE_PATH
-    if os.path.exists(PLAYER_ID_CACHE_PATH):
-        os.remove(PLAYER_ID_CACHE_PATH)
-        return {"cleared": True}
-    return {"cleared": False, "reason": "Cache file not found"}
