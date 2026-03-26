@@ -102,15 +102,11 @@ def build_trade_context(
     offering_ids: list[str],
     receiving_ids: list[str],
 ) -> dict[str, Any]:
-    """
-    Pull all context needed for trade analysis from Supabase.
-    Returns a structured dict ready to pass to build_trade_prompt.
-    """
     sb = get_supabase()
 
     # Load league profile
     league_row = sb.table("leagues").select(
-        "name, competitive_window, cap_philosophy, team_weaknesses, goals"
+        "name, competitive_window, cap_philosophy, team_weaknesses, goals, sport"
     ).eq("id", league_id).single().execute()
     league = league_row.data
 
@@ -127,16 +123,18 @@ def build_trade_context(
     if not my_roster_row or not opp_roster_row:
         raise ValueError("Could not load one or both rosters from Supabase.")
 
-    # Load player ID map from Supabase player_id_map table
+    # Collect all fantrax IDs across both rosters
     all_fantrax_ids = (
         [item["id"] for item in my_roster_row["roster_items"]] +
         [item["id"] for item in opp_roster_row["roster_items"]]
     )
+
+    # Load resolved mappings from player_id_map table
     id_map_rows = sb.table("player_id_map").select(
         "fantrax_id, full_name, player_type, mlb_id"
     ).in_("fantrax_id", all_fantrax_ids).execute()
 
-    # Build lookup dicts
+    # Build resolved lookup
     player_id_map = {
         row["fantrax_id"]: {"name": row["full_name"], "player_type": row["player_type"]}
         for row in id_map_rows.data
@@ -146,6 +144,21 @@ def build_trade_context(
         for row in id_map_rows.data
         if row.get("mlb_id")
     }
+
+    # Fill in any unresolved players using the Fantrax getPlayerIds cache
+    sport = league.get("sport", "MLB")
+    unresolved_ids = [fid for fid in all_fantrax_ids if fid not in player_id_map]
+    if unresolved_ids:
+        from .fantrax_client import get_player_ids
+        fantrax_name_map = get_player_ids(sport)
+        for fid in unresolved_ids:
+            player_data = fantrax_name_map.get(fid, {})
+            name = player_data.get("name", f"Unknown ({fid})")
+            if name:
+                player_id_map[fid] = {
+                    "name": name,
+                    "player_type": "hitter",  # default, no position data available
+                }
 
     # Fetch stats for trade participants only
     trade_ids = offering_ids + receiving_ids
