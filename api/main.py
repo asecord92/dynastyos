@@ -6,6 +6,7 @@ import tempfile
 from engine.rules import LeagueRules
 from engine.roster_analyzer import analyze_roster_from_csv
 from engine.fantrax_client import get_leagues, get_team_rosters, get_player_ids, get_league_info
+from engine.supabase_client import get_supabase
 from engine.fantrax_mapper import map_roster_to_analyze_result
 from engine.player_resolver import resolve_player
 from datetime import datetime
@@ -137,7 +138,6 @@ async def roster_sync(
         try:
             league_info = get_league_info(fantrax_league_id)
             profile = extract_league_profile(league_info, team_id)
-            from engine.supabase_client import get_supabase
             sb = get_supabase()
             sb.table("leagues").update(profile).eq("fantrax_league_id", fantrax_league_id).execute()
         except Exception as e:
