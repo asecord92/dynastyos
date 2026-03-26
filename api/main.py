@@ -143,9 +143,13 @@ async def roster_sync(
         # Step 3: Get player ID -> {name, team} map (cached 24hr)
         player_names = get_player_ids(sport)
 
-        # Step 3.5: Resolve Fantrax IDs to MLB IDs for players not yet mapped
+# Step 3.5: Resolve Fantrax IDs to MLB IDs for ALL league players
+        all_roster_items = []
+        for tid, tdata in rosters.items():
+            all_roster_items.extend(tdata.get("rosterItems", []))
+
         unresolved = []
-        for item in team_roster.get("rosterItems", []):
+        for item in all_roster_items:
             fantrax_id = item.get("id", "")
             player_data = player_names.get(fantrax_id, {})
             name = player_data.get("name", "")
