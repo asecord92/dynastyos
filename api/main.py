@@ -8,6 +8,7 @@ from engine.roster_analyzer import analyze_roster_from_csv
 from engine.fantrax_client import get_leagues, get_team_rosters, get_player_ids, get_league_info
 from engine.fantrax_mapper import map_roster_to_analyze_result
 from engine.player_resolver import resolve_player
+from datetime import datetime
 
 app = FastAPI(title="DynastyOS API")
 
@@ -89,7 +90,7 @@ async def roster_sync(
         team_id = league_entry["teamId"]
         sport = league_entry.get("sport", "MLB")
 
-        # Step 2: Get all rosters and filter to the user's team
+# Step 2: Get all rosters and filter to the user's team
         rosters = get_team_rosters(fantrax_league_id)
         team_roster = rosters.get(team_id)
         if not team_roster:
@@ -97,6 +98,41 @@ async def roster_sync(
                 status_code=404,
                 detail="Could not find your team in the league roster data.",
             )
+
+        # Step 2.5: Fetch league info and persist structural profile fields
+        try:
+            league_info = get_league_info(fantrax_league_id)
+            profile = extract_league_profile(league_info, team_id)
+            sb = get_supabase()
+            sb.table("leagues").update(profile).eq("fantrax_league_id", fantrax_league_id).execute()
+        except Exception as e:
+            print(f"[sync] League profile update failed (non-fatal): {e}")
+
+        # Step 2.6: Persist all team rosters to Supabase
+        try:
+            sb = get_supabase()
+            league_row = sb.table("leagues").select("id").eq("fantrax_league_id", fantrax_league_id).single().execute()
+            league_uuid = league_row.data["id"]
+
+            roster_upserts = [
+                {
+                    "league_id": league_uuid,
+                    "fantrax_team_id": tid,
+                    "team_name": tdata.get("teamName", ""),
+                    "roster_items": tdata.get("rosterItems", []),
+                    "salary_cap": int(tdata.get("salaryCap", 0)) if tdata.get("salaryCap") else None,
+                    "synced_at": datetime.utcnow().isoformat(),
+                }
+                for tid, tdata in rosters.items()
+            ]
+
+            sb.table("rosters").upsert(
+                roster_upserts,
+                on_conflict="league_id,fantrax_team_id"
+            ).execute()
+            print(f"[sync] Persisted {len(roster_upserts)} team rosters")
+        except Exception as e:
+            print(f"[sync] Roster persistence failed (non-fatal): {e}")
         # Step 2.5: Fetch league info and persist structural profile fields
         try:
             league_info = get_league_info(fantrax_league_id)
