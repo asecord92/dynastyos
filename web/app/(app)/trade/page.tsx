@@ -220,10 +220,16 @@ export default function TradePage() {
       const { data: idMapRows } = await supabase
         .from("player_id_map")
         .select("fantrax_id, full_name");
+        
+        // Get all fantrax IDs from loaded rosters
+      const allRosterIds = (rosterRows as TeamRoster[])?.flatMap(
+        (r) => r.roster_items.map((item) => item.id)
+      ) ?? [];
 
       const { data: fantraxPlayerRows } = await supabase
         .from("fantrax_players")
-        .select("fantrax_id, name");
+        .select("fantrax_id, name")
+        .in("fantrax_id", allRosterIds);
 
       if (idMapRows || fantraxPlayerRows) {
         const map: Record<string, string> = {};
