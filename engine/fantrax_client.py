@@ -96,3 +96,12 @@ def get_player_ids(sport: str) -> dict[str, dict]:
         print(f"[player_ids] Supabase sync failed (non-fatal): {e}")
 
     return players
+def get_league_info(league_id: str) -> dict:
+    """
+    Returns full league info including team names/IDs, scoring system,
+    roster constraints, draft settings, and season dates.
+    """
+    url = f"{FANTRAX_BASE}/getLeagueInfo"
+    resp = httpx.get(url, params={"leagueId": league_id}, timeout=15)
+    resp.raise_for_status()
+    return resp.json()
