@@ -213,3 +213,11 @@ async def trade_analyze(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+@app.post("/admin/clear-player-cache")
+def clear_player_cache():
+    import os
+    from engine.fantrax_client import PLAYER_ID_CACHE_PATH
+    if os.path.exists(PLAYER_ID_CACHE_PATH):
+        os.remove(PLAYER_ID_CACHE_PATH)
+        return {"cleared": True}
+    return {"cleared": False, "reason": "Cache file not found"}
