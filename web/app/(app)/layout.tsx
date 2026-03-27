@@ -2,6 +2,8 @@ import { AppNav } from "../components/AppNav";
 import AuthGate from "../components/AuthGate";
 import { Suspense } from "react";
 
+export const dynamic = "force-dynamic";
+
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   return (
     <AuthGate>
