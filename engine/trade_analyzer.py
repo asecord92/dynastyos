@@ -1,3 +1,4 @@
+import asyncio
 from typing import Any
 from .supabase_client import get_supabase
 from .mlb_stats_client import get_player_stats
@@ -14,7 +15,7 @@ you back it up with specifics. You never hedge without committing to a final ans
 journalist presenting both sides — you are a trusted advisor telling the manager what to do and why.
 
 League format:
-- 10-team rotisserie scoring
+- 10-team head-to-head category scoring (weekly matchups)
 - Hitting categories: R, HR, RBI, SB, OBP
 - Pitching categories: QS, SV, K, ERA, WHIP
 - In-season salary cap: $450
@@ -95,7 +96,7 @@ def format_stats_for_prompt(player_stats: dict, name: str, player_type: str) -> 
     return f"  {name} (2026 season): {season_line} | Last 30 days: {recent_line}"
 
 
-def build_trade_context(
+async def build_trade_context(
     league_id: str,
     my_team_id: str,
     opponent_team_id: str,
@@ -160,18 +161,19 @@ def build_trade_context(
                     "player_type": "hitter",  # default, no position data available
                 }
 
-    # Fetch stats for trade participants only
+    # Fetch stats for all trade participants concurrently
     trade_ids = offering_ids + receiving_ids
-    trade_stats = {}
-    for fid in trade_ids:
+
+    async def fetch_stat(fid):
         mlb_id = fantrax_to_mlb.get(fid)
         player_info = player_id_map.get(fid, {})
         player_type = player_info.get("player_type", "hitter")
         if mlb_id:
-            stats = get_player_stats(mlb_id, player_type)
-            trade_stats[fid] = stats
-        else:
-            trade_stats[fid] = None
+            return fid, await get_player_stats(mlb_id, player_type)
+        return fid, None
+
+    results = await asyncio.gather(*[fetch_stat(fid) for fid in trade_ids])
+    trade_stats = dict(results)
 
     return {
         "league": league,

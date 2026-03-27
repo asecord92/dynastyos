@@ -329,21 +329,20 @@ export default function SettingsPage() {
       showToast();
       window.dispatchEvent(new Event("dynastyos:leagues-updated"));
 
-      const syncRes = await fetch(
-        `/api/roster/sync?user_secret_id=${secretId}&fantrax_league_id=${picked.leagueId}`,
-        { method: "POST" }
-      );
+      const syncRes = await fetch("/api/roster/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_secret_id: secretId, fantrax_league_id: picked.leagueId }),
+      });
       if (syncRes.ok) {
         const syncJson = await syncRes.json();
-        const { data: syncSessionData } = await supabase.auth.getSession();
-        const syncUser = syncSessionData.session?.user;
-        if (syncUser) {
-          await supabase.from("snapshots").insert({
+        if (user) {
+          await supabase.from("snapshots").upsert({
             league_id: newLeague.id,
-            owner_user_id: syncUser.id,
+            owner_user_id: user.id,
             source: "fantrax",
             data: syncJson,
-          });
+          }, { onConflict: "league_id,source" });
         }
       }
     } catch (e: any) {

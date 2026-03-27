@@ -118,10 +118,11 @@ export function AppNav() {
 
       const { fantrax_secret_id, fantrax_league_id } = leagueData;
 
-      const res = await fetch(
-        `/api/roster/sync?user_secret_id=${fantrax_secret_id}&fantrax_league_id=${fantrax_league_id}`,
-        { method: "POST" }
-      );
+      const res = await fetch("/api/roster/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_secret_id: fantrax_secret_id, fantrax_league_id }),
+      });
 
       if (!res.ok) throw new Error(await res.text());
       const json = await res.json();
@@ -132,12 +133,12 @@ export function AppNav() {
       if (user) {
         const { error: snapError } = await supabase
           .from("snapshots")
-          .insert({
+          .upsert({
             league_id: leagueId,
             owner_user_id: user.id,
             source: "fantrax",
             data: json,
-          });
+          }, { onConflict: "league_id,source" });
         if (snapError) throw new Error(snapError.message);
       }
 

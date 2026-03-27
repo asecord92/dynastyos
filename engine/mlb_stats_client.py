@@ -1,3 +1,4 @@
+import asyncio
 import httpx
 from datetime import datetime, timedelta
 from .supabase_client import get_supabase
@@ -40,22 +41,32 @@ def save_stats(mlb_id: int, season: int, player_type: str, season_stats: dict, r
             "season_stats": season_stats,
             "recent_stats": recent_stats,
             "refreshed_at": datetime.utcnow().isoformat(),
-        }).execute()
+        }, on_conflict="mlb_id,season").execute()
     except Exception as e:
         print(f"[stats] Supabase write error for mlb_id {mlb_id}: {e}")
 
 
-def fetch_hitting_stats(mlb_id: int, season: int) -> dict:
+async def fetch_hitting_stats(mlb_id: int, season: int) -> dict:
     """Fetch season + advanced + expected hitting stats from MLB Stats API."""
     stats = {}
     try:
-        # Season stats
-        resp = httpx.get(
-            f"{MLB_STATS_BASE}/people/{mlb_id}/stats",
-            params={"stats": "season", "group": "hitting", "season": season},
-            timeout=10,
-        )
-        splits = resp.json().get("stats", [{}])[0].get("splits", [])
+        async with httpx.AsyncClient(timeout=10) as client:
+            season_resp, advanced_resp, expected_resp = await asyncio.gather(
+                client.get(
+                    f"{MLB_STATS_BASE}/people/{mlb_id}/stats",
+                    params={"stats": "season", "group": "hitting", "season": season},
+                ),
+                client.get(
+                    f"{MLB_STATS_BASE}/people/{mlb_id}/stats",
+                    params={"stats": "seasonAdvanced", "group": "hitting", "season": season},
+                ),
+                client.get(
+                    f"{MLB_STATS_BASE}/people/{mlb_id}/stats",
+                    params={"stats": "expectedStatistics", "group": "hitting", "season": season},
+                ),
+            )
+
+        splits = season_resp.json().get("stats", [{}])[0].get("splits", [])
         if splits:
             s = splits[0]["stat"]
             stats.update({
@@ -71,13 +82,7 @@ def fetch_hitting_stats(mlb_id: int, season: int) -> dict:
                 "ops": s.get("ops"),
             })
 
-        # Advanced stats
-        resp = httpx.get(
-            f"{MLB_STATS_BASE}/people/{mlb_id}/stats",
-            params={"stats": "seasonAdvanced", "group": "hitting", "season": season},
-            timeout=10,
-        )
-        splits = resp.json().get("stats", [{}])[0].get("splits", [])
+        splits = advanced_resp.json().get("stats", [{}])[0].get("splits", [])
         if splits:
             s = splits[0]["stat"]
             stats.update({
@@ -87,13 +92,7 @@ def fetch_hitting_stats(mlb_id: int, season: int) -> dict:
                 "whiff_rate": s.get("swingAndMisses"),
             })
 
-        # Expected stats
-        resp = httpx.get(
-            f"{MLB_STATS_BASE}/people/{mlb_id}/stats",
-            params={"stats": "expectedStatistics", "group": "hitting", "season": season},
-            timeout=10,
-        )
-        splits = resp.json().get("stats", [{}])[0].get("splits", [])
+        splits = expected_resp.json().get("stats", [{}])[0].get("splits", [])
         if splits:
             s = splits[0]["stat"]
             stats.update({
@@ -108,17 +107,23 @@ def fetch_hitting_stats(mlb_id: int, season: int) -> dict:
     return stats
 
 
-def fetch_pitching_stats(mlb_id: int, season: int) -> dict:
+async def fetch_pitching_stats(mlb_id: int, season: int) -> dict:
     """Fetch season + advanced pitching stats from MLB Stats API."""
     stats = {}
     try:
-        # Season stats
-        resp = httpx.get(
-            f"{MLB_STATS_BASE}/people/{mlb_id}/stats",
-            params={"stats": "season", "group": "pitching", "season": season},
-            timeout=10,
-        )
-        splits = resp.json().get("stats", [{}])[0].get("splits", [])
+        async with httpx.AsyncClient(timeout=10) as client:
+            season_resp, advanced_resp = await asyncio.gather(
+                client.get(
+                    f"{MLB_STATS_BASE}/people/{mlb_id}/stats",
+                    params={"stats": "season", "group": "pitching", "season": season},
+                ),
+                client.get(
+                    f"{MLB_STATS_BASE}/people/{mlb_id}/stats",
+                    params={"stats": "seasonAdvanced", "group": "pitching", "season": season},
+                ),
+            )
+
+        splits = season_resp.json().get("stats", [{}])[0].get("splits", [])
         if splits:
             s = splits[0]["stat"]
             stats.update({
@@ -133,13 +138,7 @@ def fetch_pitching_stats(mlb_id: int, season: int) -> dict:
                 "bb_per_9": s.get("walksPer9Inn"),
             })
 
-        # Advanced stats
-        resp = httpx.get(
-            f"{MLB_STATS_BASE}/people/{mlb_id}/stats",
-            params={"stats": "seasonAdvanced", "group": "pitching", "season": season},
-            timeout=10,
-        )
-        splits = resp.json().get("stats", [{}])[0].get("splits", [])
+        splits = advanced_resp.json().get("stats", [{}])[0].get("splits", [])
         if splits:
             s = splits[0]["stat"]
             stats.update({
@@ -155,24 +154,24 @@ def fetch_pitching_stats(mlb_id: int, season: int) -> dict:
     return stats
 
 
-def fetch_recent_stats(mlb_id: int, season: int, player_type: str) -> dict:
+async def fetch_recent_stats(mlb_id: int, season: int, player_type: str) -> dict:
     """Fetch last 30 days of stats."""
     end_date = datetime.now()
     start_date = end_date - timedelta(days=30)
     group = "hitting" if player_type == "hitter" else "pitching"
 
     try:
-        resp = httpx.get(
-            f"{MLB_STATS_BASE}/people/{mlb_id}/stats",
-            params={
-                "stats": "byDateRange",
-                "group": group,
-                "season": season,
-                "startDate": start_date.strftime("%m/%d/%Y"),
-                "endDate": end_date.strftime("%m/%d/%Y"),
-            },
-            timeout=10,
-        )
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                f"{MLB_STATS_BASE}/people/{mlb_id}/stats",
+                params={
+                    "stats": "byDateRange",
+                    "group": group,
+                    "season": season,
+                    "startDate": start_date.strftime("%m/%d/%Y"),
+                    "endDate": end_date.strftime("%m/%d/%Y"),
+                },
+            )
         splits = resp.json().get("stats", [{}])[0].get("splits", [])
         # Take the first split with sport id 1 (MLB only)
         for split in splits:
@@ -184,7 +183,7 @@ def fetch_recent_stats(mlb_id: int, season: int, player_type: str) -> dict:
     return {}
 
 
-def get_player_stats(mlb_id: int, player_type: str) -> dict | None:
+async def get_player_stats(mlb_id: int, player_type: str) -> dict | None:
     """
     Main entry point. Returns stats for a player, using cache if fresh.
     Fetches from MLB Stats API and stores in Supabase if stale or missing.
@@ -199,11 +198,11 @@ def get_player_stats(mlb_id: int, player_type: str) -> dict | None:
 
     # Fetch stats based on player type
     if player_type == "hitter":
-        season_stats = fetch_hitting_stats(mlb_id, season)
+        season_stats = await fetch_hitting_stats(mlb_id, season)
     else:
-        season_stats = fetch_pitching_stats(mlb_id, season)
+        season_stats = await fetch_pitching_stats(mlb_id, season)
 
-    recent_stats = fetch_recent_stats(mlb_id, season, player_type)
+    recent_stats = await fetch_recent_stats(mlb_id, season, player_type)
 
     # Store in Supabase
     save_stats(mlb_id, season, player_type, season_stats, recent_stats)

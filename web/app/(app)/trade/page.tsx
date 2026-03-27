@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { supabase } from "../../lib/supabaseClient";
 import { useLeague } from "../../lib/useLeague";
 
@@ -216,15 +216,16 @@ export default function TradePage() {
 
       if (rosterRows) setTeams(rosterRows as TeamRoster[]);
 
-      // Load player name map — resolved players first, fill gaps from fantrax_players
-      const { data: idMapRows } = await supabase
-        .from("player_id_map")
-        .select("fantrax_id, full_name");
-        
-        // Get all fantrax IDs from loaded rosters
+      // Get all fantrax IDs from loaded rosters
       const allRosterIds = (rosterRows as TeamRoster[])?.flatMap(
         (r) => r.roster_items.map((item) => item.id)
       ) ?? [];
+
+      // Load player name map — resolved players first, fill gaps from fantrax_players
+      const { data: idMapRows } = await supabase
+        .from("player_id_map")
+        .select("fantrax_id, full_name")
+        .in("fantrax_id", allRosterIds);
 
       const { data: fantraxPlayerRows } = await supabase
         .from("fantrax_players")

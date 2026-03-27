@@ -1,8 +1,10 @@
+import traceback
+import os
+import tempfile
 from fastapi import FastAPI, UploadFile, File, Query, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-import os
-import tempfile
+from pydantic import BaseModel
 import anthropic
 from datetime import datetime
 
@@ -27,6 +29,11 @@ app.add_middleware(
 )
 
 rules = LeagueRules()
+
+
+class RosterSyncRequest(BaseModel):
+    user_secret_id: str
+    fantrax_league_id: str
 
 
 def extract_league_profile(league_info: dict, team_id: str) -> dict:
@@ -108,10 +115,12 @@ async def fantrax_leagues(user_secret_id: str = Query(...)):
 @app.post("/roster/sync")
 async def roster_sync(
     background_tasks: BackgroundTasks,
-    user_secret_id: str = Query(...),
-    fantrax_league_id: str = Query(...),
+    body: RosterSyncRequest,
 ):
     try:
+        user_secret_id = body.user_secret_id
+        fantrax_league_id = body.fantrax_league_id
+
         # Step 1: Get the user's leagues to find their teamId and sport
         leagues = get_leagues(user_secret_id)
         league_entry = next(
@@ -203,7 +212,6 @@ async def roster_sync(
     except HTTPException:
         raise
     except Exception as e:
-        import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -220,7 +228,7 @@ async def trade_analyze(
         offering = [x.strip() for x in offering_ids.split(",") if x.strip()]
         receiving = [x.strip() for x in receiving_ids.split(",") if x.strip()]
 
-        context = build_trade_context(
+        context = await build_trade_context(
             league_id=league_id,
             my_team_id=my_team_id,
             opponent_team_id=opponent_team_id,
@@ -244,6 +252,5 @@ async def trade_analyze(
         return StreamingResponse(stream(), media_type="text/plain")
 
     except Exception as e:
-        import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
