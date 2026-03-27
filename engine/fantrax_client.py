@@ -53,6 +53,7 @@ def get_player_ids(sport: str) -> dict[str, dict]:
                     sb.table("fantrax_players")
                     .select("fantrax_id, name")
                     .eq("sport", sport)
+                    .limit(11000)
                     .execute()
                 )
                 print(f"[player_ids] Returning {len(all_rows.data)} players from Supabase cache")
