@@ -306,7 +306,13 @@ export default function TradePage() {
         receiving_ids: receiving.join(","),
       });
 
-      const res = await fetch(`/api/trade/analyze?${params}`, { method: "POST" });
+      const { data: sessionData } = await supabase.auth.getSession();
+      const accessToken = sessionData.session?.access_token;
+
+      const res = await fetch(`/api/trade/analyze?${params}`, {
+        method: "POST",
+        headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {},
+      });
 
       if (!res.ok) throw new Error(await res.text());
       if (!res.body) throw new Error("No response body");

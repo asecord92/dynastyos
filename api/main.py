@@ -1,7 +1,7 @@
 import traceback
 import os
 import tempfile
-from fastapi import FastAPI, UploadFile, File, Query, HTTPException, BackgroundTasks
+from fastapi import FastAPI, UploadFile, File, Query, HTTPException, BackgroundTasks, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -15,6 +15,7 @@ from engine.supabase_client import get_supabase
 from engine.fantrax_mapper import map_roster_to_analyze_result
 from engine.player_resolver import resolve_player
 from engine.trade_analyzer import build_trade_context, build_trade_prompt, SYSTEM_PROMPT
+from engine.auth import get_current_user
 
 app = FastAPI(title="DynastyOS API")
 
@@ -116,6 +117,7 @@ async def fantrax_leagues(user_secret_id: str = Query(...)):
 async def roster_sync(
     background_tasks: BackgroundTasks,
     body: RosterSyncRequest,
+    user: dict = Depends(get_current_user),
 ):
     try:
         user_secret_id = body.user_secret_id
@@ -223,6 +225,7 @@ async def trade_analyze(
     opponent_team_id: str = Query(...),
     offering_ids: str = Query(...),
     receiving_ids: str = Query(...),
+    user: dict = Depends(get_current_user),
 ):
     try:
         offering = [x.strip() for x in offering_ids.split(",") if x.strip()]

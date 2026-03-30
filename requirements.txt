@@ -6,3 +6,4 @@ python-multipart
 httpx
 supabase
 anthropic
+python-jose[cryptography]

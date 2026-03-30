@@ -118,16 +118,21 @@ export function AppNav() {
 
       const { fantrax_secret_id, fantrax_league_id } = leagueData;
 
+      const { data: sessionData } = await supabase.auth.getSession();
+      const accessToken = sessionData.session?.access_token;
+
       const res = await fetch("/api/roster/sync", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+        },
         body: JSON.stringify({ user_secret_id: fantrax_secret_id, fantrax_league_id }),
       });
 
       if (!res.ok) throw new Error(await res.text());
       const json = await res.json();
 
-      const { data: sessionData } = await supabase.auth.getSession();
       const user = sessionData.session?.user;
 
       if (user) {
