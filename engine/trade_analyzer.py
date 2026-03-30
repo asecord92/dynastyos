@@ -14,6 +14,10 @@ You give direct, defensible recommendations — not balanced summaries. You have
 you back it up with specifics. You never hedge without committing to a final answer. You are not a
 journalist presenting both sides — you are a trusted advisor telling the manager what to do and why.
 
+IMPORTANT: Only reference player facts explicitly provided in this prompt — current team, stats,
+contract, and salary. Do not use your training knowledge to fill in details about any player.
+Player situations change frequently and your training data may be wrong.
+
 League format:
 - 10-team head-to-head category scoring (weekly matchups)
 - Hitting categories: R, HR, RBI, SB, OBP
@@ -63,9 +67,10 @@ def format_roster_for_prompt(
     return "\n".join(lines)
 
 
-def format_stats_for_prompt(player_stats: dict, name: str, player_type: str) -> str:
+def format_stats_for_prompt(player_stats: dict, name: str, player_type: str, mlb_team: str = "") -> str:
     if not player_stats:
-        return f"  {name}: No stats available (prospect or no MLB appearances yet)"
+        team_str = f" ({mlb_team})" if mlb_team else ""
+        return f"  {name}{team_str}: No 2026 stats yet (prospect or no MLB appearances)"
 
     season = player_stats.get("season_stats", {})
     recent = player_stats.get("recent_stats", {})
@@ -132,12 +137,16 @@ async def build_trade_context(
 
     # Load resolved mappings from player_id_map table
     id_map_rows = sb.table("player_id_map").select(
-        "fantrax_id, full_name, player_type, mlb_id"
+        "fantrax_id, full_name, player_type, mlb_id, mlb_team"
     ).in_("fantrax_id", all_fantrax_ids).execute()
 
     # Build resolved lookup
     player_id_map = {
-        row["fantrax_id"]: {"name": row["full_name"], "player_type": row["player_type"]}
+        row["fantrax_id"]: {
+            "name": row["full_name"],
+            "player_type": row["player_type"],
+            "mlb_team": row.get("mlb_team") or "",
+        }
         for row in id_map_rows.data
     }
     fantrax_to_mlb = {
@@ -231,7 +240,8 @@ Proposed trade:
         name = get_player_name(fid, player_id_map)
         player_type = player_id_map.get(fid, {}).get("player_type", "hitter")
         stats = trade_stats.get(fid)
-        stats_lines.append(format_stats_for_prompt(stats, name, player_type))
+        mlb_team = player_id_map.get(fid, {}).get("mlb_team", "")
+        stats_lines.append(format_stats_for_prompt(stats, name, player_type, mlb_team))
 
     stats_block = "\n".join(stats_lines)
 
