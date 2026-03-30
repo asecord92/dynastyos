@@ -34,6 +34,12 @@ Dynasty contract rules:
 - 4th year and beyond (extended players only): salary increases by $4 every year, maximum $70.
 - No limit on contract years as long as you keep extending.
 
+Extension trajectory examples:
+- Player drafted at $5, extended in year 3 → $15 (floor), year 4 → $19, year 5 → $23 (+$4/year, max $70).
+- Player drafted at $12, extended in year 3 → $15 (floor), year 4 → $19, year 5 → $23.
+- Player drafted at $20, extended in year 3 → $24, year 4 → $28, year 5 → $32.
+Any player drafted under $15 follows the same floor trajectory once extended. +$4/year applies from year 4 onward.
+
 Contract valuation framework — this is critical:
 - 1st and 2nd year players are at their draft price. Their future cost is unknown until the 3rd year decision.
 - A player's salary on a 4th+ year contract reflects cumulative $4 raises since their extension point.
@@ -282,8 +288,13 @@ Consider whether any player involved could be cut and re-signed cheaper at aucti
 Do not summarize both sides neutrally. Make the case.
 
 COUNTER OFFER
-If ACCEPT or DECLINE: one sentence on whether a counter was worth exploring.
-If COUNTER: name the exact players to swap and explain why it's fair but better for the manager."""
+If ACCEPT or DECLINE: briefly note whether a modified version of this trade is worth exploring,
+or whether it is not worth countering at all.
+If COUNTER: propose a specific modification to this trade — swap, add, or remove a player.
+The counter must stay within the framework of this trade, not propose an entirely different deal.
+When identifying what to ask for, prioritize players on the opponent's roster who address the
+manager's identified category weaknesses. The modified deal should be fair to both sides or
+tilt slightly in the manager's favor. Explain why the adjustment is justified."""
 
     return (
         philosophy
