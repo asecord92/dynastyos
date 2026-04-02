@@ -88,7 +88,7 @@ export function CategoryRanksWidget({ leagueId }: { leagueId: string }) {
 
   return (
     <>
-      <div className="bg-white border rounded-2xl p-6 shadow-sm space-y-4 h-[420px] overflow-y-auto">
+      <div className="bg-white border rounded-2xl p-6 shadow-sm space-y-4 h-full">
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-semibold">Category Ranks</h2>
           <button
