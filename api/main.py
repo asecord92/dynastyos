@@ -431,7 +431,7 @@ async def dashboard_start_sit(
 
         active_items = [
             item for item in roster_items
-            if item.get("status", "").upper() in ("ACT", "RES")
+            if item.get("status", "").upper() in ("ACTIVE", "RESERVE", "INJURED_RESERVE")
         ]
 
         player_lines = []
