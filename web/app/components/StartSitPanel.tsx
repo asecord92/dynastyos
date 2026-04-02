@@ -80,7 +80,13 @@ export function StartSitPanel({
     fetchData();
   }, [leagueId, myTeamId]);
 
-  const players = data?.content?.players ?? [];
+  const [showAll, setShowAll] = useState(false);
+
+  const recOrder: Record<string, number> = { sit: 0, monitor: 1, start: 2 };
+  const allPlayers = [...(data?.content?.players ?? [])].sort(
+    (a, b) => (recOrder[a.recommendation] ?? 3) - (recOrder[b.recommendation] ?? 3)
+  );
+  const players = showAll ? allPlayers : allPlayers.slice(0, 6);
   const alerts = data?.content?.alerts ?? [];
 
   return (
@@ -160,6 +166,16 @@ export function StartSitPanel({
             </div>
           ))}
         </div>
+      )}
+
+      {/* Show all toggle */}
+      {!loading && allPlayers.length > 6 && (
+        <button
+          onClick={() => setShowAll((s) => !s)}
+          className="px-3 py-1.5 rounded-xl text-xs border border-gray-200 hover:border-gray-300 transition"
+        >
+          {showAll ? "Show less" : `Show all ${allPlayers.length} players`}
+        </button>
       )}
 
       {/* Injury alert banner */}
