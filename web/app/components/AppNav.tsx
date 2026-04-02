@@ -191,9 +191,9 @@ export function AppNav() {
           </Link>
           <Link
             className="px-3 py-1.5 rounded-xl border border-gray-200 hover:border-gray-300 transition whitespace-nowrap"
-            href={buildHref("/cap-relief")}
+            href={buildHref("/roster")}
           >
-            Cap Relief
+            Roster
           </Link>
           <Link
             className="px-3 py-1.5 rounded-xl border border-gray-200 hover:border-gray-300 transition whitespace-nowrap"

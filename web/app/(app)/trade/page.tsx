@@ -298,20 +298,22 @@ export default function TradePage() {
     setError(null);
 
     try {
-      const params = new URLSearchParams({
-        league_id: leagueId,
-        my_team_id: myTeamId,
-        opponent_team_id: opponentTeamId,
-        offering_ids: offering.join(","),
-        receiving_ids: receiving.join(","),
-      });
-
       const { data: sessionData } = await supabase.auth.getSession();
       const accessToken = sessionData.session?.access_token;
 
-      const res = await fetch(`/api/trade/analyze?${params}`, {
+      const res = await fetch("/api/trade/analyze", {
         method: "POST",
-        headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {},
+        headers: {
+          "Content-Type": "application/json",
+          ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+        },
+        body: JSON.stringify({
+          league_id: leagueId,
+          my_team_id: myTeamId,
+          opponent_team_id: opponentTeamId,
+          offering_ids: offering.join(","),
+          receiving_ids: receiving.join(","),
+        }),
       });
 
       if (!res.ok) throw new Error(await res.text());
