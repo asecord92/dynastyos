@@ -128,7 +128,7 @@ export default function DashboardPage() {
           </div>
 
           {/* Main content: start/sit + category ranks */}
-          <div className="grid grid-cols-1 lg:grid-cols-[1fr_300px] gap-6">
+          <div className="grid grid-cols-1 lg:grid-cols-[1fr_300px] gap-6 items-start">
             <div className="flex flex-col gap-6">
               <StartSitPanel
                 leagueId={leagueId}

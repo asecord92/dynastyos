@@ -15,7 +15,7 @@ export function InjuryTicker({ alerts }: { alerts: Alert[] }) {
         setIndex((i) => (i + 1) % alerts.length);
         setVisible(true);
       }, 300);
-    }, 4000);
+    }, 8000);
     return () => clearInterval(id);
   }, [alerts.length]);
 
@@ -24,7 +24,7 @@ export function InjuryTicker({ alerts }: { alerts: Alert[] }) {
   const alert = alerts[index] ?? alerts[0];
 
   return (
-    <div className="flex-1 min-h-0 bg-white border rounded-2xl shadow-sm border-l-4 border-l-orange-400 flex flex-col justify-center px-6 py-5">
+    <div className="h-[120px] bg-white border rounded-2xl shadow-sm border-l-4 border-l-orange-400 flex flex-col justify-center px-6 py-5">
       <div
         className={`transition-opacity duration-300 ${visible ? "opacity-100" : "opacity-0"}`}
       >
