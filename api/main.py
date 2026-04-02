@@ -1,5 +1,6 @@
 import traceback
 import os
+import re
 import tempfile
 from fastapi import FastAPI, UploadFile, File, Query, HTTPException, BackgroundTasks, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -145,12 +146,33 @@ def _upsert_cache(sb, league_id: str, widget: str, content: str) -> str:
 
 
 def _extract_text(response: anthropic.types.Message) -> str:
-    """Extract text blocks from an Anthropic response."""
-    return "\n".join(
+    text = "\n".join(
         block.text
         for block in response.content
         if hasattr(block, "text") and block.type == "text"
     )
+    lines = text.split("\n")
+    cleaned = []
+    for line in lines:
+        stripped = line.strip()
+        if any(stripped.lower().startswith(p) for p in [
+            "let me search",
+            "i'll search",
+            "i will search",
+            "let me check",
+            "let me look",
+            "based on my research",
+            "based on current",
+            "i appreciate",
+            "now i have",
+            "here is a summary",
+        ]):
+            continue
+        cleaned.append(line)
+    result = "\n".join(cleaned)
+    result = re.sub(r"^(\s*---\s*\n)+", "", result)
+    result = re.sub(r"^(\s*\n)+", "", result)
+    return result
 
 
 @app.get("/health")
