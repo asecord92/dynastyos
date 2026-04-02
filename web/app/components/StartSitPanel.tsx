@@ -157,7 +157,7 @@ export function StartSitPanel({
                     <span className="text-xs text-gray-400">${p.salary}</span>
                   )}
                 </div>
-                {p.reason && (
+                {showAll && p.reason && (
                   <p className="text-xs text-gray-400 mt-0.5 leading-relaxed">{p.reason}</p>
                 )}
               </div>
