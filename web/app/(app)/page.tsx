@@ -6,6 +6,8 @@ import { useLeague } from "../lib/useLeague";
 import { StatCard } from "../components/StatCard";
 import { StartSitPanel } from "../components/StartSitPanel";
 import { CategoryRanksWidget } from "../components/CategoryRanksWidget";
+import { InjuryTicker } from "../components/InjuryTicker";
+import type { Alert } from "../components/StartSitPanel";
 
 type Record = { wins: number | null; losses: number | null; ties: number };
 type RosterSummary = { capUsed: number; capLimit: number; ilPlayers: string[] };
@@ -16,6 +18,7 @@ export default function DashboardPage() {
   const [record, setRecord] = useState<Record | null>(null);
   const [recordLoading, setRecordLoading] = useState(false);
   const [rosterSummary, setRosterSummary] = useState<RosterSummary | null>(null);
+  const [alerts, setAlerts] = useState<Alert[]>([]);
 
   // Load team ID
   useEffect(() => {
@@ -125,8 +128,15 @@ export default function DashboardPage() {
           </div>
 
           {/* Main content: start/sit + category ranks */}
-          <div className="grid grid-cols-1 lg:grid-cols-[1fr_300px] gap-6 items-start">
-            <StartSitPanel leagueId={leagueId} myTeamId={myTeamId} />
+          <div className="grid grid-cols-1 lg:grid-cols-[1fr_300px] gap-6">
+            <div className="flex flex-col gap-6">
+              <StartSitPanel
+                leagueId={leagueId}
+                myTeamId={myTeamId}
+                onAlertsChange={setAlerts}
+              />
+              <InjuryTicker alerts={alerts} />
+            </div>
             <CategoryRanksWidget leagueId={leagueId} />
           </div>
         </>

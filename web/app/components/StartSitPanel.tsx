@@ -41,12 +41,16 @@ const recPill: Record<string, string> = {
   sit: "bg-red-100 text-red-600",
 };
 
+export type { Alert };
+
 export function StartSitPanel({
   leagueId,
   myTeamId,
+  onAlertsChange,
 }: {
   leagueId: string;
   myTeamId: string;
+  onAlertsChange?: (alerts: Alert[]) => void;
 }) {
   const [data, setData] = useState<WidgetResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -68,7 +72,9 @@ export function StartSitPanel({
         body: JSON.stringify({ league_id: leagueId, my_team_id: myTeamId, force }),
       });
       if (!res.ok) throw new Error(await res.text());
-      setData(await res.json());
+      const json = await res.json();
+      setData(json);
+      onAlertsChange?.(json.content?.alerts ?? []);
     } catch (e: any) {
       setError(e?.message ?? "Something went wrong.");
     } finally {
@@ -87,7 +93,6 @@ export function StartSitPanel({
     (a, b) => (recOrder[a.recommendation] ?? 3) - (recOrder[b.recommendation] ?? 3)
   );
   const players = showAll ? allPlayers : allPlayers.slice(0, 6);
-  const alerts = data?.content?.alerts ?? [];
 
   return (
     <div className="bg-white border rounded-2xl p-6 shadow-sm space-y-4">
@@ -176,24 +181,6 @@ export function StartSitPanel({
         >
           {showAll ? "Show less" : `Show all ${allPlayers.length} players`}
         </button>
-      )}
-
-      {/* Injury alert banner */}
-      {!loading && alerts.length > 0 && (
-        <div className="border-l-4 border-orange-400 bg-amber-50 rounded-r-xl p-4 space-y-2">
-          <div className="text-xs font-semibold text-amber-700 uppercase tracking-wide">
-            Injury / Status Alerts
-          </div>
-          {alerts.map((a, i) => (
-            <div key={i} className="text-xs text-gray-600">
-              <span className="font-medium text-gray-800">{a.name}</span>
-              {a.status && (
-                <span className="ml-1.5 text-orange-600 font-medium">{a.status}</span>
-              )}
-              {a.detail && <span className="ml-1.5">{a.detail}</span>}
-            </div>
-          ))}
-        </div>
       )}
 
       {/* Empty state */}
