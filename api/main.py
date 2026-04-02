@@ -372,7 +372,9 @@ Team: {team_name}
 Roster:
 {chr(10).join(player_lines)}
 
-Search for and summarize recent news (last 2 weeks) for each player. Focus on: IL placements, returns from IL, lineup changes, role changes, injury updates, and anything else affecting fantasy value. Skip players with nothing to report. Format as a bulleted list with the player name in bold at the start of each item."""
+Search for and summarize recent news (last 2 weeks) for each player. Focus on: IL placements, returns from IL, lineup changes, role changes, injury updates, and anything else affecting fantasy value. Skip players with nothing to report. Format as a bulleted list with the player name in bold at the start of each item.
+
+Do not include any preamble, introduction, or horizontal rules (---). Do not say "Based on my research" or similar. Start directly with the first player bullet point."""
 
         ai = get_ai_client()
         response = ai.messages.create(
@@ -457,7 +459,9 @@ Format your response as:
 **CONSIDER SITTING** — Players to consider benching this week
 **CLOSE CALLS** — Borderline decisions with your recommendation
 
-Keep it concise and actionable."""
+Keep it concise and actionable.
+
+Do not include any preamble, introduction, or acknowledgment of the request. Start directly with the MUST START section."""
 
         ai = get_ai_client()
         response = ai.messages.create(
@@ -597,7 +601,9 @@ From the unclaimed pool above, identify the best 4-5 players to target right now
 - Why they're a good pickup right now
 - Short-term and dynasty value assessment
 
-Prioritize players who address my category weaknesses if possible."""
+Prioritize players who address my category weaknesses if possible.
+
+Do not include any preamble or introduction. Start directly with the first player recommendation."""
 
         ai = get_ai_client()
         response = ai.messages.create(

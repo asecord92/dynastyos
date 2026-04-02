@@ -52,6 +52,7 @@ export function StartSitWidget({
   const [data, setData] = useState<WidgetData | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState(false);
 
   async function fetchData(force = false) {
     if (!leagueId || !myTeamId) return;
@@ -72,6 +73,7 @@ export function StartSitWidget({
 
       if (!res.ok) throw new Error(await res.text());
       setData(await res.json());
+      setExpanded(false);
     } catch (e: any) {
       setError(e?.message ?? "Something went wrong.");
     } finally {
@@ -120,7 +122,22 @@ export function StartSitWidget({
         </div>
       )}
 
-      {data && !loading && <ContentRenderer text={data.content} />}
+      {data && !loading && (
+        <>
+          <div className={`relative ${expanded ? "" : "max-h-48 overflow-hidden"}`}>
+            <ContentRenderer text={data.content} />
+            {!expanded && (
+              <div className="absolute bottom-0 left-0 right-0 h-12 bg-gradient-to-t from-white to-transparent" />
+            )}
+          </div>
+          <button
+            onClick={() => setExpanded((e) => !e)}
+            className="px-3 py-1.5 rounded-xl text-xs border border-gray-200 hover:border-gray-300 transition"
+          >
+            {expanded ? "Show less" : "Show more"}
+          </button>
+        </>
+      )}
     </div>
   );
 }
