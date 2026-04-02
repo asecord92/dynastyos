@@ -40,16 +40,33 @@ export default function DashboardPage() {
       .eq("league_id", leagueId)
       .eq("fantrax_team_id", myTeamId)
       .single()
-      .then(({ data }) => {
+      .then(async ({ data }) => {
         if (!data) return;
         const items: any[] = data.roster_items ?? [];
         const capItems = items.filter((i) =>
           ["ACTIVE", "RESERVE", "INJURED_RESERVE"].includes(i.status?.toUpperCase() ?? "")
         );
         const capUsed = capItems.reduce((sum: number, i: any) => sum + (i.salary ?? 0), 0);
-        const ilPlayers = items
-          .filter((i) => i.status?.toUpperCase() === "INJURED_RESERVE")
-          .map((i) => i.name ?? "");
+
+        const ilItems = items.filter((i) => i.status?.toUpperCase() === "INJURED_RESERVE");
+        const ilIds = ilItems.map((i) => i.id).filter(Boolean);
+
+        // Resolve names from player_id_map; fall back to roster item's own name field
+        let nameMap: Record<string, string> = {};
+        if (ilIds.length > 0) {
+          const { data: mapped } = await supabase
+            .from("player_id_map")
+            .select("fantrax_id,full_name")
+            .in("fantrax_id", ilIds);
+          for (const row of mapped ?? []) {
+            if (row.full_name) nameMap[row.fantrax_id] = row.full_name;
+          }
+        }
+
+        const ilPlayers = ilItems
+          .map((i) => nameMap[i.id] || i.name || "")
+          .filter(Boolean);
+
         setRosterSummary({ capUsed, capLimit: data.salary_cap ?? 450, ilPlayers });
       });
   }, [leagueId, myTeamId]);
