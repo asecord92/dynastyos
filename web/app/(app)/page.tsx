@@ -52,7 +52,7 @@ export default function DashboardPage() {
         const ilIds = ilItems.map((i) => i.id).filter(Boolean);
 
         // Resolve names from player_id_map; fall back to roster item's own name field
-        let nameMap: Record<string, string> = {};
+        const nameMap: { [key: string]: string } = {};
         if (ilIds.length > 0) {
           const { data: mapped } = await supabase
             .from("player_id_map")
