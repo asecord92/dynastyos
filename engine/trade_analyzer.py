@@ -190,6 +190,23 @@ async def build_trade_context(
     results = await asyncio.gather(*[fetch_stat(fid) for fid in trade_ids])
     trade_stats = dict(results)
 
+    # Load category ranks from dashboard_cache
+    category_ranks = {}
+    try:
+        import json as _json
+        ranks_result = (
+            sb.table("dashboard_cache")
+            .select("content")
+            .eq("league_id", league_id)
+            .eq("widget", "category_ranks")
+            .limit(1)
+            .execute()
+        )
+        if ranks_result.data:
+            category_ranks = _json.loads(ranks_result.data[0]["content"])
+    except Exception:
+        pass
+
     return {
         "league": league,
         "my_roster": my_roster_row,
@@ -199,6 +216,7 @@ async def build_trade_context(
         "trade_stats": trade_stats,
         "offering_ids": offering_ids,
         "receiving_ids": receiving_ids,
+        "category_ranks": category_ranks,
     }
 
 
@@ -218,11 +236,23 @@ def build_trade_prompt(context: dict[str, Any]) -> str:
     opp_items = opp_roster["roster_items"]
 
     # Team philosophy block
+    category_ranks = context.get("category_ranks", {})
+    if category_ranks:
+        ranks_str = ", ".join(f"{cat}:{rank}" for cat, rank in category_ranks.items())
+        num_teams = 10  # standard league size; ranks are absolute positions
+        weak_cats = [cat for cat, rank in category_ranks.items() if isinstance(rank, int) and rank >= 7]
+        category_context = f"Category ranks (1=best, {num_teams}=worst): {ranks_str}"
+        if weak_cats:
+            category_context += f"\n  Weakest categories: {', '.join(weak_cats)}"
+    else:
+        weak = league.get('team_weaknesses') or []
+        category_context = f"Category weaknesses: {', '.join(weak) or 'Not set'}"
+
     philosophy = f"""
 Manager's team philosophy:
   League: {league.get('name', 'Unknown')}
   Competitive window: {league.get('competitive_window') or 'Not set'}
-  Category weaknesses: {', '.join(league.get('team_weaknesses') or []) or 'Not set'}
+  {category_context}
   Cap philosophy: {league.get('cap_philosophy') or 'Not set'}
   Season goals: {league.get('goals') or 'Not set'}
   Current salary cap: ${my_roster.get('salary_cap', 450)}"""

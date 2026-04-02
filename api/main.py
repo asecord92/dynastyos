@@ -1,6 +1,7 @@
 import traceback
 import os
 import re
+import json as _json
 import tempfile
 from fastapi import FastAPI, UploadFile, File, Query, HTTPException, BackgroundTasks, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 
 from engine.rules import LeagueRules
 from engine.roster_analyzer import analyze_roster_from_csv
-from engine.fantrax_client import get_leagues, get_team_rosters, get_player_ids, get_league_info
+from engine.fantrax_client import get_leagues, get_team_rosters, get_player_ids, get_league_info, get_standings
 from engine.supabase_client import get_supabase
 from engine.fantrax_mapper import map_roster_to_analyze_result
 from engine.player_resolver import resolve_player
@@ -61,6 +62,11 @@ class DashboardRequest(BaseModel):
     league_id: str
     my_team_id: str
     force: bool = False
+
+
+class CategoryRanksRequest(BaseModel):
+    league_id: str
+    ranks: dict  # e.g. {"R": 4, "HR": 11, "RBI": 6, ...}
 
 
 def extract_league_profile(league_info: dict, team_id: str) -> dict:
@@ -175,9 +181,125 @@ def _extract_text(response: anthropic.types.Message) -> str:
     return result
 
 
+def _load_category_ranks(sb, league_id: str) -> dict:
+    """Load category ranks from dashboard_cache. Returns {} if not set."""
+    try:
+        result = (
+            sb.table("dashboard_cache")
+            .select("content")
+            .eq("league_id", league_id)
+            .eq("widget", "category_ranks")
+            .limit(1)
+            .execute()
+        )
+        if result.data:
+            return _json.loads(result.data[0]["content"])
+    except Exception:
+        pass
+    return {}
+
+
 @app.get("/health")
 def health():
     return {"ok": True}
+
+
+@app.get("/league/standings")
+async def league_standings(
+    league_id: str = Query(...),
+    my_team_id: str = Query(...),
+    user: dict = Depends(get_current_user),
+):
+    try:
+        sb = get_supabase()
+        league_row = (
+            sb.table("leagues")
+            .select("fantrax_league_id")
+            .eq("id", league_id)
+            .single()
+            .execute()
+        )
+        fantrax_league_id = league_row.data.get("fantrax_league_id") if league_row.data else None
+        if not fantrax_league_id:
+            raise HTTPException(status_code=404, detail="No Fantrax league connected.")
+
+        teams = get_standings(fantrax_league_id)  # flat list
+        total_teams = len(teams)
+        team = next((t for t in teams if t.get("teamId") == my_team_id), None)
+
+        if not team:
+            return {"wins": None, "losses": None, "ties": None, "record": "—", "total_teams": total_teams}
+
+        parts = (team.get("points") or "0-0-0").split("-")
+        wins = int(parts[0]) if len(parts) > 0 else 0
+        losses = int(parts[1]) if len(parts) > 1 else 0
+        ties = int(parts[2]) if len(parts) > 2 else 0
+
+        return {
+            "wins": wins,
+            "losses": losses,
+            "ties": ties,
+            "record": team.get("points", "—"),
+            "rank": team.get("rank"),
+            "team_name": team.get("teamName", ""),
+            "total_teams": total_teams,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/league/category-ranks")
+async def get_category_ranks(
+    league_id: str = Query(...),
+    user: dict = Depends(get_current_user),
+):
+    try:
+        sb = get_supabase()
+        result = (
+            sb.table("dashboard_cache")
+            .select("content,updated_at")
+            .eq("league_id", league_id)
+            .eq("widget", "category_ranks")
+            .limit(1)
+            .execute()
+        )
+        if result.data:
+            try:
+                ranks = _json.loads(result.data[0]["content"])
+            except Exception:
+                ranks = {}
+            return {"ranks": ranks, "updated_at": result.data[0]["updated_at"]}
+        return {"ranks": {}, "updated_at": None}
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/league/category-ranks")
+async def upsert_category_ranks(
+    body: CategoryRanksRequest,
+    user: dict = Depends(get_current_user),
+):
+    try:
+        sb = get_supabase()
+        content = _json.dumps(body.ranks)
+        now = datetime.now(timezone.utc).isoformat()
+        sb.table("dashboard_cache").upsert(
+            {
+                "league_id": body.league_id,
+                "widget": "category_ranks",
+                "content": content,
+                "updated_at": now,
+            },
+            on_conflict="league_id,widget",
+        ).execute()
+        return {"ok": True, "updated_at": now}
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/roster/analyze")
@@ -427,7 +549,11 @@ async def dashboard_start_sit(
 
         cached = _check_cache(sb, body.league_id, "start_sit", body.force)
         if cached:
-            return {"content": cached["content"], "updated_at": cached["updated_at"]}
+            try:
+                content = _json.loads(cached["content"])
+                return {"content": content, "updated_at": cached["updated_at"]}
+            except Exception:
+                pass  # Old prose cache — fall through to regenerate
 
         roster_result = (
             sb.table("rosters")
@@ -447,55 +573,98 @@ async def dashboard_start_sit(
         fantrax_ids = [item.get("id") for item in roster_items if item.get("id")]
         name_result = (
             sb.table("player_id_map")
-            .select("fantrax_id,full_name")
+            .select("fantrax_id,full_name,mlb_team")
             .in_("fantrax_id", fantrax_ids)
             .execute()
         )
         name_map = {r["fantrax_id"]: r["full_name"] for r in (name_result.data or [])}
+        team_map = {r["fantrax_id"]: r.get("mlb_team", "") for r in (name_result.data or [])}
 
-        active_items = [
+        # Pre-build IL alerts directly from roster status — no AI call needed
+        il_alerts = []
+        for item in roster_items:
+            if item.get("status", "").upper() == "INJURED_RESERVE":
+                fid = item.get("id", "")
+                name = name_map.get(fid) or item.get("name", fid)
+                il_alerts.append({"name": name, "status": "IL", "detail": "Currently on Injured Reserve"})
+
+        # Only pass non-IL players to AI for start/sit analysis
+        startable_items = [
             item for item in roster_items
-            if item.get("status", "").upper() in ("ACTIVE", "RESERVE", "INJURED_RESERVE")
+            if item.get("status", "").upper() in ("ACTIVE", "RESERVE")
         ]
 
         player_lines = []
-        for item in active_items:
+        for item in startable_items:
             fid = item.get("id", "")
             name = name_map.get(fid) or item.get("name", fid)
             pos = item.get("position", "")
             sal = item.get("salary", 0)
-            status = item.get("status", "")
-            player_lines.append(f"- {name} ({pos}, ${sal}, {status})")
+            mlb_team = team_map.get(fid, "")
+            player_lines.append(f"- {name} | {pos} | {mlb_team} | ${sal}")
 
-        prompt = f"""You are a fantasy baseball analyst for a dynasty contract league. Use web search to get current player news, injury status, and recent performance data.
+        # Load category ranks for context
+        category_ranks = _load_category_ranks(sb, body.league_id)
+        ranks_line = ""
+        if category_ranks:
+            ranks_line = "\nCategory ranks (1=best, higher = needs improvement): " + ", ".join(
+                f"{cat}:{rank}" for cat, rank in category_ranks.items()
+            )
+
+        prompt = f"""You are a fantasy baseball analyst for a dynasty contract league. Use web search to get current player news, injury status, and recent performance.
 
 Team: {team_name}
-Active/Reserve Roster:
+Active/Reserve Roster (name | position | MLB team | salary):
 {chr(10).join(player_lines) if player_lines else "No active players."}
+{ranks_line}
 
-For the current week, provide start/sit recommendations. Focus on non-obvious decisions. Consider: injuries, recent form, upcoming matchups, platoon situations, and role changes.
+Evaluate each player's start/sit outlook for the current week. Use web search to check injuries, recent form, and matchups. For borderline starters, factor in the team's weakest categories (high rank numbers) when deciding.
 
-Format your response as:
+Return ONLY a ```json code block — no other text before or after it:
+{{
+  "players": [
+    {{"name": "Player Name", "position": "1B", "team": "NYY", "salary": 22, "recommendation": "start", "reason": "one sentence"}}
+  ],
+  "alerts": [
+    {{"name": "Player Name", "status": "DTD", "detail": "one sentence"}}
+  ]
+}}
 
-**MUST START** — Players who should definitely be in the lineup
-**CONSIDER SITTING** — Players to consider benching this week
-**CLOSE CALLS** — Borderline decisions with your recommendation
-
-Keep it concise and actionable.
-
-Do not include any preamble, introduction, or acknowledgment of the request. Start directly with the MUST START section."""
+Rules:
+- recommendation must be exactly: start, monitor, or sit
+- alerts must only include players who are DTD — IL players are handled separately
+- Include every player from the roster above in the players array"""
 
         ai = get_ai_client()
         response = ai.messages.create(
             model="claude-opus-4-5",
-            max_tokens=2000,
+            max_tokens=3000,
             tools=[{"type": "web_search_20250305", "name": "web_search"}],
             messages=[{"role": "user", "content": prompt}],
         )
-        content = _extract_text(response)
+        raw_text = _extract_text(response)
 
-        updated_at = _upsert_cache(sb, body.league_id, "start_sit", content)
-        return {"content": content, "updated_at": updated_at}
+        # Extract JSON block from response
+        structured: dict = {"players": [], "alerts": []}
+        match = re.search(r"```json\s*([\s\S]*?)\s*```", raw_text)
+        if match:
+            try:
+                structured = _json.loads(match.group(1))
+            except Exception:
+                pass
+        else:
+            match2 = re.search(r'\{[\s\S]*"players"[\s\S]*\}', raw_text)
+            if match2:
+                try:
+                    structured = _json.loads(match2.group(0))
+                except Exception:
+                    pass
+
+        # Prepend IL alerts (from roster data) before any DTD alerts (from AI)
+        structured["alerts"] = il_alerts + structured.get("alerts", [])
+
+        updated_at = _upsert_cache(sb, body.league_id, "start_sit", _json.dumps(structured))
+        return {"content": structured, "updated_at": updated_at}
 
     except HTTPException:
         raise
@@ -598,12 +767,19 @@ async def dashboard_waiver(
         context_lines = []
         if league_data.get("competitive_window"):
             context_lines.append(f"Competitive window: {league_data['competitive_window']}")
-        if league_data.get("team_weaknesses"):
-            context_lines.append(f"Category weaknesses: {', '.join(league_data['team_weaknesses'])}")
         if league_data.get("cap_philosophy"):
             context_lines.append(f"Cap philosophy: {league_data['cap_philosophy']}")
         if league_data.get("goals"):
             context_lines.append(f"Season goals: {league_data['goals']}")
+
+        # Load category ranks — primary source for identifying weaknesses
+        category_ranks = _load_category_ranks(sb, body.league_id)
+        if category_ranks:
+            ranks_str = ", ".join(f"{cat}:{rank}" for cat, rank in category_ranks.items())
+            context_lines.append(f"Category ranks (1=best, {num_teams}=worst): {ranks_str}")
+            weak_cats = [cat for cat, rank in category_ranks.items() if isinstance(rank, int) and rank >= 7]
+            if weak_cats:
+                context_lines.append(f"Weakest categories (priority targets): {', '.join(weak_cats)}")
 
         unclaimed_section = "\n".join(unclaimed_lines) if unclaimed_lines else "No unclaimed player data available."
 
@@ -623,7 +799,7 @@ From the unclaimed pool above, identify the best 4-5 players to target right now
 - Why they're a good pickup right now
 - Short-term and dynasty value assessment
 
-Prioritize players who address my category weaknesses if possible.
+Prioritize players who address the team's weakest categories (high rank numbers) if possible.
 
 Do not include any preamble or introduction. Start directly with the first player recommendation."""
 

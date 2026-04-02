@@ -1,0 +1,209 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import { supabase } from "../lib/supabaseClient";
+
+const CATEGORIES = ["R", "HR", "RBI", "SB", "OBP", "QS", "SV", "K", "ERA", "WHIP"];
+const TOTAL_TEAMS = 10;
+
+type Ranks = Partial<Record<string, number>>;
+
+function rankColor(rank: number): string {
+  if (rank <= 3) return "bg-green-500";
+  if (rank <= 7) return "bg-amber-400";
+  return "bg-red-500";
+}
+
+function rankTextColor(rank: number): string {
+  if (rank <= 3) return "text-green-700";
+  if (rank <= 7) return "text-amber-700";
+  return "text-red-600";
+}
+
+function barWidth(rank: number): string {
+  const pct = Math.round(((TOTAL_TEAMS - rank + 1) / TOTAL_TEAMS) * 100);
+  return `${Math.max(pct, 8)}%`;
+}
+
+export function CategoryRanksWidget({ leagueId }: { leagueId: string }) {
+  const [ranks, setRanks] = useState<Ranks>({});
+  const [loading, setLoading] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
+  const [draft, setDraft] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState(false);
+
+  async function fetchRanks() {
+    if (!leagueId) return;
+    setLoading(true);
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
+      const res = await fetch(`/api/league/category-ranks?league_id=${leagueId}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (res.ok) {
+        const json = await res.json();
+        setRanks(json.ranks ?? {});
+      }
+    } catch {}
+    finally { setLoading(false); }
+  }
+
+  useEffect(() => { fetchRanks(); }, [leagueId]);
+
+  function openEdit() {
+    const current: Record<string, string> = {};
+    for (const cat of CATEGORIES) {
+      current[cat] = ranks[cat] != null ? String(ranks[cat]) : "";
+    }
+    setDraft(current);
+    setEditOpen(true);
+  }
+
+  async function saveRanks() {
+    setSaving(true);
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
+      const payload: Ranks = {};
+      for (const cat of CATEGORIES) {
+        const v = parseInt(draft[cat] ?? "", 10);
+        if (!isNaN(v) && v >= 1 && v <= TOTAL_TEAMS) payload[cat] = v;
+      }
+      await fetch("/api/league/category-ranks", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ league_id: leagueId, ranks: payload }),
+      });
+      setRanks(payload);
+      setEditOpen(false);
+    } catch {}
+    finally { setSaving(false); }
+  }
+
+  const hasRanks = CATEGORIES.some((c) => ranks[c] != null);
+
+  return (
+    <>
+      <div className="bg-white border rounded-2xl p-6 shadow-sm space-y-4">
+        <div className="flex items-center justify-between">
+          <h2 className="text-lg font-semibold">Category Ranks</h2>
+          <button
+            onClick={openEdit}
+            className="p-1.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition"
+            title="Edit ranks"
+          >
+            {/* Pencil icon */}
+            <svg width="15" height="15" viewBox="0 0 15 15" fill="none">
+              <path
+                d="M11.89 1.11a1.5 1.5 0 012.12 2.12L4.5 12.75l-2.83.71.71-2.83L11.89 1.11z"
+                stroke="currentColor"
+                strokeWidth="1.25"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </button>
+        </div>
+
+        {loading && (
+          <div className="space-y-2 animate-pulse">
+            {CATEGORIES.map((c) => (
+              <div key={c} className="flex items-center gap-2">
+                <div className="w-10 h-3 bg-gray-100 rounded" />
+                <div className="flex-1 h-4 bg-gray-100 rounded" />
+              </div>
+            ))}
+          </div>
+        )}
+
+        {!loading && !hasRanks && (
+          <p className="text-sm text-gray-400">
+            No ranks set.{" "}
+            <button onClick={openEdit} className="underline text-gray-500">
+              Add your ranks
+            </button>{" "}
+            to see category analysis.
+          </p>
+        )}
+
+        {!loading && hasRanks && (
+          <div className="space-y-2">
+            {CATEGORIES.map((cat) => {
+              const rank = ranks[cat];
+              if (rank == null) return null;
+              return (
+                <div key={cat} className="flex items-center gap-3">
+                  <span className="w-10 text-xs font-medium text-gray-500 text-right shrink-0">
+                    {cat}
+                  </span>
+                  <div className="flex-1 bg-gray-100 rounded-full h-4 overflow-hidden">
+                    <div
+                      className={`h-full rounded-full ${rankColor(rank)} transition-all`}
+                      style={{ width: barWidth(rank) }}
+                    />
+                  </div>
+                  <span
+                    className={`w-6 text-xs font-semibold text-right shrink-0 ${rankTextColor(rank)}`}
+                  >
+                    {rank}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Edit modal */}
+      {editOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div
+            className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+            onClick={() => setEditOpen(false)}
+          />
+          <div className="relative bg-white rounded-2xl shadow-xl p-6 w-full max-w-sm mx-4 space-y-5">
+            <h2 className="text-lg font-semibold">Edit Category Ranks</h2>
+            <p className="text-xs text-gray-500">
+              Enter your rank for each category (1 = best, {TOTAL_TEAMS} = worst).
+            </p>
+            <div className="grid grid-cols-2 gap-3">
+              {CATEGORIES.map((cat) => (
+                <div key={cat} className="space-y-1">
+                  <label className="text-xs font-medium text-gray-500">{cat}</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={TOTAL_TEAMS}
+                    value={draft[cat] ?? ""}
+                    onChange={(e) => setDraft((d) => ({ ...d, [cat]: e.target.value }))}
+                    className="w-full px-2.5 py-1.5 rounded-lg border border-gray-200 text-sm outline-none focus:border-gray-400"
+                    placeholder="—"
+                  />
+                </div>
+              ))}
+            </div>
+            <div className="flex gap-2 pt-1">
+              <button
+                onClick={saveRanks}
+                disabled={saving}
+                className="flex-1 px-4 py-2 rounded-xl bg-black text-white text-sm font-medium disabled:opacity-40 transition"
+              >
+                {saving ? "Saving..." : "Save"}
+              </button>
+              <button
+                onClick={() => setEditOpen(false)}
+                className="px-4 py-2 rounded-xl border border-gray-200 text-sm text-gray-600 hover:border-gray-300 transition"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}

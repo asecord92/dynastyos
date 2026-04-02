@@ -100,6 +100,19 @@ def get_player_ids(sport: str) -> dict[str, dict]:
     return players
 
 
+def get_standings(league_id: str) -> list[dict]:
+    """
+    Returns flat array of team standings objects.
+    Each item: {teamId, teamName, points ("W-L-T"), rank, gamesBack, winPercentage}
+    Find your team by teamId, parse points.split("-") → [wins, losses, ties].
+    len(result) gives total teams in league.
+    """
+    url = f"{FANTRAX_BASE}/getStandings"
+    resp = httpx.get(url, params={"leagueId": league_id}, timeout=15)
+    resp.raise_for_status()
+    return resp.json()
+
+
 def get_league_info(league_id: str) -> dict:
     """
     Returns full league info including team names/IDs, scoring system,

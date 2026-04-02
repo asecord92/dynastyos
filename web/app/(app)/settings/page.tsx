@@ -20,11 +20,9 @@ type LeagueRow = {
   name: string;
   competitive_window: string | null;
   cap_philosophy: string | null;
-  team_weaknesses: string[] | null;
   goals: string | null;
 };
 
-const SCORING_CATEGORIES = ["R", "HR", "RBI", "SB", "OBP", "QS", "SV", "K", "ERA", "WHIP"];
 const COMPETITIVE_WINDOWS = ["contending", "building", "rebuilding"] as const;
 
 function UnsavedModal({ onSave, onDiscard, onCancel }: {
@@ -72,21 +70,18 @@ export default function SettingsPage() {
 
   // Saved (server) values — used to detect dirty state
   const [savedWindow, setSavedWindow] = useState<string | null>(null);
-  const [savedWeaknesses, setSavedWeaknesses] = useState<string[]>([]);
   const [savedCapPhilosophy, setSavedCapPhilosophy] = useState("");
   const [savedGoals, setSavedGoals] = useState("");
 
   // Working (local) values
   const [leagueName, setLeagueName] = useState("");
   const [competitiveWindow, setCompetitiveWindow] = useState<string | null>(null);
-  const [teamWeaknesses, setTeamWeaknesses] = useState<string[]>([]);
   const [capPhilosophy, setCapPhilosophy] = useState("");
   const [goals, setGoals] = useState("");
 
   // Dirty state
   const isDirty =
     competitiveWindow !== savedWindow ||
-    JSON.stringify([...teamWeaknesses].sort()) !== JSON.stringify([...savedWeaknesses].sort()) ||
     capPhilosophy !== savedCapPhilosophy ||
     goals !== savedGoals;
 
@@ -116,7 +111,7 @@ export default function SettingsPage() {
     if (!leagueId) return;
     supabase
       .from("leagues")
-      .select("mode, fantrax_league_id, name, competitive_window, cap_philosophy, team_weaknesses, goals")
+      .select("mode, fantrax_league_id, name, competitive_window, cap_philosophy, goals")
       .eq("id", leagueId)
       .single()
       .then(({ data }: { data: LeagueRow | null }) => {
@@ -126,17 +121,14 @@ export default function SettingsPage() {
         setLeagueName(data.name ?? "");
 
         const cw = data.competitive_window ?? null;
-        const tw = data.team_weaknesses ?? [];
         const cp = data.cap_philosophy ?? "";
         const g = data.goals ?? "";
 
         setCompetitiveWindow(cw);
-        setTeamWeaknesses(tw);
         setCapPhilosophy(cp);
         setGoals(g);
 
         setSavedWindow(cw);
-        setSavedWeaknesses(tw);
         setSavedCapPhilosophy(cp);
         setSavedGoals(g);
       });
@@ -181,24 +173,16 @@ export default function SettingsPage() {
       .from("leagues")
       .update({
         competitive_window: competitiveWindow,
-        team_weaknesses: teamWeaknesses,
         cap_philosophy: capPhilosophy || null,
         goals: goals || null,
       })
       .eq("id", leagueId);
     if (!error) {
       setSavedWindow(competitiveWindow);
-      setSavedWeaknesses(teamWeaknesses);
       setSavedCapPhilosophy(capPhilosophy);
       setSavedGoals(goals);
       showToast();
     }
-  }
-
-  function toggleWeakness(cat: string) {
-    setTeamWeaknesses((prev) =>
-      prev.includes(cat) ? prev.filter((c) => c !== cat) : [...prev, cat]
-    );
   }
 
   // Modal actions
@@ -213,7 +197,6 @@ export default function SettingsPage() {
 
   function handleModalDiscard() {
     setCompetitiveWindow(savedWindow);
-    setTeamWeaknesses(savedWeaknesses);
     setCapPhilosophy(savedCapPhilosophy);
     setGoals(savedGoals);
     setShowModal(false);
@@ -422,28 +405,6 @@ export default function SettingsPage() {
                     }`}
                   >
                     {w.charAt(0).toUpperCase() + w.slice(1)}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Team Weaknesses */}
-            <div className="space-y-2">
-              <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">
-                Category Weaknesses
-              </label>
-              <div className="flex flex-wrap gap-2">
-                {SCORING_CATEGORIES.map((cat) => (
-                  <button
-                    key={cat}
-                    onClick={() => toggleWeakness(cat)}
-                    className={`px-3 py-1.5 rounded-lg text-sm font-medium border transition ${
-                      teamWeaknesses.includes(cat)
-                        ? "bg-black text-white border-black"
-                        : "bg-white text-gray-600 border-gray-200 hover:border-gray-400"
-                    }`}
-                  >
-                    {cat}
                   </button>
                 ))}
               </div>
