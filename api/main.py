@@ -611,14 +611,16 @@ async def dashboard_start_sit(
                 f"{cat}:{rank}" for cat, rank in category_ranks.items()
             )
 
-        prompt = f"""You are a fantasy baseball analyst for a dynasty contract league. Use web search to get current player news, injury status, and recent performance.
+        prompt = f"""You are a fantasy baseball analyst for a dynasty contract league.
 
 Team: {team_name}
 Active/Reserve Roster (name | position | MLB team | salary):
 {chr(10).join(player_lines) if player_lines else "No active players."}
 {ranks_line}
 
-Evaluate each player's start/sit outlook for the current week. Use web search to check injuries, recent form, and matchups. For borderline starters, factor in the team's weakest categories (high rank numbers) when deciding.
+Use web search to check current status for this roster. Limit yourself to 2-3 searches total — search for a general injury report and maybe one targeted search for a specific player concern. Do not search every player individually.
+
+Based on what you find, assign each player a start/sit recommendation for the current week. Consider: injuries, recent form, upcoming matchups, platoon situations.
 
 Return ONLY a ```json code block — no other text before or after it:
 {{
