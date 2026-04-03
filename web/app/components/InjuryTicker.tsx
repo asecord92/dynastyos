@@ -4,24 +4,25 @@ import { useEffect, useState } from "react";
 import type { Alert } from "./StartSitPanel";
 
 export function InjuryTicker({ alerts }: { alerts: Alert[] }) {
+  const displayed = alerts.filter((a) => a.status !== "MiLB");
   const [index, setIndex] = useState(0);
   const [visible, setVisible] = useState(true);
 
   useEffect(() => {
-    if (alerts.length <= 1) return;
+    if (displayed.length <= 1) return;
     const id = setInterval(() => {
       setVisible(false);
       setTimeout(() => {
-        setIndex((i) => (i + 1) % alerts.length);
+        setIndex((i) => (i + 1) % displayed.length);
         setVisible(true);
       }, 300);
     }, 8000);
     return () => clearInterval(id);
-  }, [alerts.length]);
+  }, [displayed.length]);
 
-  if (alerts.length === 0) return null;
+  if (displayed.length === 0) return null;
 
-  const alert = alerts[index] ?? alerts[0];
+  const alert = displayed[index] ?? displayed[0];
 
   function headerLabel(status: string | undefined): string {
     if (!status) return "Status Alert";
