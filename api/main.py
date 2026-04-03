@@ -867,7 +867,7 @@ Do not include any preamble or introduction. Start directly with the first playe
         ai = get_ai_client()
         response = ai.messages.create(
             model="claude-opus-4-5",
-            max_tokens=2000,
+            max_tokens=4000,
             tools=[{"type": "web_search_20250305", "name": "web_search"}],
             messages=[{"role": "user", "content": prompt}],
         )
