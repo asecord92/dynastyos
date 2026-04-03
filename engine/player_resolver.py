@@ -1,5 +1,6 @@
 import httpx
 from .supabase_client import get_supabase
+from .mlb_stats_client import fetch_roster_status
 
 MLB_STATS_BASE = "https://statsapi.mlb.com/api/v1"
 
@@ -125,4 +126,59 @@ def resolve_player(
         "confidence": confidence,
     }
     save_mapping(mapping)
+
+    # Enrich with current roster status (separate update so ID mapping is saved even if this fails)
+    try:
+        status_data = fetch_roster_status(person["id"])
+        supabase = get_supabase()
+        supabase.table("player_id_map").update({
+            "roster_status": status_data["roster_status"],
+            "il_type": status_data["il_type"],
+        }).eq("fantrax_id", fantrax_id).execute()
+    except Exception as e:
+        print(f"[resolver] Failed to update roster status for {fantrax_id}: {e}")
+
     return mapping
+
+
+def refresh_roster_statuses(fantrax_ids: list[str]) -> None:
+    """
+    Refreshes roster_status and il_type for a list of fantrax IDs.
+    Called after each full sync since roster status changes frequently
+    unlike the underlying ID mappings.
+    Never raises.
+    """
+    if not fantrax_ids:
+        return
+
+    try:
+        supabase = get_supabase()
+        result = (
+            supabase.table("player_id_map")
+            .select("fantrax_id,mlb_id")
+            .in_("fantrax_id", fantrax_ids)
+            .execute()
+        )
+        rows = result.data or []
+    except Exception as e:
+        print(f"[refresh_status] Failed to load player IDs: {e}")
+        return
+
+    print(f"[refresh_status] Refreshing roster status for {len(rows)} players...")
+    updated = 0
+    for row in rows:
+        fantrax_id = row.get("fantrax_id", "")
+        mlb_id = row.get("mlb_id")
+        if not mlb_id:
+            continue
+        try:
+            status_data = fetch_roster_status(int(mlb_id))
+            supabase.table("player_id_map").update({
+                "roster_status": status_data["roster_status"],
+                "il_type": status_data["il_type"],
+            }).eq("fantrax_id", fantrax_id).execute()
+            updated += 1
+        except Exception as e:
+            print(f"[refresh_status] Failed for {fantrax_id}: {e}")
+
+    print(f"[refresh_status] Done — {updated}/{len(rows)} statuses updated")

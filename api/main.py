@@ -15,7 +15,7 @@ from engine.roster_analyzer import analyze_roster_from_csv
 from engine.fantrax_client import get_leagues, get_team_rosters, get_player_ids, get_league_info, get_standings
 from engine.supabase_client import get_supabase
 from engine.fantrax_mapper import map_roster_to_analyze_result
-from engine.player_resolver import resolve_player
+from engine.player_resolver import resolve_player, refresh_roster_statuses
 from engine.trade_analyzer import build_trade_context, build_trade_prompt, SYSTEM_PROMPT
 from engine.auth import get_current_user
 
@@ -100,6 +100,7 @@ def resolve_all_players(rosters: dict, player_names: dict) -> None:
 
     resolved = 0
     unresolved = []
+    processed_ids = []
     for item in all_items:
         fantrax_id = item.get("id", "")
         player_data = player_names.get(fantrax_id, {})
@@ -110,12 +111,17 @@ def resolve_all_players(rosters: dict, player_names: dict) -> None:
         mapping = resolve_player(fantrax_id, name, team)
         if mapping:
             resolved += 1
+            processed_ids.append(fantrax_id)
         else:
             unresolved.append(name)
 
     print(f"[bg] Resolution complete: {resolved} resolved, {len(unresolved)} unresolved")
     if unresolved:
         print(f"[bg] Unresolved: {unresolved}")
+
+    # Refresh roster statuses for all processed players — status changes frequently
+    if processed_ids:
+        refresh_roster_statuses(processed_ids)
 
 
 def _check_cache(sb, league_id: str, widget: str, force: bool) -> dict | None:
@@ -573,25 +579,64 @@ async def dashboard_start_sit(
         fantrax_ids = [item.get("id") for item in roster_items if item.get("id")]
         name_result = (
             sb.table("player_id_map")
-            .select("fantrax_id,full_name,mlb_team")
+            .select("fantrax_id,full_name,mlb_team,roster_status,il_type")
             .in_("fantrax_id", fantrax_ids)
             .execute()
         )
         name_map = {r["fantrax_id"]: r["full_name"] for r in (name_result.data or [])}
         team_map = {r["fantrax_id"]: r.get("mlb_team", "") for r in (name_result.data or [])}
+        status_map = {r["fantrax_id"]: r.get("roster_status") for r in (name_result.data or [])}
+        il_type_map = {r["fantrax_id"]: r.get("il_type") for r in (name_result.data or [])}
 
-        # Pre-build IL alerts directly from roster status — no AI call needed
+        # Build data-grounded alerts — no AI needed for these
         il_alerts = []
-        for item in roster_items:
-            if item.get("status", "").upper() == "INJURED_RESERVE":
-                fid = item.get("id", "")
-                name = name_map.get(fid) or item.get("name", fid)
-                il_alerts.append({"name": name, "status": "IL", "detail": "Currently on Injured Reserve"})
+        milb_alerts = []
+        edge_il_alerts = []
 
-        # Only pass non-IL players to AI for start/sit analysis
+        for item in roster_items:
+            fid = item.get("id", "")
+            name = name_map.get(fid) or item.get("name", fid)
+            fantrax_status = item.get("status", "").upper()
+
+            if fantrax_status == "INJURED_RESERVE":
+                il_type = il_type_map.get(fid) or "IL"
+                il_alerts.append({
+                    "name": name,
+                    "status": il_type,
+                    "detail": f"On {il_type} — check return timeline",
+                })
+            elif fantrax_status == "MINORS":
+                milb_alerts.append({
+                    "name": name,
+                    "status": "MiLB",
+                    "detail": "Currently in minors — not eligible to start",
+                })
+
+        # Edge case: Fantrax shows ACTIVE/RESERVE but MLB roster says IL
+        for item in roster_items:
+            fid = item.get("id", "")
+            if item.get("status", "").upper() in ("ACTIVE", "RESERVE") and status_map.get(fid) == "IL":
+                name = name_map.get(fid) or item.get("name", fid)
+                il_type = il_type_map.get(fid) or "IL"
+                edge_il_alerts.append({
+                    "name": name,
+                    "status": il_type,
+                    "detail": f"On {il_type} per MLB roster — verify in Fantrax",
+                })
+
+        # Only pass truly startable players to AI
         startable_items = [
             item for item in roster_items
             if item.get("status", "").upper() in ("ACTIVE", "RESERVE")
+            and status_map.get(item.get("id", "")) not in ("IL", "Minors")
+        ]
+
+        # Short-term IL players to include in AI research (return timelines)
+        short_term_il_names = [
+            name_map.get(item.get("id", "")) or item.get("name", "")
+            for item in roster_items
+            if item.get("status", "").upper() == "INJURED_RESERVE"
+            and il_type_map.get(item.get("id", "")) in ("10-Day IL", "15-Day IL")
         ]
 
         player_lines = []
@@ -611,13 +656,21 @@ async def dashboard_start_sit(
                 f"{cat}:{rank}" for cat, rank in category_ranks.items()
             )
 
+        short_term_il_section = ""
+        if short_term_il_names:
+            short_term_il_section = f"""
+Short-term IL players (10-Day or 15-Day) — search for return timeline for each:
+{chr(10).join(f"- {n}" for n in short_term_il_names)}
+If a return timeline is found, include each in the alerts array with status "DTD" or the IL type and the expected return detail.
+"""
+
         prompt = f"""You are a fantasy baseball analyst for a dynasty contract league.
 
 Team: {team_name}
 Active/Reserve Roster (name | position | MLB team | salary):
 {chr(10).join(player_lines) if player_lines else "No active players."}
 {ranks_line}
-
+{short_term_il_section}
 Use web search to check current status for this roster. Limit yourself to 2-3 searches total — search for a general injury report and maybe one targeted search for a specific player concern. Do not search every player individually.
 
 Based on what you find, assign each player a start/sit recommendation for the current week. Consider: injuries, recent form, upcoming matchups, platoon situations.
@@ -634,8 +687,8 @@ Return ONLY a ```json code block — no other text before or after it:
 
 Rules:
 - recommendation must be exactly: start, monitor, or sit
-- alerts must only include players who are DTD — IL players are handled separately
-- Include every player from the roster above in the players array"""
+- alerts: include DTD players and any short-term IL return timelines found — do not re-list confirmed IL/MiLB players
+- Include every player from the Active/Reserve roster above in the players array"""
 
         ai = get_ai_client()
         response = ai.messages.create(
@@ -662,8 +715,8 @@ Rules:
                 except Exception:
                     pass
 
-        # Prepend IL alerts (from roster data) before any DTD alerts (from AI)
-        structured["alerts"] = il_alerts + structured.get("alerts", [])
+        # Final alerts order: IL → MiLB → edge-case IL → DTD/return-timeline from AI
+        structured["alerts"] = il_alerts + milb_alerts + edge_il_alerts + structured.get("alerts", [])
 
         updated_at = _upsert_cache(sb, body.league_id, "start_sit", _json.dumps(structured))
         return {"content": structured, "updated_at": updated_at}

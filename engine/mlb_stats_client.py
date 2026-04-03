@@ -183,6 +183,59 @@ async def fetch_recent_stats(mlb_id: int, season: int, player_type: str) -> dict
     return {}
 
 
+def fetch_roster_status(mlb_id: int) -> dict:
+    """
+    Fetches current MLB roster status for a player.
+    Returns {"roster_status": "Active"|"IL"|"Minors"|None, "il_type": "10-Day IL"|...|None}.
+    Never raises.
+    """
+    try:
+        resp = httpx.get(
+            f"{MLB_STATS_BASE}/people/{mlb_id}",
+            params={"hydrate": "rosterEntries"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        people = resp.json().get("people", [])
+        if not people:
+            return {"roster_status": None, "il_type": None}
+
+        person = people[0]
+
+        # Prefer rosterEntries — find the active entry (no endDate)
+        entries = person.get("rosterEntries", [])
+        active_entry = next((e for e in entries if e.get("endDate") is None), None)
+        if active_entry is None and entries:
+            active_entry = entries[0]
+
+        if active_entry:
+            description = active_entry.get("status", {}).get("description", "")
+        else:
+            # Fall back to top-level status
+            description = person.get("status", {}).get("description", "")
+
+        d = description.lower()
+
+        if "60-day" in d or "60 day" in d:
+            return {"roster_status": "IL", "il_type": "60-Day IL"}
+        if "15-day" in d or "15 day" in d:
+            return {"roster_status": "IL", "il_type": "15-Day IL"}
+        if "10-day" in d or "10 day" in d:
+            return {"roster_status": "IL", "il_type": "10-Day IL"}
+        if "injured" in d or "il" in d:
+            return {"roster_status": "IL", "il_type": "IL"}
+        if "minor" in d or "rehabilitation" in d:
+            return {"roster_status": "Minors", "il_type": None}
+        if "active" in d:
+            return {"roster_status": "Active", "il_type": None}
+
+        return {"roster_status": description or None, "il_type": None}
+
+    except Exception as e:
+        print(f"[roster_status] Error fetching status for mlb_id {mlb_id}: {e}")
+        return {"roster_status": None, "il_type": None}
+
+
 async def get_player_stats(mlb_id: int, player_type: str) -> dict | None:
     """
     Main entry point. Returns stats for a player, using cache if fresh.
