@@ -715,8 +715,23 @@ Rules:
                 except Exception:
                     pass
 
-        # Final alerts order: IL → MiLB → edge-case IL → DTD/return-timeline from AI
-        structured["alerts"] = il_alerts + milb_alerts + edge_il_alerts + structured.get("alerts", [])
+        # Merge AI alerts into data-grounded alerts without duplicates.
+        # If the AI found a return timeline for a player already in the list, update
+        # the existing entry's detail rather than appending a second entry.
+        base_alerts = il_alerts + milb_alerts + edge_il_alerts
+        base_by_name = {a["name"].lower(): a for a in base_alerts}
+
+        for ai_alert in structured.get("alerts", []):
+            key = ai_alert.get("name", "").lower()
+            if key in base_by_name:
+                # Enrich existing entry with AI-sourced detail if it adds information
+                if ai_alert.get("detail"):
+                    base_by_name[key]["detail"] = ai_alert["detail"]
+            else:
+                base_alerts.append(ai_alert)
+
+        # Final alerts order: IL → MiLB → edge-case IL → DTD (no duplicates)
+        structured["alerts"] = base_alerts
 
         updated_at = _upsert_cache(sb, body.league_id, "start_sit", _json.dumps(structured))
         return {"content": structured, "updated_at": updated_at}
