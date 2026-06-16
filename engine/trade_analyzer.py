@@ -1,7 +1,19 @@
 import asyncio
+from datetime import datetime, timezone
 from typing import Any
 from .supabase_client import get_supabase
 from .mlb_stats_client import get_player_stats
+
+
+def _today_line() -> str:
+    """Anchor trade prompts to the current date so 'current value'/'this season'
+    reasoning isn't interpreted against the model's training cutoff."""
+    now = datetime.now(timezone.utc)
+    return (
+        f"Today's date is {now.strftime('%A, %B %d, %Y')}. All stats and rosters below "
+        f"reflect the current {now.year} MLB season — evaluate players on their current "
+        f"situation, not prior seasons."
+    )
 
 
 SCORING_CATEGORIES = {
@@ -327,7 +339,9 @@ manager's identified category weaknesses. The modified deal should be fair to bo
 tilt slightly in the manager's favor. Explain why the adjustment is justified."""
 
     return (
-        philosophy
+        _today_line()
+        + "\n"
+        + philosophy
         + trade_block
         + cap_impact
         + stats_block
@@ -481,6 +495,8 @@ def build_finder_prompt(context: dict[str, Any]) -> str:
     candidates = context["candidates"]
 
     lines = [
+        _today_line(),
+        "",
         f"The manager needs help in {category}. Below are the best targets across the "
         f"league for that category, ranked by their {stat_key.replace('_', ' ')} this season.",
         "",
