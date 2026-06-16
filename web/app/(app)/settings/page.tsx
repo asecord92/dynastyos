@@ -278,35 +278,45 @@ export default function SettingsPage() {
       const user = sessionData.session?.user;
       if (!user) throw new Error("Not logged in.");
 
+      // Reuse an existing row for this Fantrax league rather than inserting a new one.
+      // A new row means a new UUID, which orphans (and cascade-deletes) the league's
+      // cache, category ranks, and snapshots. Reconnecting should be non-destructive.
       const { data: existing } = await supabase
         .from("leagues")
         .select("id")
         .eq("owner_user_id", user.id)
         .eq("fantrax_league_id", picked.leagueId)
-        .single();
+        .maybeSingle();
 
+      let leagueRowId: string;
       if (existing) {
-        setConnectMsg("This league is already connected.");
-        setConnectLoading(false);
-        return;
+        leagueRowId = existing.id;
+        await supabase
+          .from("leagues")
+          .update({
+            fantrax_secret_id: secretId,
+            name: picked.leagueName,
+            sport: picked.sport,
+          })
+          .eq("id", existing.id);
+      } else {
+        const { data: newLeague, error } = await supabase
+          .from("leagues")
+          .insert({
+            owner_user_id: user.id,
+            name: picked.leagueName,
+            platform: "fantrax",
+            fantrax_secret_id: secretId,
+            fantrax_league_id: picked.leagueId,
+            sport: picked.sport,
+          })
+          .select("id")
+          .single();
+        if (error) throw new Error(error.message);
+        leagueRowId = newLeague.id;
       }
 
-      const { data: newLeague, error } = await supabase
-        .from("leagues")
-        .insert({
-          owner_user_id: user.id,
-          name: picked.leagueName,
-          platform: "fantrax",
-          fantrax_secret_id: secretId,
-          fantrax_league_id: picked.leagueId,
-          sport: picked.sport,
-        })
-        .select("id")
-        .single();
-
-      if (error) throw new Error(error.message);
-
-      setLeague(newLeague.id);
+      setLeague(leagueRowId);
       setConnectStep("done");
       setSecretId("");
       showToast();
@@ -319,14 +329,12 @@ export default function SettingsPage() {
       });
       if (syncRes.ok) {
         const syncJson = await syncRes.json();
-        if (user) {
-          await supabase.from("snapshots").upsert({
-            league_id: newLeague.id,
-            owner_user_id: user.id,
-            source: "fantrax",
-            data: syncJson,
-          }, { onConflict: "league_id,source" });
-        }
+        await supabase.from("snapshots").upsert({
+          league_id: leagueRowId,
+          owner_user_id: user.id,
+          source: "fantrax",
+          data: syncJson,
+        }, { onConflict: "league_id,source" });
       }
     } catch (e: any) {
       setConnectMsg(e?.message ?? "Something went wrong.");
@@ -558,7 +566,7 @@ export default function SettingsPage() {
                     </div>
                     {confirmDeleteId === l.id ? (
                       <div className="flex items-center gap-2">
-                        <span className="text-xs text-gray-500">Sure?</span>
+                        <span className="text-xs text-red-600">Erases ranks, history &amp; cache</span>
                         <button
                           onClick={() => deleteLeague(l.id)}
                           className="text-xs px-3 py-1 rounded-lg bg-red-600 text-white hover:bg-red-700 transition"
