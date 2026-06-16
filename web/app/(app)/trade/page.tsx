@@ -436,7 +436,7 @@ export default function TradePage() {
           </div>
 
           {mode === "build" && (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
           {/* Left — trade builder */}
           <div className="bg-white border rounded-2xl p-6 shadow-sm space-y-6">
             <h2 className="text-lg font-semibold">Build Trade</h2>
@@ -513,7 +513,7 @@ export default function TradePage() {
           )}
 
           {mode === "find" && (
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
               {/* Left — category picker */}
               <div className="bg-white border rounded-2xl p-6 shadow-sm space-y-4">
                 <h2 className="text-lg font-semibold">Find Targets</h2>
