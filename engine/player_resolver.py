@@ -173,10 +173,15 @@ def refresh_roster_statuses(fantrax_ids: list[str]) -> None:
             continue
         try:
             status_data = fetch_roster_status(int(mlb_id))
-            supabase.table("player_id_map").update({
+            update = {
                 "roster_status": status_data["roster_status"],
                 "il_type": status_data["il_type"],
-            }).eq("fantrax_id", fantrax_id).execute()
+            }
+            # Refresh the team too — it's frozen at first resolution otherwise, so an
+            # optioned-then-recalled player stays stuck on his old (AAA) team.
+            if status_data.get("mlb_team"):
+                update["mlb_team"] = status_data["mlb_team"]
+            supabase.table("player_id_map").update(update).eq("fantrax_id", fantrax_id).execute()
             updated += 1
         except Exception as e:
             print(f"[refresh_status] Failed for {fantrax_id}: {e}")

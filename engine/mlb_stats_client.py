@@ -193,20 +193,21 @@ async def fetch_recent_stats(mlb_id: int, season: int, player_type: str) -> dict
 
 def fetch_roster_status(mlb_id: int) -> dict:
     """
-    Fetches current MLB roster status for a player.
-    Returns {"roster_status": "Active"|"IL"|"Minors"|None, "il_type": "10-Day IL"|...|None}.
+    Fetches current MLB roster status + current team for a player.
+    Returns {"roster_status": "Active"|"IL"|"Minors"|None, "il_type": "10-Day IL"|...|None,
+             "mlb_team": str|None}.
     Never raises.
     """
     try:
         resp = httpx.get(
             f"{MLB_STATS_BASE}/people/{mlb_id}",
-            params={"hydrate": "rosterEntries"},
+            params={"hydrate": "rosterEntries(team),currentTeam"},
             timeout=10,
         )
         resp.raise_for_status()
         people = resp.json().get("people", [])
         if not people:
-            return {"roster_status": None, "il_type": None}
+            return {"roster_status": None, "il_type": None, "mlb_team": None}
 
         person = people[0]
 
@@ -215,6 +216,14 @@ def fetch_roster_status(mlb_id: int) -> dict:
         active_entry = next((e for e in entries if e.get("endDate") is None), None)
         if active_entry is None and entries:
             active_entry = entries[0]
+
+        # Current team: the active roster entry's team is correct whether the player
+        # is on the MLB club or optioned; fall back to the person's currentTeam.
+        team_name = None
+        if active_entry:
+            team_name = active_entry.get("team", {}).get("name")
+        if not team_name:
+            team_name = person.get("currentTeam", {}).get("name")
 
         if active_entry:
             description = active_entry.get("status", {}).get("description", "")
@@ -225,23 +234,25 @@ def fetch_roster_status(mlb_id: int) -> dict:
         d = description.lower()
 
         if "60-day" in d or "60 day" in d:
-            return {"roster_status": "IL", "il_type": "60-Day IL"}
-        if "15-day" in d or "15 day" in d:
-            return {"roster_status": "IL", "il_type": "15-Day IL"}
-        if "10-day" in d or "10 day" in d:
-            return {"roster_status": "IL", "il_type": "10-Day IL"}
-        if "injured" in d or "il" in d:
-            return {"roster_status": "IL", "il_type": "IL"}
-        if "minor" in d or "rehabilitation" in d:
-            return {"roster_status": "Minors", "il_type": None}
-        if "active" in d:
-            return {"roster_status": "Active", "il_type": None}
+            roster_status, il_type = "IL", "60-Day IL"
+        elif "15-day" in d or "15 day" in d:
+            roster_status, il_type = "IL", "15-Day IL"
+        elif "10-day" in d or "10 day" in d:
+            roster_status, il_type = "IL", "10-Day IL"
+        elif "injured" in d or "il" in d:
+            roster_status, il_type = "IL", "IL"
+        elif "minor" in d or "rehabilitation" in d:
+            roster_status, il_type = "Minors", None
+        elif "active" in d:
+            roster_status, il_type = "Active", None
+        else:
+            roster_status, il_type = (description or None), None
 
-        return {"roster_status": description or None, "il_type": None}
+        return {"roster_status": roster_status, "il_type": il_type, "mlb_team": team_name}
 
     except Exception as e:
         print(f"[roster_status] Error fetching status for mlb_id {mlb_id}: {e}")
-        return {"roster_status": None, "il_type": None}
+        return {"roster_status": None, "il_type": None, "mlb_team": None}
 
 
 # MiLB sport IDs, highest level first.
