@@ -25,12 +25,20 @@ function barWidth(rank: number): string {
   return `${Math.max(pct, 8)}%`;
 }
 
-export function CategoryRanksWidget({ leagueId }: { leagueId: string }) {
+export function CategoryRanksWidget({
+  leagueId,
+  myTeamId,
+}: {
+  leagueId: string;
+  myTeamId: string;
+}) {
   const [ranks, setRanks] = useState<Ranks>({});
   const [loading, setLoading] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
+  const [computing, setComputing] = useState(false);
+  const [updatedAt, setUpdatedAt] = useState<string | null>(null);
 
   async function fetchRanks() {
     if (!leagueId) return;
@@ -44,12 +52,50 @@ export function CategoryRanksWidget({ leagueId }: { leagueId: string }) {
       if (res.ok) {
         const json = await res.json();
         setRanks(json.ranks ?? {});
+        setUpdatedAt(json.updated_at ?? null);
       }
     } catch {}
     finally { setLoading(false); }
   }
 
   useEffect(() => { fetchRanks(); }, [leagueId]);
+
+  // Kick off the background approximation, then poll until the stored ranks change.
+  async function autoCalc() {
+    if (!leagueId || !myTeamId || computing) return;
+    setComputing(true);
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
+      const authHeader: Record<string, string> = token
+        ? { Authorization: `Bearer ${token}` }
+        : {};
+      const before = updatedAt;
+
+      const res = await fetch("/api/league/category-ranks/compute", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeader },
+        body: JSON.stringify({ league_id: leagueId, my_team_id: myTeamId }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+
+      for (let i = 0; i < 15; i++) {
+        await new Promise((r) => setTimeout(r, 6000));
+        const poll = await fetch(`/api/league/category-ranks?league_id=${leagueId}`, {
+          headers: authHeader,
+        });
+        if (poll.ok) {
+          const json = await poll.json();
+          if (json.updated_at && json.updated_at !== before) {
+            setRanks(json.ranks ?? {});
+            setUpdatedAt(json.updated_at);
+            break;
+          }
+        }
+      }
+    } catch {}
+    finally { setComputing(false); }
+  }
 
   function openEdit() {
     const current: Record<string, string> = {};
@@ -91,6 +137,15 @@ export function CategoryRanksWidget({ leagueId }: { leagueId: string }) {
       <div className="bg-white border rounded-2xl p-6 shadow-sm space-y-4 h-full">
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-semibold">Category Ranks</h2>
+          <div className="flex items-center gap-1">
+          <button
+            onClick={autoCalc}
+            disabled={computing || !myTeamId}
+            className="px-2 py-1 rounded-lg text-xs border border-gray-200 text-gray-500 hover:border-gray-300 disabled:opacity-40 transition"
+            title="Estimate ranks from current rosters"
+          >
+            {computing ? "Calculating…" : "Auto"}
+          </button>
           <button
             onClick={openEdit}
             className="p-1.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition"
@@ -107,6 +162,7 @@ export function CategoryRanksWidget({ leagueId }: { leagueId: string }) {
               />
             </svg>
           </button>
+          </div>
         </div>
 
         {loading && (
@@ -126,7 +182,15 @@ export function CategoryRanksWidget({ leagueId }: { leagueId: string }) {
             <button onClick={openEdit} className="underline text-gray-500">
               Add your ranks
             </button>{" "}
-            to see category analysis.
+            or{" "}
+            <button
+              onClick={autoCalc}
+              disabled={computing || !myTeamId}
+              className="underline text-gray-500 disabled:opacity-40"
+            >
+              {computing ? "calculating…" : "auto-calculate"}
+            </button>{" "}
+            from your rosters.
           </p>
         )}
 

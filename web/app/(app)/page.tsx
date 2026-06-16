@@ -154,7 +154,7 @@ export default function DashboardPage() {
               />
               <InjuryTicker alerts={alerts} />
             </div>
-            <CategoryRanksWidget leagueId={leagueId} />
+            <CategoryRanksWidget leagueId={leagueId} myTeamId={myTeamId} />
           </div>
         </>
       )}
