@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { supabase } from "../lib/supabaseClient";
+import { useState } from "react";
+import { useDashboardWidget } from "../lib/useDashboardWidget";
+import { MinorsPanel } from "./MinorsPanel";
 
 type PlayerRec = {
   name: string;
@@ -52,41 +53,21 @@ export function StartSitPanel({
   myTeamId: string;
   onAlertsChange?: (alerts: Alert[]) => void;
 }) {
-  const [data, setData] = useState<WidgetResponse | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function fetchData(force = false) {
-    if (!leagueId || !myTeamId) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const { data: sessionData } = await supabase.auth.getSession();
-      const token = sessionData.session?.access_token;
-      const res = await fetch("/api/dashboard/start_sit", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({ league_id: leagueId, my_team_id: myTeamId, force }),
-      });
-      if (!res.ok) throw new Error(await res.text());
-      const json = await res.json();
-      setData(json);
-      onAlertsChange?.(json.content?.alerts ?? []);
-    } catch (e: any) {
-      setError(e?.message ?? "Something went wrong.");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    fetchData();
-  }, [leagueId, myTeamId]);
-
   const [showAll, setShowAll] = useState(false);
+  const [tab, setTab] = useState<"startsit" | "minors">("startsit");
+  const { data, loading, error, refresh } = useDashboardWidget<WidgetResponse>(
+    "start_sit",
+    leagueId,
+    myTeamId,
+    { onSuccess: (json) => onAlertsChange?.(json.content?.alerts ?? []) }
+  );
+
+  const tabClass = (active: boolean) =>
+    `px-3 py-1.5 rounded-xl text-sm border transition ${
+      active
+        ? "bg-black text-white border-black"
+        : "bg-white text-gray-700 border-gray-200 hover:border-gray-300"
+    }`;
 
   const recOrder: Record<string, number> = { sit: 0, monitor: 1, start: 2 };
   const allPlayers = [...(data?.content?.players ?? [])].sort(
@@ -96,27 +77,38 @@ export function StartSitPanel({
 
   return (
     <div className="bg-white border rounded-2xl p-6 shadow-sm space-y-4">
-      {/* Header */}
+      {/* Tabs */}
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold">Start / Sit</h2>
-        <div className="flex items-center gap-3">
-          {data?.updated_at && (
-            <span className="text-xs text-gray-400">
-              Updated {timeAgo(data.updated_at)}
-            </span>
-          )}
-          <button
-            onClick={() => fetchData(true)}
-            disabled={loading}
-            className="px-3 py-1.5 rounded-xl text-xs border border-gray-200 hover:border-gray-300 disabled:opacity-40 transition"
-          >
-            {loading ? "Loading..." : "Refresh"}
+        <div className="flex gap-2">
+          <button onClick={() => setTab("startsit")} className={tabClass(tab === "startsit")}>
+            Start / Sit
+          </button>
+          <button onClick={() => setTab("minors")} className={tabClass(tab === "minors")}>
+            Minors
           </button>
         </div>
+        {tab === "startsit" && (
+          <div className="flex items-center gap-3">
+            {data?.updated_at && (
+              <span className="text-xs text-gray-400">
+                Updated {timeAgo(data.updated_at)}
+              </span>
+            )}
+            <button
+              onClick={() => refresh(true)}
+              disabled={loading}
+              className="px-3 py-1.5 rounded-xl text-xs border border-gray-200 hover:border-gray-300 disabled:opacity-40 transition"
+            >
+              {loading ? "Loading..." : "Refresh"}
+            </button>
+          </div>
+        )}
       </div>
 
+      {tab === "minors" && <MinorsPanel leagueId={leagueId} myTeamId={myTeamId} />}
+
       {/* Loading skeleton */}
-      {loading && !data && (
+      {tab === "startsit" && loading && !data && (
         <div className="space-y-3 animate-pulse">
           {[...Array(6)].map((_, i) => (
             <div key={i} className="flex items-center gap-3">
@@ -128,17 +120,17 @@ export function StartSitPanel({
       )}
 
       {/* Error */}
-      {error && (
+      {tab === "startsit" && error && (
         <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-xl p-3">
           {error}{" "}
-          <button onClick={() => fetchData()} className="underline">
+          <button onClick={() => refresh()} className="underline">
             Retry
           </button>
         </div>
       )}
 
       {/* Player rows */}
-      {!loading && players.length > 0 && (
+      {tab === "startsit" && !loading && players.length > 0 && (
         <div className="divide-y divide-gray-50">
           {players.map((p, i) => (
             <div key={i} className="py-2.5 flex items-start gap-3">
@@ -174,7 +166,7 @@ export function StartSitPanel({
       )}
 
       {/* Show all toggle */}
-      {!loading && allPlayers.length > 6 && (
+      {tab === "startsit" && !loading && allPlayers.length > 6 && (
         <button
           onClick={() => setShowAll((s) => !s)}
           className="px-3 py-1.5 rounded-xl text-xs border border-gray-200 hover:border-gray-300 transition"
@@ -184,7 +176,7 @@ export function StartSitPanel({
       )}
 
       {/* Empty state */}
-      {!loading && !error && data && players.length === 0 && (
+      {tab === "startsit" && !loading && !error && data && players.length === 0 && (
         <p className="text-sm text-gray-400">No recommendations yet. Try refreshing.</p>
       )}
     </div>

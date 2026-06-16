@@ -1,8 +1,28 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { supabase } from "../../lib/supabaseClient";
 import { useLeague } from "../../lib/useLeague";
+import { authedFetch } from "../../lib/useDashboardWidget";
+
+const CATEGORIES = ["R", "HR", "RBI", "SB", "OBP", "QS", "SV", "K", "ERA", "WHIP"];
+
+type Candidate = {
+  fantrax_id: string;
+  name: string;
+  position: string;
+  salary: number;
+  contract: string;
+  owner_team_id: string;
+  owner_team_name: string;
+  stat_value: number;
+};
+
+type FinderResult = {
+  target_category: string;
+  candidates: Candidate[];
+  analysis: string;
+};
 
 type TeamRoster = {
   fantrax_team_id: string;
@@ -193,6 +213,13 @@ export default function TradePage() {
   const [streamText, setStreamText] = useState("");
   const [error, setError] = useState<string | null>(null);
 
+  const [mode, setMode] = useState<"build" | "find">("build");
+  const [finderLoading, setFinderLoading] = useState(false);
+  const [finderError, setFinderError] = useState<string | null>(null);
+  const [finder, setFinder] = useState<FinderResult | null>(null);
+  // Carries a prefill target across the opponent-change effect (which clears receiving).
+  const pendingReceiveRef = useRef<string | null>(null);
+
   useEffect(() => {
     if (!leagueId) return;
 
@@ -259,8 +286,46 @@ export default function TradePage() {
     if (oppTeam) {
       setOppPlayers(buildPlayerOptions(oppTeam.roster_items, playerNameMap));
     }
-    setReceiving([]);
+    // Preserve a prefilled target (from the Trade Finder), else clear selection.
+    if (pendingReceiveRef.current) {
+      setReceiving([pendingReceiveRef.current]);
+      pendingReceiveRef.current = null;
+    } else {
+      setReceiving([]);
+    }
   }, [opponentTeamId, teams, playerNameMap]);
+
+  async function runFinder(category?: string) {
+    if (!leagueId || !myTeamId) return;
+    setFinderLoading(true);
+    setFinderError(null);
+    try {
+      const res = await authedFetch("/api/trade/finder", {
+        method: "POST",
+        body: JSON.stringify({
+          league_id: leagueId,
+          my_team_id: myTeamId,
+          target_category: category ?? null,
+        }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      setFinder((await res.json()) as FinderResult);
+    } catch (e: unknown) {
+      setFinderError(e instanceof Error ? e.message : "Something went wrong.");
+    } finally {
+      setFinderLoading(false);
+    }
+  }
+
+  function targetPlayer(c: Candidate) {
+    setMode("build");
+    if (opponentTeamId === c.owner_team_id) {
+      setReceiving([c.fantrax_id]);
+    } else {
+      pendingReceiveRef.current = c.fantrax_id;
+      setOpponentTeamId(c.owner_team_id);
+    }
+  }
 
   function buildPlayerOptions(
     items: RosterItem[],
@@ -336,12 +401,19 @@ export default function TradePage() {
 
   const canAnalyze = !!(leagueId && myTeamId && opponentTeamId && offering.length > 0 && receiving.length > 0 && !loading);
 
+  const modeClass = (active: boolean) =>
+    `px-3 py-1.5 rounded-xl text-sm border transition ${
+      active
+        ? "bg-black text-white border-black"
+        : "bg-white text-gray-700 border-gray-200 hover:border-gray-300"
+    }`;
+
   return (
     <main className="space-y-8">
       <header className="space-y-1">
         <h1 className="text-3xl font-semibold">Trade Analyzer</h1>
         <p className="text-gray-700">
-          Build a trade, get a direct recommendation.
+          Build a specific trade, or find targets for a category you need.
         </p>
       </header>
 
@@ -352,7 +424,19 @@ export default function TradePage() {
       )}
 
       {leagueId && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="space-y-6">
+          {/* Mode toggle */}
+          <div className="flex gap-2">
+            <button onClick={() => setMode("build")} className={modeClass(mode === "build")}>
+              Build Trade
+            </button>
+            <button onClick={() => setMode("find")} className={modeClass(mode === "find")}>
+              Find Targets
+            </button>
+          </div>
+
+          {mode === "build" && (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* Left — trade builder */}
           <div className="bg-white border rounded-2xl p-6 shadow-sm space-y-6">
             <h2 className="text-lg font-semibold">Build Trade</h2>
@@ -425,6 +509,115 @@ export default function TradePage() {
 
             {streamText && <AnalysisRenderer text={streamText} />}
           </div>
+          </div>
+          )}
+
+          {mode === "find" && (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {/* Left — category picker */}
+              <div className="bg-white border rounded-2xl p-6 shadow-sm space-y-4">
+                <h2 className="text-lg font-semibold">Find Targets</h2>
+                <p className="text-sm text-gray-500">
+                  Pick a category you need help in. We&apos;ll rank the best targets across
+                  the league by their production in that category.
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {CATEGORIES.map((cat) => (
+                    <button
+                      key={cat}
+                      onClick={() => runFinder(cat)}
+                      disabled={finderLoading || !myTeamId}
+                      className={`px-3 py-1.5 rounded-xl text-sm border transition disabled:opacity-40 ${
+                        finder?.target_category === cat
+                          ? "bg-black text-white border-black"
+                          : "bg-white text-gray-700 border-gray-200 hover:border-gray-300"
+                      }`}
+                    >
+                      {cat}
+                    </button>
+                  ))}
+                </div>
+                <button
+                  onClick={() => runFinder()}
+                  disabled={finderLoading || !myTeamId}
+                  className="w-full px-4 py-3 rounded-xl bg-black text-white text-sm font-medium disabled:opacity-30 disabled:cursor-not-allowed transition hover:bg-gray-800"
+                >
+                  {finderLoading ? "Finding..." : "Find my weakest category"}
+                </button>
+                {finderError && (
+                  <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-xl p-3">
+                    {finderError}
+                  </div>
+                )}
+              </div>
+
+              {/* Right — results */}
+              <div className="space-y-4">
+                {!finder && !finderLoading && (
+                  <div className="bg-white border rounded-2xl p-6 shadow-sm text-sm text-gray-400">
+                    Pick a category to see acquisition targets.
+                  </div>
+                )}
+                {finderLoading && (
+                  <div className="bg-white border rounded-2xl p-6 shadow-sm text-sm text-gray-400 animate-pulse">
+                    Scanning the league...
+                  </div>
+                )}
+                {finder && !finderLoading && (
+                  <>
+                    <div className="bg-white border rounded-2xl p-6 shadow-sm space-y-3">
+                      <div className="text-xs font-semibold uppercase tracking-widest text-gray-400">
+                        Targets for {finder.target_category}
+                      </div>
+                      <div className="divide-y divide-gray-50">
+                        {finder.candidates.map((c) => (
+                          <button
+                            key={c.fantrax_id}
+                            onClick={() => targetPlayer(c)}
+                            className="w-full py-2.5 flex items-center justify-between gap-3 text-left hover:bg-gray-50 rounded-lg px-2 transition"
+                          >
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="text-sm font-medium text-gray-900">{c.name}</span>
+                                <span className="text-xs text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded">
+                                  {c.position}
+                                </span>
+                                <span className="text-xs text-gray-400">${c.salary}</span>
+                              </div>
+                              <p className="text-xs text-gray-400 mt-0.5">{c.owner_team_name}</p>
+                            </div>
+                            <span className="shrink-0 text-sm font-semibold text-gray-900">
+                              {finder.target_category} {c.stat_value}
+                            </span>
+                          </button>
+                        ))}
+                        {finder.candidates.length === 0 && (
+                          <p className="text-sm text-gray-400 py-2">No candidates found.</p>
+                        )}
+                      </div>
+                      <p className="text-xs text-gray-400">
+                        Click a target to prefill the trade builder.
+                      </p>
+                    </div>
+                    {finder.analysis && (
+                      <div className="bg-white border rounded-2xl p-5 shadow-sm">
+                        <div className="text-xs font-semibold uppercase tracking-widest text-gray-400 mb-3">
+                          Recommendation
+                        </div>
+                        <div className="space-y-3">
+                          {finder.analysis.split("\n\n").map((para, i) => (
+                            <p key={i} className="text-sm text-gray-700 leading-relaxed">
+                              {para.trim()}
+                            </p>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       )}
     </main>

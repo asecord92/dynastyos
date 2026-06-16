@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { supabase } from "../lib/supabaseClient";
+import { useState } from "react";
+import { useDashboardWidget } from "../lib/useDashboardWidget";
 
 type WidgetData = { content: string; updated_at: string };
 
@@ -52,41 +52,13 @@ export function NewsWidget({
   leagueId: string;
   myTeamId: string;
 }) {
-  const [data, setData] = useState<WidgetData | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
-
-  async function fetchData(force = false) {
-    if (!leagueId || !myTeamId) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const { data: sessionData } = await supabase.auth.getSession();
-      const accessToken = sessionData.session?.access_token;
-
-      const res = await fetch("/api/dashboard/news", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
-        },
-        body: JSON.stringify({ league_id: leagueId, my_team_id: myTeamId, force }),
-      });
-
-      if (!res.ok) throw new Error(await res.text());
-      setData(await res.json());
-      setExpanded(false);
-    } catch (e: any) {
-      setError(e?.message ?? "Something went wrong.");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    fetchData();
-  }, [leagueId, myTeamId]);
+  const { data, loading, error, refresh } = useDashboardWidget<WidgetData>(
+    "news",
+    leagueId,
+    myTeamId,
+    { onSuccess: () => setExpanded(false) }
+  );
 
   return (
     <div className="bg-white border rounded-2xl p-6 shadow-sm space-y-4">
@@ -99,7 +71,7 @@ export function NewsWidget({
             </span>
           )}
           <button
-            onClick={() => fetchData(true)}
+            onClick={() => refresh(true)}
             disabled={loading}
             className="px-3 py-1.5 rounded-xl text-xs border border-gray-200 hover:border-gray-300 disabled:opacity-40 transition"
           >
@@ -119,7 +91,7 @@ export function NewsWidget({
       {error && (
         <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-xl p-3">
           {error}{" "}
-          <button onClick={() => fetchData()} className="underline">
+          <button onClick={() => refresh()} className="underline">
             Retry
           </button>
         </div>

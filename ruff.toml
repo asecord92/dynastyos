@@ -1,0 +1,9 @@
+line-length = 100
+
+[lint]
+# Default rule set (pyflakes + a subset of pycodestyle). E501 (line length) is
+# intentionally not enforced — only flag real correctness issues, not formatting.
+extend-ignore = ["E501"]
+
+[lint.per-file-ignores]
+"engine/__init__.py" = ["F401"]

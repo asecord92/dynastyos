@@ -236,6 +236,118 @@ def fetch_roster_status(mlb_id: int) -> dict:
         return {"roster_status": None, "il_type": None}
 
 
+# MiLB sport IDs, highest level first.
+MILB_SPORT_IDS = [(11, "AAA"), (12, "AA"), (13, "A+"), (14, "A")]
+
+
+def _to_float(v) -> float | None:
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+async def _fetch_milb_level_splits(
+    client: httpx.AsyncClient, mlb_id: int, group: str, season: int, sport_id: int, **extra
+) -> list:
+    """Fetch stat splits for one MiLB level; returns [] on any error. The API
+    accepts only a single sportId per call (comma-joined values return nothing)."""
+    try:
+        resp = await client.get(
+            f"{MLB_STATS_BASE}/people/{mlb_id}/stats",
+            params={"group": group, "season": season, "sportId": sport_id, **extra},
+        )
+        return resp.json().get("stats", [{}])[0].get("splits", [])
+    except Exception:
+        return []
+
+
+async def get_milb_player_summary(mlb_id: int, player_type: str) -> dict | None:
+    """
+    Returns current-season MiLB stats for a prospect at the level they've played
+    most, plus a stats-grounded trend (recent ~30 days vs season). Never raises.
+    Returns None if the player has no MiLB stats this season.
+
+    Shape: {"level": "AA", "stat_line": "...", "trend": "up"|"down"|"steady"}
+    """
+    season = datetime.now().year
+    group = "hitting" if player_type == "hitter" else "pitching"
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            # One season call per level; pick the level with the most games.
+            level_results = await asyncio.gather(*[
+                _fetch_milb_level_splits(client, mlb_id, group, season, sid, stats="season")
+                for sid, _ in MILB_SPORT_IDS
+            ])
+
+            best = None  # (sport_id, label, stat)
+            for (sid, label), splits in zip(MILB_SPORT_IDS, level_results):
+                if not splits:
+                    continue
+                stat = splits[0].get("stat", {})
+                games = stat.get("gamesPlayed") or stat.get("gamesStarted") or 0
+                if best is None or games > (best[2].get("gamesPlayed") or best[2].get("gamesStarted") or 0):
+                    best = (sid, label, stat)
+
+            if best is None:
+                return None
+            sport_id, level, season_stat = best
+
+            # Recent form at the same level (last 30 days) for the trend signal.
+            end = datetime.now()
+            start = end - timedelta(days=30)
+            recent_splits = await _fetch_milb_level_splits(
+                client, mlb_id, group, season, sport_id,
+                stats="byDateRange",
+                startDate=start.strftime("%m/%d/%Y"),
+                endDate=end.strftime("%m/%d/%Y"),
+            )
+        recent_stat = next(
+            (s.get("stat", {}) for s in recent_splits if s.get("sport", {}).get("id") == sport_id),
+            {},
+        )
+    except Exception as e:
+        print(f"[milb] Error building summary for mlb_id {mlb_id}: {e}")
+        return None
+
+    if player_type == "hitter":
+        stat_line = (
+            f"{season_stat.get('gamesPlayed','?')}G "
+            f"{season_stat.get('homeRuns','?')}HR {season_stat.get('runs','?')}R "
+            f"{season_stat.get('rbi','?')}RBI {season_stat.get('stolenBases','?')}SB "
+            f"{season_stat.get('avg','?')}/{season_stat.get('obp','?')}/{season_stat.get('slg','?')}"
+        )
+        season_ops = _to_float(season_stat.get("ops"))
+        recent_ops = _to_float(recent_stat.get("ops"))
+        trend = _trend_from(recent_ops, season_ops, threshold=0.060, higher_is_better=True)
+    else:
+        stat_line = (
+            f"{season_stat.get('gamesStarted','?')}GS "
+            f"{season_stat.get('inningsPitched','?')}IP {season_stat.get('era','?')}ERA "
+            f"{season_stat.get('whip','?')}WHIP {season_stat.get('strikeOuts','?')}K"
+        )
+        season_era = _to_float(season_stat.get("era"))
+        recent_era = _to_float(recent_stat.get("era"))
+        trend = _trend_from(recent_era, season_era, threshold=0.75, higher_is_better=False)
+
+    return {"level": level, "stat_line": stat_line, "trend": trend}
+
+
+def _trend_from(recent, season, threshold: float, higher_is_better: bool) -> str:
+    """Compare recent vs season; 'up' means trending better, grounded in the gap."""
+    if recent is None or season is None:
+        return "steady"
+    delta = recent - season
+    if not higher_is_better:
+        delta = -delta
+    if delta >= threshold:
+        return "up"
+    if delta <= -threshold:
+        return "down"
+    return "steady"
+
+
 async def get_player_stats(mlb_id: int, player_type: str) -> dict | None:
     """
     Main entry point. Returns stats for a player, using cache if fresh.
