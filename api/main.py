@@ -18,6 +18,7 @@ from engine.supabase_client import get_supabase
 from engine.fantrax_mapper import map_roster_to_analyze_result
 from engine.player_resolver import resolve_player, refresh_roster_statuses
 from engine.mlb_stats_client import get_milb_player_summary
+from engine.category_ranks import compute_category_ranks
 from engine.trade_analyzer import (
     build_trade_context,
     build_trade_prompt,
@@ -337,6 +338,43 @@ async def upsert_category_ranks(
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+async def _run_category_ranks_compute(league_id: str, my_team_id: str) -> None:
+    """Background task: approximate category ranks from rosters + season stats and
+    write them to the category_ranks widget. Never raises."""
+    try:
+        ranks = await compute_category_ranks(league_id, my_team_id)
+        if not ranks:
+            return
+        sb = get_supabase()
+        sb.table("dashboard_cache").upsert(
+            {
+                "league_id": league_id,
+                "widget": "category_ranks",
+                "content": _json.dumps(ranks),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            },
+            on_conflict="league_id,widget",
+        ).execute()
+        print(f"[category_ranks] Computed ranks for league {league_id}: {ranks}")
+    except Exception:
+        traceback.print_exc()
+
+
+@app.post("/league/category-ranks/compute")
+async def compute_category_ranks_endpoint(
+    body: DashboardRequest,
+    background_tasks: BackgroundTasks,
+    user: dict = Depends(get_current_user),
+):
+    """Kick off an approximate category-rank calculation from current rosters + stats.
+    Runs in the background (fetching stats for the whole league is slow on a cold
+    cache); the client polls GET /league/category-ranks for the updated result."""
+    background_tasks.add_task(
+        _run_category_ranks_compute, body.league_id, body.my_team_id
+    )
+    return {"status": "started"}
 
 
 @app.post("/roster/analyze")
