@@ -7,6 +7,14 @@ MLB_STATS_BASE = "https://statsapi.mlb.com/api/v1"
 STATS_TTL_HOURS = 24
 
 
+def _splits(resp) -> list:
+    """First stat group's splits, tolerating an empty (not just missing) 'stats' list.
+    The API returns "stats": [] for players with no data for a group (e.g. a prospect's
+    expectedStatistics), which would otherwise IndexError on [0]."""
+    stats = resp.json().get("stats") or [{}]
+    return stats[0].get("splits", [])
+
+
 def is_stale(refreshed_at: str) -> bool:
     """Check if cached stats are older than TTL."""
     try:
@@ -41,7 +49,7 @@ def save_stats(mlb_id: int, season: int, player_type: str, season_stats: dict, r
             "season_stats": season_stats,
             "recent_stats": recent_stats,
             "refreshed_at": datetime.utcnow().isoformat(),
-        }, on_conflict="mlb_id,season").execute()
+        }, on_conflict="mlb_id").execute()
     except Exception as e:
         print(f"[stats] Supabase write error for mlb_id {mlb_id}: {e}")
 
@@ -66,7 +74,7 @@ async def fetch_hitting_stats(mlb_id: int, season: int) -> dict:
                 ),
             )
 
-        splits = season_resp.json().get("stats", [{}])[0].get("splits", [])
+        splits = _splits(season_resp)
         if splits:
             s = splits[0]["stat"]
             stats.update({
@@ -82,7 +90,7 @@ async def fetch_hitting_stats(mlb_id: int, season: int) -> dict:
                 "ops": s.get("ops"),
             })
 
-        splits = advanced_resp.json().get("stats", [{}])[0].get("splits", [])
+        splits = _splits(advanced_resp)
         if splits:
             s = splits[0]["stat"]
             stats.update({
@@ -92,7 +100,7 @@ async def fetch_hitting_stats(mlb_id: int, season: int) -> dict:
                 "whiff_rate": s.get("swingAndMisses"),
             })
 
-        splits = expected_resp.json().get("stats", [{}])[0].get("splits", [])
+        splits = _splits(expected_resp)
         if splits:
             s = splits[0]["stat"]
             stats.update({
@@ -123,7 +131,7 @@ async def fetch_pitching_stats(mlb_id: int, season: int) -> dict:
                 ),
             )
 
-        splits = season_resp.json().get("stats", [{}])[0].get("splits", [])
+        splits = _splits(season_resp)
         if splits:
             s = splits[0]["stat"]
             stats.update({
@@ -138,7 +146,7 @@ async def fetch_pitching_stats(mlb_id: int, season: int) -> dict:
                 "bb_per_9": s.get("walksPer9Inn"),
             })
 
-        splits = advanced_resp.json().get("stats", [{}])[0].get("splits", [])
+        splits = _splits(advanced_resp)
         if splits:
             s = splits[0]["stat"]
             stats.update({
@@ -172,7 +180,7 @@ async def fetch_recent_stats(mlb_id: int, season: int, player_type: str) -> dict
                     "endDate": end_date.strftime("%m/%d/%Y"),
                 },
             )
-        splits = resp.json().get("stats", [{}])[0].get("splits", [])
+        splits = _splits(resp)
         # Take the first split with sport id 1 (MLB only)
         for split in splits:
             if split.get("sport", {}).get("id") == 1:
@@ -257,7 +265,7 @@ async def _fetch_milb_level_splits(
             f"{MLB_STATS_BASE}/people/{mlb_id}/stats",
             params={"group": group, "season": season, "sportId": sport_id, **extra},
         )
-        return resp.json().get("stats", [{}])[0].get("splits", [])
+        return _splits(resp)
     except Exception:
         return []
 

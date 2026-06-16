@@ -338,6 +338,11 @@ tilt slightly in the manager's favor. Explain why the adjustment is justified.""
 
 
 # Category -> (player_type, season_stat key, higher_is_better) for the Trade Finder.
+# Cap how many opponent players we fetch live stats for, so the Trade Finder
+# returns within the gateway timeout. Ranked by salary (a strong proxy for value
+# in a contract league) before fetching, so realistic targets aren't dropped.
+CANDIDATE_LIMIT = 30
+
 CATEGORY_STAT = {
     "R": ("hitter", "runs", True),
     "HR": ("hitter", "home_runs", True),
@@ -411,12 +416,17 @@ async def build_finder_context(
     ).eq("league_id", league_id).neq("fantrax_team_id", my_team_id).execute()
     opp_rosters = roster_rows.data or []
 
-    # Resolve all opponent players to MLB IDs + player_type.
+    # Resolve all opponent players to MLB IDs + player_type. Batch the IN filter —
+    # the full opponent pool (~250 IDs) can exceed PostgREST's query-length limit.
     all_ids = [item["id"] for r in opp_rosters for item in r["roster_items"]]
-    id_map_rows = sb.table("player_id_map").select(
-        "fantrax_id, full_name, player_type, mlb_id, mlb_team"
-    ).in_("fantrax_id", all_ids).execute()
-    id_map = {row["fantrax_id"]: row for row in (id_map_rows.data or [])}
+    id_map = {}
+    for i in range(0, len(all_ids), 100):
+        chunk = all_ids[i:i + 100]
+        rows = sb.table("player_id_map").select(
+            "fantrax_id, full_name, player_type, mlb_id, mlb_team"
+        ).in_("fantrax_id", chunk).execute()
+        for row in (rows.data or []):
+            id_map[row["fantrax_id"]] = row
 
     # Candidate pool: opponent players of the relevant type with a resolved MLB ID.
     candidates = []
@@ -437,8 +447,12 @@ async def build_finder_context(
                 "owner_team_name": roster["team_name"],
             })
 
+    # Only fetch stats for the most valuable candidates (by salary) to stay fast.
+    candidates.sort(key=lambda c: c["salary"], reverse=True)
+    candidates = candidates[:CANDIDATE_LIMIT]
+
     # Fetch season stats (cached) with bounded concurrency, then score the category.
-    sem = asyncio.Semaphore(8)
+    sem = asyncio.Semaphore(12)
 
     async def score(cand):
         async with sem:
