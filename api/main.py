@@ -176,6 +176,18 @@ def _upsert_cache(sb, league_id: str, widget: str, content: str) -> str:
     return now
 
 
+def _today_line() -> str:
+    """Anchor AI prompts to the current date so 'current'/'recent' framing isn't
+    interpreted against the model's training cutoff (which produced season-start
+    feeling recommendations)."""
+    now = datetime.now(timezone.utc)
+    return (
+        f"Today's date is {now.strftime('%A, %B %d, %Y')}. Base your analysis on the "
+        f"current {now.year} MLB season and the last few weeks of games — do not rely "
+        f"on storylines or stats from earlier seasons."
+    )
+
+
 def _extract_text(response: anthropic.types.Message) -> str:
     text = "\n".join(
         block.text
@@ -587,6 +599,7 @@ async def dashboard_news(
             player_lines.append(f"- {name} ({pos}, {status})")
 
         prompt = f"""You are a fantasy baseball analyst. Use web search to find the latest injury and performance news for the following players.
+{_today_line()}
 
 Team: {team_name}
 Roster:
@@ -735,6 +748,7 @@ If a return timeline is found, include each in the alerts array with status "DTD
 """
 
         prompt = f"""You are a fantasy baseball analyst for a dynasty contract league.
+{_today_line()}
 
 Team: {team_name}
 Active/Reserve Roster (name | position | MLB team | salary):
@@ -915,6 +929,7 @@ async def dashboard_waiver(
         unclaimed_section = "\n".join(unclaimed_lines) if unclaimed_lines else "No unclaimed player data available."
 
         prompt = f"""You are a fantasy baseball analyst for a dynasty contract league. Use web search to evaluate and recommend waiver wire pickups.
+{_today_line()}
 
 League: {league_name} ({num_teams} teams)
 {chr(10).join(context_lines) if context_lines else ""}
