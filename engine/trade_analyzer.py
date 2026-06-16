@@ -335,3 +335,159 @@ tilt slightly in the manager's favor. Explain why the adjustment is justified.""
         + opp_roster_block
         + format_instructions
     )
+
+
+# Category -> (player_type, season_stat key, higher_is_better) for the Trade Finder.
+CATEGORY_STAT = {
+    "R": ("hitter", "runs", True),
+    "HR": ("hitter", "home_runs", True),
+    "RBI": ("hitter", "rbi", True),
+    "SB": ("hitter", "stolen_bases", True),
+    "OBP": ("hitter", "obp", True),
+    "QS": ("pitcher", "quality_starts", True),
+    "SV": ("pitcher", "saves", True),
+    "K": ("pitcher", "strikeouts", True),
+    "ERA": ("pitcher", "era", False),
+    "WHIP": ("pitcher", "whip", False),
+}
+
+
+def _stat_to_float(v) -> float | None:
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+async def build_finder_context(
+    league_id: str,
+    my_team_id: str,
+    target_category: str | None = None,
+) -> dict[str, Any]:
+    """
+    Category-first Trade Finder. Picks (or accepts) a category the manager needs
+    help in, then ranks opponent players across the league by their real
+    production in that category. Returns the league profile, the resolved target
+    category, and a stats-grounded candidate shortlist.
+    """
+    sb = get_supabase()
+
+    league_row = sb.table("leagues").select(
+        "name, competitive_window, cap_philosophy, team_weaknesses, goals"
+    ).eq("id", league_id).single().execute()
+    league = league_row.data or {}
+
+    # Resolve the target category — explicit, else the weakest ranked category.
+    category_ranks: dict = {}
+    try:
+        ranks_result = (
+            sb.table("dashboard_cache")
+            .select("content")
+            .eq("league_id", league_id)
+            .eq("widget", "category_ranks")
+            .limit(1)
+            .execute()
+        )
+        if ranks_result.data:
+            import json as _json
+            category_ranks = _json.loads(ranks_result.data[0]["content"])
+    except Exception:
+        pass
+
+    if not target_category:
+        ranked = {c: r for c, r in category_ranks.items() if c in CATEGORY_STAT and isinstance(r, int)}
+        if ranked:
+            target_category = max(ranked, key=ranked.get)  # highest rank number = weakest
+    if not target_category or target_category not in CATEGORY_STAT:
+        raise ValueError(
+            "No target category. Set category ranks on the dashboard, or pass a category."
+        )
+
+    player_type, stat_key, higher_is_better = CATEGORY_STAT[target_category]
+
+    # Load every roster except the manager's.
+    roster_rows = sb.table("rosters").select(
+        "fantrax_team_id, team_name, roster_items"
+    ).eq("league_id", league_id).neq("fantrax_team_id", my_team_id).execute()
+    opp_rosters = roster_rows.data or []
+
+    # Resolve all opponent players to MLB IDs + player_type.
+    all_ids = [item["id"] for r in opp_rosters for item in r["roster_items"]]
+    id_map_rows = sb.table("player_id_map").select(
+        "fantrax_id, full_name, player_type, mlb_id, mlb_team"
+    ).in_("fantrax_id", all_ids).execute()
+    id_map = {row["fantrax_id"]: row for row in (id_map_rows.data or [])}
+
+    # Candidate pool: opponent players of the relevant type with a resolved MLB ID.
+    candidates = []
+    for roster in opp_rosters:
+        for item in roster["roster_items"]:
+            mapped = id_map.get(item["id"])
+            if not mapped or mapped.get("player_type") != player_type or not mapped.get("mlb_id"):
+                continue
+            candidates.append({
+                "fantrax_id": item["id"],
+                "name": mapped["full_name"],
+                "mlb_id": mapped["mlb_id"],
+                "mlb_team": mapped.get("mlb_team") or "",
+                "position": item.get("position", "?"),
+                "salary": item.get("salary", 0),
+                "contract": item.get("contract", {}).get("name", "?"),
+                "owner_team_id": roster["fantrax_team_id"],
+                "owner_team_name": roster["team_name"],
+            })
+
+    # Fetch season stats (cached) with bounded concurrency, then score the category.
+    sem = asyncio.Semaphore(8)
+
+    async def score(cand):
+        async with sem:
+            stats = await get_player_stats(cand["mlb_id"], player_type)
+        season = (stats or {}).get("season_stats", {})
+        cand["stat_value"] = _stat_to_float(season.get(stat_key))
+        return cand
+
+    scored = await asyncio.gather(*[score(c) for c in candidates])
+    ranked_candidates = [c for c in scored if c["stat_value"] is not None]
+    ranked_candidates.sort(key=lambda c: c["stat_value"], reverse=higher_is_better)
+    top = ranked_candidates[:12]
+
+    return {
+        "league": league,
+        "target_category": target_category,
+        "stat_key": stat_key,
+        "candidates": top,
+    }
+
+
+def build_finder_prompt(context: dict[str, Any]) -> str:
+    league = context["league"]
+    category = context["target_category"]
+    stat_key = context["stat_key"]
+    candidates = context["candidates"]
+
+    lines = [
+        f"The manager needs help in {category}. Below are the best targets across the "
+        f"league for that category, ranked by their {stat_key.replace('_', ' ')} this season.",
+        "",
+        f"Manager's team: {league.get('name', 'Unknown')} | "
+        f"Window: {league.get('competitive_window') or 'Not set'} | "
+        f"Cap philosophy: {league.get('cap_philosophy') or 'Not set'}",
+        "",
+        "Candidates (player | owner | pos | $salary | contract yr | category stat):",
+    ]
+    for c in candidates:
+        lines.append(
+            f"  {c['name']} | {c['owner_team_name']} | {c['position']} | "
+            f"${c['salary']} | {c['contract']} yr | {category}={c['stat_value']}"
+        )
+
+    lines += [
+        "",
+        "Recommend the 2-3 most realistic acquisition targets from this list and why, "
+        f"weighing their {category} production against salary and contract year. For each, "
+        "suggest the rough shape of a fair offer (what kind of player/contract to send back) "
+        "without inventing players or stats not provided. Be direct and specific. "
+        "Do not return a table — write 2-4 short paragraphs.",
+    ]
+    return "\n".join(lines)

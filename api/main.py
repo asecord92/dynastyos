@@ -1,3 +1,4 @@
+import asyncio
 import traceback
 import os
 import re
@@ -16,7 +17,14 @@ from engine.fantrax_client import get_leagues, get_team_rosters, get_player_ids,
 from engine.supabase_client import get_supabase
 from engine.fantrax_mapper import map_roster_to_analyze_result
 from engine.player_resolver import resolve_player, refresh_roster_statuses
-from engine.trade_analyzer import build_trade_context, build_trade_prompt, SYSTEM_PROMPT
+from engine.mlb_stats_client import get_milb_player_summary
+from engine.trade_analyzer import (
+    build_trade_context,
+    build_trade_prompt,
+    build_finder_context,
+    build_finder_prompt,
+    SYSTEM_PROMPT,
+)
 from engine.auth import get_current_user
 
 app = FastAPI(title="DynastyOS API")
@@ -34,6 +42,11 @@ app.add_middleware(
 rules = LeagueRules()
 
 DASHBOARD_CACHE_TTL = timedelta(hours=4)
+
+# Model selection: Opus for deep trade reasoning, Sonnet for the high-frequency
+# dashboard widgets (news / start_sit / waiver) — faster and ~40% cheaper.
+MODEL_TRADE = "claude-opus-4-8"
+MODEL_DASHBOARD = "claude-sonnet-4-6"
 
 _ai_client: anthropic.Anthropic | None = None
 
@@ -56,6 +69,12 @@ class TradeAnalyzeRequest(BaseModel):
     opponent_team_id: str
     offering_ids: str  # comma-separated fantrax player IDs
     receiving_ids: str  # comma-separated fantrax player IDs
+
+
+class TradeFinderRequest(BaseModel):
+    league_id: str
+    my_team_id: str
+    target_category: str | None = None  # omit to auto-pick the weakest category
 
 
 class DashboardRequest(BaseModel):
@@ -343,7 +362,7 @@ async def roster_sync(
         # Step 1: Get the user's leagues to find their teamId and sport
         leagues = get_leagues(user_secret_id)
         league_entry = next(
-            (l for l in leagues if l.get("leagueId") == fantrax_league_id),
+            (entry for entry in leagues if entry.get("leagueId") == fantrax_league_id),
             None,
         )
         if not league_entry:
@@ -457,7 +476,7 @@ async def trade_analyze(
 
         def stream():
             with ai.messages.stream(
-                model="claude-opus-4-5",
+                model=MODEL_TRADE,
                 max_tokens=2000,
                 system=SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": prompt}],
@@ -467,6 +486,57 @@ async def trade_analyze(
 
         return StreamingResponse(stream(), media_type="text/plain")
 
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/trade/finder")
+async def trade_finder(
+    body: TradeFinderRequest,
+    user: dict = Depends(get_current_user),
+):
+    """Category-first Trade Finder: rank league-wide acquisition targets for a
+    category the manager needs, with an AI recommendation. Returns structured JSON
+    so the UI can render clickable targets that prefill the trade builder."""
+    try:
+        context = await build_finder_context(
+            league_id=body.league_id,
+            my_team_id=body.my_team_id,
+            target_category=body.target_category,
+        )
+        prompt = build_finder_prompt(context)
+
+        ai = get_ai_client()
+        response = ai.messages.create(
+            model=MODEL_TRADE,
+            max_tokens=2000,
+            system=SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        analysis = _extract_text(response)
+
+        candidates = [
+            {
+                "fantrax_id": c["fantrax_id"],
+                "name": c["name"],
+                "position": c["position"],
+                "salary": c["salary"],
+                "contract": c["contract"],
+                "owner_team_id": c["owner_team_id"],
+                "owner_team_name": c["owner_team_name"],
+                "stat_value": c["stat_value"],
+            }
+            for c in context["candidates"]
+        ]
+        return {
+            "target_category": context["target_category"],
+            "candidates": candidates,
+            "analysis": analysis,
+        }
+
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
@@ -528,7 +598,7 @@ Do not include any preamble, introduction, or horizontal rules (---). Do not say
 
         ai = get_ai_client()
         response = ai.messages.create(
-            model="claude-opus-4-5",
+            model=MODEL_DASHBOARD,
             max_tokens=2000,
             tools=[{"type": "web_search_20250305", "name": "web_search"}],
             messages=[{"role": "user", "content": prompt}],
@@ -692,7 +762,7 @@ Rules:
 
         ai = get_ai_client()
         response = ai.messages.create(
-            model="claude-opus-4-5",
+            model=MODEL_DASHBOARD,
             max_tokens=3000,
             tools=[{"type": "web_search_20250305", "name": "web_search"}],
             messages=[{"role": "user", "content": prompt}],
@@ -866,7 +936,7 @@ Do not include any preamble or introduction. Start directly with the first playe
 
         ai = get_ai_client()
         response = ai.messages.create(
-            model="claude-opus-4-5",
+            model=MODEL_DASHBOARD,
             max_tokens=4000,
             tools=[{"type": "web_search_20250305", "name": "web_search"}],
             messages=[{"role": "user", "content": prompt}],
@@ -875,6 +945,88 @@ Do not include any preamble or introduction. Start directly with the first playe
 
         updated_at = _upsert_cache(sb, body.league_id, "waiver", content)
         return {"content": content, "updated_at": updated_at}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/dashboard/minors")
+async def dashboard_minors(
+    body: DashboardRequest,
+    user: dict = Depends(get_current_user),
+):
+    """Minor League Tracker — current-season MiLB stats + a stats-grounded trend
+    for each rostered prospect. Data-only (no AI). Cached under the 'minors' widget."""
+    try:
+        sb = get_supabase()
+
+        cached = _check_cache(sb, body.league_id, "minors", body.force)
+        if cached:
+            try:
+                return {"content": _json.loads(cached["content"]), "updated_at": cached["updated_at"]}
+            except Exception:
+                pass  # malformed cache — regenerate
+
+        roster_result = (
+            sb.table("rosters")
+            .select("roster_items")
+            .eq("league_id", body.league_id)
+            .eq("fantrax_team_id", body.my_team_id)
+            .limit(1)
+            .execute()
+        )
+        if not roster_result.data:
+            raise HTTPException(status_code=404, detail="No roster found. Sync your league first.")
+
+        roster_items = roster_result.data[0].get("roster_items", [])
+        fantrax_ids = [item.get("id") for item in roster_items if item.get("id")]
+
+        map_result = (
+            sb.table("player_id_map")
+            .select("fantrax_id,full_name,mlb_id,player_type,roster_status")
+            .in_("fantrax_id", fantrax_ids)
+            .execute()
+        )
+        id_map = {r["fantrax_id"]: r for r in (map_result.data or [])}
+
+        # MiLB players: player_id_map.roster_status == "Minors" is canonical;
+        # fall back to the Fantrax roster status for not-yet-enriched prospects.
+        milb_items = [
+            (item, id_map.get(item.get("id", ""), {}))
+            for item in roster_items
+            if id_map.get(item.get("id", ""), {}).get("roster_status") == "Minors"
+            or item.get("status", "").upper() == "MINORS"
+        ]
+
+        async def build(item, mapped):
+            fid = item.get("id", "")
+            name = mapped.get("full_name") or item.get("name", fid)
+            position = item.get("position", "")
+            mlb_id = mapped.get("mlb_id")
+            player_type = mapped.get("player_type") or (
+                "pitcher" if position.upper() in ("SP", "RP", "P") else "hitter"
+            )
+            summary = await get_milb_player_summary(mlb_id, player_type) if mlb_id else None
+            return {
+                "name": name,
+                "position": position,
+                "level": summary["level"] if summary else None,
+                "stat_line": summary["stat_line"] if summary else "No MiLB stats yet",
+                "trend": summary["trend"] if summary else "steady",
+            }
+
+        players = await asyncio.gather(*[build(item, mapped) for item, mapped in milb_items])
+
+        # Surface prospects trending up first, then steady, then down; name as tiebreak.
+        trend_order = {"up": 0, "steady": 1, "down": 2}
+        players = sorted(players, key=lambda p: (trend_order.get(p["trend"], 1), p["name"]))
+
+        structured = {"players": players}
+        updated_at = _upsert_cache(sb, body.league_id, "minors", _json.dumps(structured))
+        return {"content": structured, "updated_at": updated_at}
 
     except HTTPException:
         raise

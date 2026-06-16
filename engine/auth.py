@@ -3,7 +3,7 @@ import httpx
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
-from jose.backends import ECKey
+from jose.backends import ECKey  # noqa: F401 — registers the EC backend for ES256 verification
 
 _bearer = HTTPBearer()
 
