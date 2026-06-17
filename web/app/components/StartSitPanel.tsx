@@ -78,7 +78,7 @@ export function StartSitPanel({
   return (
     <div className="bg-white border rounded-2xl p-6 shadow-sm space-y-4">
       {/* Tabs */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex gap-2">
           <button onClick={() => setTab("startsit")} className={tabClass(tab === "startsit")}>
             Start / Sit
@@ -88,9 +88,9 @@ export function StartSitPanel({
           </button>
         </div>
         {tab === "startsit" && (
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 ml-auto">
             {data?.updated_at && (
-              <span className="text-xs text-gray-400">
+              <span className="text-xs text-gray-400 whitespace-nowrap">
                 Updated {timeAgo(data.updated_at)}
               </span>
             )}
