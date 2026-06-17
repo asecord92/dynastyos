@@ -213,11 +213,11 @@ export function AppNav() {
   return (
     <>
     <div className="border-b bg-white sticky top-0 z-40">
-      <div className="w-full px-6 py-3 grid items-center gap-4" style={{gridTemplateColumns: "1fr auto 1fr"}}>
+      <div className="w-full px-6 py-3 flex lg:grid items-center justify-between gap-3 lg:gap-4" style={{gridTemplateColumns: "1fr auto 1fr"}}>
 
         {/* Left — Logo */}
-        <div className="flex items-center gap-2">
-          <span className="font-bold text-xl tracking-tight whitespace-nowrap">DynastyOS</span>
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="font-bold text-lg lg:text-xl tracking-tight truncate">DynastyOS</span>
           <span
             className={[
               "inline-block w-2 h-2 rounded-full flex-shrink-0",
@@ -256,13 +256,13 @@ export function AppNav() {
         </nav>
 
         {/* Right — Actions */}
-        <div className="flex items-center justify-end gap-2 min-w-0">
+        <div className="flex items-center justify-end gap-2 shrink-0">
           {email ? (
             <>
               <select
                 value={leagueId}
                 onChange={(e) => setLeague(e.target.value)}
-                className="px-3 py-1.5 rounded-xl border border-gray-200 bg-white text-sm whitespace-nowrap"
+                className="px-3 py-1.5 rounded-xl border border-gray-200 bg-white text-sm truncate max-w-[40vw] lg:max-w-none"
                 title="Select league"
               >
                 <option value="">Select league…</option>
