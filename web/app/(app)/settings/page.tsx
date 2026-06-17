@@ -384,7 +384,7 @@ export default function SettingsPage() {
 
       {/* Team Philosophy */}
       {leagueId && (
-        <div className="grid grid-cols-[200px_1fr] gap-8 py-8 border-t border-gray-200">
+        <div className="grid grid-cols-1 md:grid-cols-[200px_1fr] gap-4 md:gap-8 py-8 border-t border-gray-200">
           <div>
             <div className="text-xs font-semibold uppercase tracking-widest text-gray-400">Team Philosophy</div>
             {leagueName && (
@@ -462,7 +462,7 @@ export default function SettingsPage() {
       )}
 
       {/* Fantrax */}
-      <div className="grid grid-cols-[200px_1fr] gap-8 py-8 border-t border-gray-200">
+      <div className="grid grid-cols-1 md:grid-cols-[200px_1fr] gap-4 md:gap-8 py-8 border-t border-gray-200">
         <div>
           <div className="text-xs font-semibold uppercase tracking-widest text-gray-400">Fantrax</div>
           <p className="text-sm text-gray-400 mt-2 leading-relaxed">
@@ -598,7 +598,7 @@ export default function SettingsPage() {
 
       {/* Data */}
       {leagueId && (
-        <div className="grid grid-cols-[200px_1fr] gap-8 py-8 border-t border-gray-200">
+        <div className="grid grid-cols-1 md:grid-cols-[200px_1fr] gap-4 md:gap-8 py-8 border-t border-gray-200">
           <div>
             <div className="text-xs font-semibold uppercase tracking-widest text-gray-400">Data</div>
             <p className="text-sm text-gray-400 mt-2 leading-relaxed">
@@ -634,7 +634,7 @@ export default function SettingsPage() {
       )}
 
       {/* Manual / CSV */}
-      <div className="grid grid-cols-[200px_1fr] gap-8 py-8 border-t border-gray-200">
+      <div className="grid grid-cols-1 md:grid-cols-[200px_1fr] gap-4 md:gap-8 py-8 border-t border-gray-200">
         <div>
           <div className="text-xs font-semibold uppercase tracking-widest text-gray-400">Manual / CSV</div>
           <p className="text-sm text-gray-400 mt-2 leading-relaxed">

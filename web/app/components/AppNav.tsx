@@ -1,11 +1,55 @@
 "use client";
 
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { supabase } from "../lib/supabaseClient";
 import { useLeague } from "../lib/useLeague";
 
 type League = { id: string; name: string };
+
+// Bottom nav tabs (mobile only). Icons are inline 24x24 stroke SVGs.
+const MOBILE_TABS: { href: string; label: string; icon: React.ReactNode }[] = [
+  {
+    href: "/",
+    label: "Dashboard",
+    icon: (
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" />
+        <rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" />
+      </svg>
+    ),
+  },
+  {
+    href: "/roster",
+    label: "Roster",
+    icon: (
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <line x1="8" y1="6" x2="21" y2="6" /><line x1="8" y1="12" x2="21" y2="12" /><line x1="8" y1="18" x2="21" y2="18" />
+        <circle cx="3.5" cy="6" r="1" /><circle cx="3.5" cy="12" r="1" /><circle cx="3.5" cy="18" r="1" />
+      </svg>
+    ),
+  },
+  {
+    href: "/waivers",
+    label: "Waivers",
+    icon: (
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="11" cy="11" r="7" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
+      </svg>
+    ),
+  },
+  {
+    href: "/trade",
+    label: "Trade",
+    icon: (
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <polyline points="17 1 21 5 17 9" /><path d="M3 11V9a4 4 0 0 1 4-4h14" />
+        <polyline points="7 23 3 19 7 15" /><path d="M21 13v2a4 4 0 0 1-4 4H3" />
+      </svg>
+    ),
+  },
+];
 
 function initials(email: string) {
   const left = email.split("@")[0] ?? email;
@@ -37,6 +81,7 @@ export function AppNav() {
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   const { leagueId, setLeague, buildHref } = useLeague();
+  const pathname = usePathname();
 
   const badge = useMemo(() => (email ? initials(email) : "?"), [email]);
 
@@ -166,6 +211,7 @@ export function AppNav() {
   }
 
   return (
+    <>
     <div className="border-b bg-white sticky top-0 z-40">
       <div className="w-full px-6 py-3 grid items-center gap-4" style={{gridTemplateColumns: "1fr auto 1fr"}}>
 
@@ -181,8 +227,8 @@ export function AppNav() {
           />
         </div>
 
-        {/* Center — Nav links */}
-        <nav className="flex items-center justify-center gap-1 text-sm">
+        {/* Center — Nav links (desktop; mobile uses the bottom tab bar) */}
+        <nav className="hidden lg:flex items-center justify-center gap-1 text-sm">
           <Link
             className="px-3 py-1.5 rounded-xl border border-gray-200 hover:border-gray-300 transition whitespace-nowrap"
             href={buildHref("/")}
@@ -331,5 +377,27 @@ export function AppNav() {
         {syncToast}
       </div>
     </div>
+
+    {/* Mobile bottom tab bar — hidden on desktop */}
+    {email && (
+      <nav className="lg:hidden fixed bottom-0 left-0 right-0 z-40 flex border-t border-gray-200 bg-white pb-[env(safe-area-inset-bottom)]">
+        {MOBILE_TABS.map((tab) => {
+          const active = pathname === tab.href;
+          return (
+            <Link
+              key={tab.href}
+              href={buildHref(tab.href)}
+              className={`flex-1 flex flex-col items-center justify-center gap-0.5 py-2 text-[11px] font-medium transition ${
+                active ? "text-black" : "text-gray-400"
+              }`}
+            >
+              {tab.icon}
+              {tab.label}
+            </Link>
+          );
+        })}
+      </nav>
+    )}
+    </>
   );
 }
