@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from typing import Any
 from .supabase_client import get_supabase
 from .mlb_stats_client import get_player_stats
+from .rules import LeagueRules, ContractRules, load_rules
 
 
 def _today_line() -> str:
@@ -16,50 +17,118 @@ def _today_line() -> str:
     )
 
 
-SCORING_CATEGORIES = {
-    "hitting": ["R", "HR", "RBI", "SB", "OBP"],
-    "pitching": ["QS", "SV", "K", "ERA", "WHIP"],
-}
+_SPORT_WORD = {"MLB": "baseball", "NFL": "football"}
 
-SYSTEM_PROMPT = """You are a sharp, opinionated dynasty baseball trade advisor built into DynastyOS.
+# Persona + grounding preamble — sport-agnostic, stays static across leagues.
+_PERSONA = """You are a sharp, opinionated dynasty {sport_word} trade advisor built into DynastyOS.
 You give direct, defensible recommendations — not balanced summaries. You have a point of view and
 you back it up with specifics. You never hedge without committing to a final answer. You are not a
 journalist presenting both sides — you are a trusted advisor telling the manager what to do and why.
 
 IMPORTANT: Only reference player facts explicitly provided in this prompt — current team, stats,
 contract, and salary. Do not use your training knowledge to fill in details about any player.
-Player situations change frequently and your training data may be wrong.
+Player situations change frequently and your training data may be wrong."""
 
-League format:
-- 10-team head-to-head category scoring (weekly matchups)
-- Hitting categories: R, HR, RBI, SB, OBP
-- Pitching categories: QS, SV, K, ERA, WHIP
-- In-season salary cap: $450
-- Offseason auction budget: $335
 
-Dynasty contract rules:
+def _money(v: float) -> str:
+    """Render a dollar amount without a trailing .0 for whole numbers."""
+    return str(int(v)) if float(v).is_integer() else str(v)
+
+
+def _trajectory_example(draft: int, c: ContractRules) -> str:
+    """Compute an extension salary path for a given draft price from the rule
+    numbers, so the example stays accurate for any league's contract terms."""
+    raise_ = int(c.extend_raise)
+    cap = int(c.extend_cap)
+    y3 = max(draft + raise_, int(c.extend_floor))
+    y4 = min(y3 + raise_, cap)
+    y5 = min(y4 + raise_, cap)
+    floor_note = " (floor)" if y3 == int(c.extend_floor) else ""
+    return (
+        f"- Player drafted at ${draft}, extended in year 3 → ${y3}{floor_note}, "
+        f"year 4 → ${y4}, year 5 → ${y5}."
+    )
+
+
+def _contract_block(c: ContractRules) -> str:
+    raise_, floor, option, cap = (
+        _money(c.extend_raise), _money(c.extend_floor),
+        _money(c.option_raise), _money(c.extend_cap),
+    )
+    examples = "\n".join(_trajectory_example(d, c) for d in (5, 12, 20))
+    return f"""Dynasty contract rules:
 - 1st and 2nd year contracts: salary does not change from draft price
 - 3rd year is the decision point:
-  - EXTEND: salary increases by $4 (floor of $15). Player stays on your roster long-term.
-  - OPTION: salary increases by $1. Player is dropped to the auction pool at end of season — you lose them entirely.
+  - EXTEND: salary increases by ${raise_} (floor of ${floor}). Player stays on your roster long-term.
+  - OPTION: salary increases by ${option}. Player is dropped to the auction pool at end of season — you lose them entirely.
   - CUT: available at any time, any contract year. Player goes to free agency immediately.
-- 4th year and beyond (extended players only): salary increases by $4 every year, maximum $70.
+- 4th year and beyond (extended players only): salary increases by ${raise_} every year, maximum ${cap}.
 - No limit on contract years as long as you keep extending.
 
 Extension trajectory examples:
-- Player drafted at $5, extended in year 3 → $15 (floor), year 4 → $19, year 5 → $23 (+$4/year, max $70).
-- Player drafted at $12, extended in year 3 → $15 (floor), year 4 → $19, year 5 → $23.
-- Player drafted at $20, extended in year 3 → $24, year 4 → $28, year 5 → $32.
-Any player drafted under $15 follows the same floor trajectory once extended. +$4/year applies from year 4 onward.
+{examples}
+Any player drafted under ${floor} follows the same floor trajectory once extended. +${raise_}/year applies from year 4 onward.
 
 Contract valuation framework — this is critical:
 - 1st and 2nd year players are at their draft price. Their future cost is unknown until the 3rd year decision.
-- A player's salary on a 4th+ year contract reflects cumulative $4 raises since their extension point.
+- A player's salary on a 4th+ year contract reflects cumulative ${raise_} raises since their extension point.
 - The core dynasty question on any trade: is this player's current salary above or below what they would
   realistically go for at auction? If you can cut a $35 player and re-sign them for $20, you've gained
   $15 in cap space — but you risk losing them entirely or paying more. Contract assets (cheap, locked-in
   players on long extensions) are extremely valuable. Overpaid aging players on late contracts are liabilities.
 - Always consider: would you rather have this player at this salary, or take your chances at auction?"""
+
+
+def build_system_prompt(rules: LeagueRules | None = None, sport: str = "MLB") -> str:
+    """Generate the trade advisor system prompt from a league's rules so each
+    league produces an accurate prompt instead of the old hardcoded constants.
+    The contract section is omitted entirely for non-contract leagues."""
+    rules = rules or LeagueRules()
+    sport_word = _SPORT_WORD.get(sport, "fantasy")
+
+    parts = [_PERSONA.format(sport_word=sport_word)]
+
+    fmt = [
+        "League format:",
+        f"- {rules.league_size}-team head-to-head category scoring (weekly matchups)",
+        f"- Hitting categories: {', '.join(rules.scoring.hitting)}",
+        f"- Pitching categories: {', '.join(rules.scoring.pitching)}",
+        f"- In-season salary cap: ${_money(rules.in_season_cap)}",
+        f"- Offseason auction budget: ${_money(rules.offseason_cap)}",
+    ]
+    parts.append("\n".join(fmt))
+
+    if rules.contract is not None:
+        parts.append(_contract_block(rules.contract))
+
+    return "\n\n".join(parts)
+
+
+# Backwards-compatible default (Inglorious Bashers / MLB) for any import site
+# that hasn't been threaded through per-league rules yet.
+SYSTEM_PROMPT = build_system_prompt()
+
+
+# Caches whether the leagues.rules column exists yet (the migration is applied
+# manually in Supabase). Avoids hammering a missing column with failed selects.
+_rules_column_available: bool | None = None
+
+
+def _load_league_rules(sb, league_id: str, league: dict) -> LeagueRules:
+    """Best-effort per-league rules load. The ``rules`` column may not exist yet
+    (manual migration), so a failed select falls back to defaults — keeping this
+    deploy-order-independent. Once the column exists it is used on every call."""
+    global _rules_column_available
+    raw = None
+    if _rules_column_available is not False:
+        try:
+            rr = sb.table("leagues").select("rules").eq("id", league_id).single().execute()
+            raw = (rr.data or {}).get("rules")
+            _rules_column_available = True
+        except Exception:
+            _rules_column_available = False
+            raw = None
+    return load_rules({"sport": league.get("sport"), "rules": raw})
 
 
 def get_player_name(fantrax_id: str, player_id_map: dict) -> str:
@@ -133,6 +202,7 @@ async def build_trade_context(
         "name, competitive_window, cap_philosophy, team_weaknesses, goals, sport"
     ).eq("id", league_id).single().execute()
     league = league_row.data
+    rules = _load_league_rules(sb, league_id, league)
 
     # Load both rosters
     roster_rows = sb.table("rosters").select(
@@ -221,6 +291,8 @@ async def build_trade_context(
 
     return {
         "league": league,
+        "rules": rules,
+        "sport": league.get("sport") or "MLB",
         "my_roster": my_roster_row,
         "opp_roster": opp_roster_row,
         "player_id_map": player_id_map,
@@ -392,9 +464,10 @@ async def build_finder_context(
     sb = get_supabase()
 
     league_row = sb.table("leagues").select(
-        "name, competitive_window, cap_philosophy, team_weaknesses, goals"
+        "name, competitive_window, cap_philosophy, team_weaknesses, goals, sport"
     ).eq("id", league_id).single().execute()
     league = league_row.data or {}
+    rules = _load_league_rules(sb, league_id, league)
 
     # Resolve the target category — explicit, else the weakest ranked category.
     category_ranks: dict = {}
@@ -482,6 +555,8 @@ async def build_finder_context(
 
     return {
         "league": league,
+        "rules": rules,
+        "sport": league.get("sport") or "MLB",
         "target_category": target_category,
         "stat_key": stat_key,
         "candidates": top,
