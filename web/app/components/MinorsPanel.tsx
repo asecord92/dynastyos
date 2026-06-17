@@ -49,7 +49,7 @@ export function MinorsPanel({
       {/* Controls */}
       <div className="flex items-center justify-end gap-3">
         {data?.updated_at && (
-          <span className="text-xs text-gray-400">Updated {timeAgo(data.updated_at)}</span>
+          <span className="text-xs text-gray-400 whitespace-nowrap">Updated {timeAgo(data.updated_at)}</span>
         )}
         <button
           onClick={() => refresh(true)}
