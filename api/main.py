@@ -24,6 +24,7 @@ from engine.trade_analyzer import (
     build_trade_prompt,
     build_finder_context,
     build_finder_prompt,
+    parse_finder_response,
     build_system_prompt,
 )
 from engine.auth import get_current_user
@@ -566,7 +567,10 @@ async def trade_finder(
             system=system_prompt,
             messages=[{"role": "user", "content": prompt}],
         )
-        analysis = _extract_text(response)
+        raw_analysis = _extract_text(response)
+        analysis, packages = parse_finder_response(
+            raw_analysis, context["candidates"], context.get("my_assets", [])
+        )
 
         candidates = [
             {
@@ -578,12 +582,14 @@ async def trade_finder(
                 "owner_team_id": c["owner_team_id"],
                 "owner_team_name": c["owner_team_name"],
                 "stat_value": c["stat_value"],
+                "value": c.get("value"),
             }
             for c in context["candidates"]
         ]
         return {
             "target_category": context["target_category"],
             "candidates": candidates,
+            "packages": packages,
             "analysis": analysis,
         }
 
