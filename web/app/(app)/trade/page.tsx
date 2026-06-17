@@ -436,10 +436,10 @@ export default function TradePage() {
     }`;
 
   return (
-    <main className="space-y-8">
+    <main className="space-y-6">
       <header className="space-y-1">
-        <h1 className="text-3xl font-semibold">Trade Analyzer</h1>
-        <p className="text-gray-700">
+        <h1 className="text-2xl font-semibold">Trade Analyzer</h1>
+        <p className="text-sm text-gray-600">
           Build a specific trade, or find targets for a category you need.
         </p>
       </header>
@@ -465,7 +465,7 @@ export default function TradePage() {
           {mode === "build" && (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
           {/* Left — trade builder */}
-          <div className="bg-white border rounded-2xl p-6 shadow-sm space-y-6">
+          <div className="bg-white border rounded-2xl p-5 shadow-sm space-y-5 lg:sticky lg:top-6">
             <h2 className="text-lg font-semibold">Build Trade</h2>
 
             <div className="space-y-2">
@@ -489,7 +489,7 @@ export default function TradePage() {
             </div>
 
             {opponentTeamId && (
-              <>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <PlayerSearch
                   label="They Offer"
                   players={oppPlayers}
@@ -502,7 +502,7 @@ export default function TradePage() {
                   selected={offering}
                   onToggle={toggleOffering}
                 />
-              </>
+              </div>
             )}
 
             <button
@@ -542,7 +542,7 @@ export default function TradePage() {
           {mode === "find" && (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
               {/* Left — category picker */}
-              <div className="bg-white border rounded-2xl p-6 shadow-sm space-y-4">
+              <div className="bg-white border rounded-2xl p-5 shadow-sm space-y-4 lg:sticky lg:top-6">
                 <h2 className="text-lg font-semibold">Find Targets</h2>
                 <p className="text-sm text-gray-500">
                   Pick a category you need help in. We&apos;ll rank the best targets across
@@ -596,7 +596,7 @@ export default function TradePage() {
                       <div className="text-xs font-semibold uppercase tracking-widest text-gray-400">
                         Targets for {finder.target_category}
                       </div>
-                      <div className="divide-y divide-gray-50">
+                      <div className="divide-y divide-gray-50 max-h-80 overflow-y-auto">
                         {finder.candidates.map((c) => (
                           <button
                             key={c.fantrax_id}

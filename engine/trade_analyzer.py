@@ -692,6 +692,13 @@ def build_finder_prompt(context: dict[str, Any]) -> str:
         "target's value (a contender may pay slightly over; a rebuilder should aim slightly "
         "under), and respect the salary cap. Never invent players, ids, or stats not provided.",
         "",
+        "Favor CONSOLIDATION over one-for-one swaps: to pry loose a high-value target, package "
+        "two or three complementary lower-value players (depth, a redundant position, a useful "
+        "but non-core piece) whose combined value reaches the target — managers rarely trade a "
+        "star straight up for a single comparable star. Only offer a single player when one of "
+        "your assets genuinely matches the target's value on its own. At least one of your "
+        "suggested packages should be a multi-player offer.",
+        "",
         "Write 2-4 short paragraphs, then end your response with a fenced ```json block (and "
         "nothing after it) listing the offers you described, using the numeric ids from the "
         "lists above, in exactly this schema:",
