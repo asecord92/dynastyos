@@ -24,7 +24,8 @@ from engine.trade_analyzer import (
     build_trade_prompt,
     build_finder_context,
     build_finder_prompt,
-    SYSTEM_PROMPT,
+    parse_finder_response,
+    build_system_prompt,
 )
 from engine.auth import get_current_user
 
@@ -521,6 +522,7 @@ async def trade_analyze(
             receiving_ids=receiving,
         )
         prompt = build_trade_prompt(context)
+        system_prompt = build_system_prompt(context["rules"], context["sport"])
 
         ai = get_ai_client()
 
@@ -528,7 +530,7 @@ async def trade_analyze(
             with ai.messages.stream(
                 model=MODEL_TRADE,
                 max_tokens=2000,
-                system=SYSTEM_PROMPT,
+                system=system_prompt,
                 messages=[{"role": "user", "content": prompt}],
             ) as s:
                 for text in s.text_stream:
@@ -556,15 +558,19 @@ async def trade_finder(
             target_category=body.target_category,
         )
         prompt = build_finder_prompt(context)
+        system_prompt = build_system_prompt(context["rules"], context["sport"])
 
         ai = get_ai_client()
         response = ai.messages.create(
             model=MODEL_TRADE,
             max_tokens=2000,
-            system=SYSTEM_PROMPT,
+            system=system_prompt,
             messages=[{"role": "user", "content": prompt}],
         )
-        analysis = _extract_text(response)
+        raw_analysis = _extract_text(response)
+        analysis, packages = parse_finder_response(
+            raw_analysis, context["candidates"], context.get("my_assets", [])
+        )
 
         candidates = [
             {
@@ -576,12 +582,14 @@ async def trade_finder(
                 "owner_team_id": c["owner_team_id"],
                 "owner_team_name": c["owner_team_name"],
                 "stat_value": c["stat_value"],
+                "value": c.get("value"),
             }
             for c in context["candidates"]
         ]
         return {
             "target_category": context["target_category"],
             "candidates": candidates,
+            "packages": packages,
             "analysis": analysis,
         }
 

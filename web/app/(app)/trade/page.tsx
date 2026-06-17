@@ -16,11 +16,25 @@ type Candidate = {
   owner_team_id: string;
   owner_team_name: string;
   stat_value: number;
+  value?: number | null;
+};
+
+type PackagePlayer = { fantrax_id: string; name: string };
+
+type TradePackage = {
+  owner_team_id: string;
+  owner_team_name: string;
+  target_ids: string[];
+  offer_ids: string[];
+  targets: PackagePlayer[];
+  offer: PackagePlayer[];
+  rationale: string;
 };
 
 type FinderResult = {
   target_category: string;
   candidates: Candidate[];
+  packages: TradePackage[];
   analysis: string;
 };
 
@@ -218,7 +232,7 @@ export default function TradePage() {
   const [finderError, setFinderError] = useState<string | null>(null);
   const [finder, setFinder] = useState<FinderResult | null>(null);
   // Carries a prefill target across the opponent-change effect (which clears receiving).
-  const pendingReceiveRef = useRef<string | null>(null);
+  const pendingReceiveRef = useRef<string[] | null>(null);
 
   useEffect(() => {
     if (!leagueId) return;
@@ -288,7 +302,7 @@ export default function TradePage() {
     }
     // Preserve a prefilled target (from the Trade Finder), else clear selection.
     if (pendingReceiveRef.current) {
-      setReceiving([pendingReceiveRef.current]);
+      setReceiving(pendingReceiveRef.current);
       pendingReceiveRef.current = null;
     } else {
       setReceiving([]);
@@ -322,8 +336,21 @@ export default function TradePage() {
     if (opponentTeamId === c.owner_team_id) {
       setReceiving([c.fantrax_id]);
     } else {
-      pendingReceiveRef.current = c.fantrax_id;
+      pendingReceiveRef.current = [c.fantrax_id];
       setOpponentTeamId(c.owner_team_id);
+    }
+  }
+
+  // Load a full Finder-suggested package into the trade builder: my players to
+  // send (offering), the opponent + their players to receive.
+  function loadPackage(pkg: TradePackage) {
+    setMode("build");
+    setOffering(pkg.offer_ids);
+    if (opponentTeamId === pkg.owner_team_id) {
+      setReceiving(pkg.target_ids);
+    } else {
+      pendingReceiveRef.current = pkg.target_ids;
+      setOpponentTeamId(pkg.owner_team_id);
     }
   }
 
@@ -586,8 +613,13 @@ export default function TradePage() {
                               </div>
                               <p className="text-xs text-gray-400 mt-0.5">{c.owner_team_name}</p>
                             </div>
-                            <span className="shrink-0 text-sm font-semibold text-gray-900">
-                              {finder.target_category} {c.stat_value}
+                            <span className="shrink-0 text-right">
+                              <span className="block text-sm font-semibold text-gray-900">
+                                {finder.target_category} {c.stat_value}
+                              </span>
+                              {c.value != null && (
+                                <span className="block text-xs text-gray-400">val {c.value}</span>
+                              )}
                             </span>
                           </button>
                         ))}
@@ -599,6 +631,36 @@ export default function TradePage() {
                         Click a target to prefill the trade builder.
                       </p>
                     </div>
+                    {finder.packages?.length > 0 && (
+                      <div className="bg-white border rounded-2xl p-5 shadow-sm space-y-3">
+                        <div className="text-xs font-semibold uppercase tracking-widest text-gray-400">
+                          Suggested packages
+                        </div>
+                        <div className="space-y-2.5">
+                          {finder.packages.map((pkg, i) => (
+                            <div key={i} className="border border-gray-100 rounded-xl p-3 space-y-1.5">
+                              <div className="text-sm text-gray-900">
+                                <span className="font-medium">Send</span>{" "}
+                                {pkg.offer.map((p) => p.name).join(", ")}{" "}
+                                <span className="text-gray-400">→</span>{" "}
+                                <span className="font-medium">Get</span>{" "}
+                                {pkg.targets.map((p) => p.name).join(", ")}
+                              </div>
+                              <div className="text-xs text-gray-400">
+                                {pkg.owner_team_name}
+                                {pkg.rationale ? ` · ${pkg.rationale}` : ""}
+                              </div>
+                              <button
+                                onClick={() => loadPackage(pkg)}
+                                className="text-xs font-medium text-indigo-600 hover:text-indigo-700"
+                              >
+                                Load into Build Trade →
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                     {finder.analysis && (
                       <div className="bg-white border rounded-2xl p-5 shadow-sm">
                         <div className="text-xs font-semibold uppercase tracking-widest text-gray-400 mb-3">

@@ -1,8 +1,12 @@
 import asyncio
+import json
+import re
 from datetime import datetime, timezone
 from typing import Any
 from .supabase_client import get_supabase
 from .mlb_stats_client import get_player_stats
+from .rules import LeagueRules, ContractRules, load_rules
+from .player_value import production_ratings, assign_values
 
 
 def _today_line() -> str:
@@ -16,50 +20,118 @@ def _today_line() -> str:
     )
 
 
-SCORING_CATEGORIES = {
-    "hitting": ["R", "HR", "RBI", "SB", "OBP"],
-    "pitching": ["QS", "SV", "K", "ERA", "WHIP"],
-}
+_SPORT_WORD = {"MLB": "baseball", "NFL": "football"}
 
-SYSTEM_PROMPT = """You are a sharp, opinionated dynasty baseball trade advisor built into DynastyOS.
+# Persona + grounding preamble — sport-agnostic, stays static across leagues.
+_PERSONA = """You are a sharp, opinionated dynasty {sport_word} trade advisor built into DynastyOS.
 You give direct, defensible recommendations — not balanced summaries. You have a point of view and
 you back it up with specifics. You never hedge without committing to a final answer. You are not a
 journalist presenting both sides — you are a trusted advisor telling the manager what to do and why.
 
 IMPORTANT: Only reference player facts explicitly provided in this prompt — current team, stats,
 contract, and salary. Do not use your training knowledge to fill in details about any player.
-Player situations change frequently and your training data may be wrong.
+Player situations change frequently and your training data may be wrong."""
 
-League format:
-- 10-team head-to-head category scoring (weekly matchups)
-- Hitting categories: R, HR, RBI, SB, OBP
-- Pitching categories: QS, SV, K, ERA, WHIP
-- In-season salary cap: $450
-- Offseason auction budget: $335
 
-Dynasty contract rules:
+def _money(v: float) -> str:
+    """Render a dollar amount without a trailing .0 for whole numbers."""
+    return str(int(v)) if float(v).is_integer() else str(v)
+
+
+def _trajectory_example(draft: int, c: ContractRules) -> str:
+    """Compute an extension salary path for a given draft price from the rule
+    numbers, so the example stays accurate for any league's contract terms."""
+    raise_ = int(c.extend_raise)
+    cap = int(c.extend_cap)
+    y3 = max(draft + raise_, int(c.extend_floor))
+    y4 = min(y3 + raise_, cap)
+    y5 = min(y4 + raise_, cap)
+    floor_note = " (floor)" if y3 == int(c.extend_floor) else ""
+    return (
+        f"- Player drafted at ${draft}, extended in year 3 → ${y3}{floor_note}, "
+        f"year 4 → ${y4}, year 5 → ${y5}."
+    )
+
+
+def _contract_block(c: ContractRules) -> str:
+    raise_, floor, option, cap = (
+        _money(c.extend_raise), _money(c.extend_floor),
+        _money(c.option_raise), _money(c.extend_cap),
+    )
+    examples = "\n".join(_trajectory_example(d, c) for d in (5, 12, 20))
+    return f"""Dynasty contract rules:
 - 1st and 2nd year contracts: salary does not change from draft price
 - 3rd year is the decision point:
-  - EXTEND: salary increases by $4 (floor of $15). Player stays on your roster long-term.
-  - OPTION: salary increases by $1. Player is dropped to the auction pool at end of season — you lose them entirely.
+  - EXTEND: salary increases by ${raise_} (floor of ${floor}). Player stays on your roster long-term.
+  - OPTION: salary increases by ${option}. Player is dropped to the auction pool at end of season — you lose them entirely.
   - CUT: available at any time, any contract year. Player goes to free agency immediately.
-- 4th year and beyond (extended players only): salary increases by $4 every year, maximum $70.
+- 4th year and beyond (extended players only): salary increases by ${raise_} every year, maximum ${cap}.
 - No limit on contract years as long as you keep extending.
 
 Extension trajectory examples:
-- Player drafted at $5, extended in year 3 → $15 (floor), year 4 → $19, year 5 → $23 (+$4/year, max $70).
-- Player drafted at $12, extended in year 3 → $15 (floor), year 4 → $19, year 5 → $23.
-- Player drafted at $20, extended in year 3 → $24, year 4 → $28, year 5 → $32.
-Any player drafted under $15 follows the same floor trajectory once extended. +$4/year applies from year 4 onward.
+{examples}
+Any player drafted under ${floor} follows the same floor trajectory once extended. +${raise_}/year applies from year 4 onward.
 
 Contract valuation framework — this is critical:
 - 1st and 2nd year players are at their draft price. Their future cost is unknown until the 3rd year decision.
-- A player's salary on a 4th+ year contract reflects cumulative $4 raises since their extension point.
+- A player's salary on a 4th+ year contract reflects cumulative ${raise_} raises since their extension point.
 - The core dynasty question on any trade: is this player's current salary above or below what they would
   realistically go for at auction? If you can cut a $35 player and re-sign them for $20, you've gained
   $15 in cap space — but you risk losing them entirely or paying more. Contract assets (cheap, locked-in
   players on long extensions) are extremely valuable. Overpaid aging players on late contracts are liabilities.
 - Always consider: would you rather have this player at this salary, or take your chances at auction?"""
+
+
+def build_system_prompt(rules: LeagueRules | None = None, sport: str = "MLB") -> str:
+    """Generate the trade advisor system prompt from a league's rules so each
+    league produces an accurate prompt instead of the old hardcoded constants.
+    The contract section is omitted entirely for non-contract leagues."""
+    rules = rules or LeagueRules()
+    sport_word = _SPORT_WORD.get(sport, "fantasy")
+
+    parts = [_PERSONA.format(sport_word=sport_word)]
+
+    fmt = [
+        "League format:",
+        f"- {rules.league_size}-team head-to-head category scoring (weekly matchups)",
+        f"- Hitting categories: {', '.join(rules.scoring.hitting)}",
+        f"- Pitching categories: {', '.join(rules.scoring.pitching)}",
+        f"- In-season salary cap: ${_money(rules.in_season_cap)}",
+        f"- Offseason auction budget: ${_money(rules.offseason_cap)}",
+    ]
+    parts.append("\n".join(fmt))
+
+    if rules.contract is not None:
+        parts.append(_contract_block(rules.contract))
+
+    return "\n\n".join(parts)
+
+
+# Backwards-compatible default (Inglorious Bashers / MLB) for any import site
+# that hasn't been threaded through per-league rules yet.
+SYSTEM_PROMPT = build_system_prompt()
+
+
+# Caches whether the leagues.rules column exists yet (the migration is applied
+# manually in Supabase). Avoids hammering a missing column with failed selects.
+_rules_column_available: bool | None = None
+
+
+def _load_league_rules(sb, league_id: str, league: dict) -> LeagueRules:
+    """Best-effort per-league rules load. The ``rules`` column may not exist yet
+    (manual migration), so a failed select falls back to defaults — keeping this
+    deploy-order-independent. Once the column exists it is used on every call."""
+    global _rules_column_available
+    raw = None
+    if _rules_column_available is not False:
+        try:
+            rr = sb.table("leagues").select("rules").eq("id", league_id).single().execute()
+            raw = (rr.data or {}).get("rules")
+            _rules_column_available = True
+        except Exception:
+            _rules_column_available = False
+            raw = None
+    return load_rules({"sport": league.get("sport"), "rules": raw})
 
 
 def get_player_name(fantrax_id: str, player_id_map: dict) -> str:
@@ -133,6 +205,7 @@ async def build_trade_context(
         "name, competitive_window, cap_philosophy, team_weaknesses, goals, sport"
     ).eq("id", league_id).single().execute()
     league = league_row.data
+    rules = _load_league_rules(sb, league_id, league)
 
     # Load both rosters
     roster_rows = sb.table("rosters").select(
@@ -221,6 +294,8 @@ async def build_trade_context(
 
     return {
         "league": league,
+        "rules": rules,
+        "sport": league.get("sport") or "MLB",
         "my_roster": my_roster_row,
         "opp_roster": opp_roster_row,
         "player_id_map": player_id_map,
@@ -378,6 +453,18 @@ def _stat_to_float(v) -> float | None:
         return None
 
 
+def _type_specs(categories: list[str]) -> list[tuple[str, bool]]:
+    """Translate a league's category codes into (season_stat_key, higher_is_better)
+    specs for valuation, skipping any code without a known stat mapping."""
+    specs = []
+    for cat in categories:
+        mapping = CATEGORY_STAT.get(cat)
+        if mapping:
+            _, stat_key, higher_is_better = mapping
+            specs.append((stat_key, higher_is_better))
+    return specs
+
+
 async def build_finder_context(
     league_id: str,
     my_team_id: str,
@@ -392,9 +479,10 @@ async def build_finder_context(
     sb = get_supabase()
 
     league_row = sb.table("leagues").select(
-        "name, competitive_window, cap_philosophy, team_weaknesses, goals"
+        "name, competitive_window, cap_philosophy, team_weaknesses, goals, sport"
     ).eq("id", league_id).single().execute()
     league = league_row.data or {}
+    rules = _load_league_rules(sb, league_id, league)
 
     # Resolve the target category — explicit, else the weakest ranked category.
     category_ranks: dict = {}
@@ -472,6 +560,8 @@ async def build_finder_context(
         async with sem:
             stats = await get_player_stats(cand["mlb_id"], player_type)
         season = (stats or {}).get("season_stats", {})
+        cand["season"] = season
+        cand["player_type"] = player_type
         cand["stat_value"] = _stat_to_float(season.get(stat_key))
         return cand
 
@@ -480,12 +570,75 @@ async def build_finder_context(
     ranked_candidates.sort(key=lambda c: c["stat_value"], reverse=higher_is_better)
     top = ranked_candidates[:12]
 
+    # Load the manager's own roster so we can suggest concrete, value-balanced
+    # packages to send back — not just the abstract "shape" of an offer.
+    my_row = sb.table("rosters").select(
+        "roster_items, salary_cap"
+    ).eq("league_id", league_id).eq("fantrax_team_id", my_team_id).limit(1).execute()
+    my_data = (my_row.data or [{}])[0]
+    my_items = my_data.get("roster_items") or []
+    salary_cap = my_data.get("salary_cap")
+
+    my_ids = [item["id"] for item in my_items]
+    my_id_map = {}
+    for i in range(0, len(my_ids), 100):
+        chunk = my_ids[i:i + 100]
+        rows = sb.table("player_id_map").select(
+            "fantrax_id, full_name, player_type, mlb_id"
+        ).in_("fantrax_id", chunk).execute()
+        for row in (rows.data or []):
+            my_id_map[row["fantrax_id"]] = row
+
+    my_assets = []
+    for item in my_items:
+        mapped = my_id_map.get(item["id"])
+        if not mapped or not mapped.get("mlb_id"):
+            continue
+        my_assets.append({
+            "fantrax_id": item["id"],
+            "name": mapped["full_name"],
+            "mlb_id": mapped["mlb_id"],
+            "player_type": mapped.get("player_type") or "hitter",
+            "position": item.get("position", "?"),
+            "salary": item.get("salary", 0),
+            "contract": item.get("contract", {}).get("name", "?"),
+        })
+
+    async def fetch_season(p):
+        async with sem:
+            stats = await get_player_stats(p["mlb_id"], p["player_type"])
+        p["season"] = (stats or {}).get("season_stats", {})
+        return p
+
+    await asyncio.gather(*[fetch_season(p) for p in my_assets])
+
+    # Value both sides on a shared within-type percentile scale so package totals
+    # are comparable. Pool each type from the candidate shortlist + my roster.
+    type_specs = {
+        "hitter": _type_specs(rules.scoring.hitting),
+        "pitcher": _type_specs(rules.scoring.pitching),
+    }
+    pool = top + my_assets
+    for ptype, specs in type_specs.items():
+        group = [p for p in pool if p.get("player_type") == ptype]
+        production_ratings(group, specs)
+        assign_values(group)
+
     return {
         "league": league,
+        "rules": rules,
+        "sport": league.get("sport") or "MLB",
         "target_category": target_category,
         "stat_key": stat_key,
         "candidates": top,
+        "my_assets": my_assets,
+        "salary_cap": salary_cap,
     }
+
+
+def _fmt_value(p: dict) -> str:
+    v = p.get("value")
+    return str(v) if v is not None else "?"
 
 
 def build_finder_prompt(context: dict[str, Any]) -> str:
@@ -493,31 +646,116 @@ def build_finder_prompt(context: dict[str, Any]) -> str:
     category = context["target_category"]
     stat_key = context["stat_key"]
     candidates = context["candidates"]
+    my_assets = context.get("my_assets", [])
+    salary_cap = context.get("salary_cap")
 
+    cap_line = f" | Salary cap: ${salary_cap}" if salary_cap else ""
     lines = [
         _today_line(),
         "",
         f"The manager needs help in {category}. Below are the best targets across the "
-        f"league for that category, ranked by their {stat_key.replace('_', ' ')} this season.",
+        f"league for that category, ranked by their {stat_key.replace('_', ' ')} this season. "
+        "Each player carries a dynasty value score (higher = more valuable; a ~0-100 production "
+        "percentile adjusted up/down for salary and contract year) so you can build a balanced "
+        "package.",
         "",
         f"Manager's team: {league.get('name', 'Unknown')} | "
         f"Window: {league.get('competitive_window') or 'Not set'} | "
-        f"Cap philosophy: {league.get('cap_philosophy') or 'Not set'}",
+        f"Cap philosophy: {league.get('cap_philosophy') or 'Not set'}{cap_line}",
         "",
-        "Candidates (player | owner | pos | $salary | contract yr | category stat):",
+        "Acquisition targets (id | player | owner | pos | $salary | contract yr | "
+        f"{category} | value):",
     ]
     for c in candidates:
         lines.append(
-            f"  {c['name']} | {c['owner_team_name']} | {c['position']} | "
-            f"${c['salary']} | {c['contract']} yr | {category}={c['stat_value']}"
+            f"  {c['fantrax_id']} | {c['name']} | {c['owner_team_name']} | {c['position']} | "
+            f"${c['salary']} | {c['contract']} yr | {category}={c['stat_value']} | "
+            f"value={_fmt_value(c)}"
         )
+
+    lines += ["", "Your tradeable assets (id | player | pos | $salary | contract yr | value):"]
+    if my_assets:
+        for p in sorted(my_assets, key=lambda x: (x.get("value") or 0), reverse=True):
+            lines.append(
+                f"  {p['fantrax_id']} | {p['name']} | {p['position']} | "
+                f"${p['salary']} | {p['contract']} yr | value={_fmt_value(p)}"
+            )
+    else:
+        lines.append("  (none resolved)")
 
     lines += [
         "",
-        "Recommend the 2-3 most realistic acquisition targets from this list and why, "
-        f"weighing their {category} production against salary and contract year. For each, "
-        "suggest the rough shape of a fair offer (what kind of player/contract to send back) "
-        "without inventing players or stats not provided. Be direct and specific. "
-        "Do not return a table — write 2-4 short paragraphs.",
+        "Recommend the 2-3 most realistic acquisition targets and why, weighing their "
+        f"{category} production against salary and contract year. For EACH recommended target, "
+        "construct a specific, fair offer using ONLY players from 'Your tradeable assets' above "
+        "— name them explicitly. Aim for the total value sent to land within ~15% of the "
+        "target's value (a contender may pay slightly over; a rebuilder should aim slightly "
+        "under), and respect the salary cap. Never invent players, ids, or stats not provided.",
+        "",
+        "Write 2-4 short paragraphs, then end your response with a fenced ```json block (and "
+        "nothing after it) listing the offers you described, using the numeric ids from the "
+        "lists above, in exactly this schema:",
+        "```json",
+        '[{"target_ids": ["<target id>"], "offer_ids": ["<your asset id>", "..."], '
+        '"rationale": "<one sentence>"}]',
+        "```",
+        "Only include offers you actually recommend.",
     ]
     return "\n".join(lines)
+
+
+def _extract_json_block(text: str) -> str | None:
+    """Pull the JSON array out of the model's fenced block (preferring an explicit
+    ```json fence, falling back to any fenced array)."""
+    m = re.search(r"```json\s*(.+?)\s*```", text, re.DOTALL)
+    if m:
+        return m.group(1)
+    m = re.search(r"```\s*(\[.+?\])\s*```", text, re.DOTALL)
+    if m:
+        return m.group(1)
+    return None
+
+
+def parse_finder_response(
+    text: str, candidates: list[dict], my_assets: list[dict]
+) -> tuple[str, list[dict]]:
+    """Split the finder model output into (display prose, validated packages).
+
+    Packages come from the fenced JSON block the prompt requests and are checked
+    against the offered players, so the UI only ever shows real, loadable trades
+    (ids that exist, targets from a single opponent). The JSON block is stripped
+    from the returned prose.
+    """
+    cand_by_id = {c["fantrax_id"]: c for c in candidates}
+    asset_by_id = {p["fantrax_id"]: p for p in my_assets}
+
+    packages: list[dict] = []
+    raw = _extract_json_block(text)
+    if raw:
+        try:
+            data = json.loads(raw)
+        except (ValueError, TypeError):
+            data = None
+        if isinstance(data, list):
+            for entry in data:
+                if not isinstance(entry, dict):
+                    continue
+                targets = [cand_by_id[t] for t in (entry.get("target_ids") or []) if t in cand_by_id]
+                offers = [asset_by_id[o] for o in (entry.get("offer_ids") or []) if o in asset_by_id]
+                if not targets or not offers:
+                    continue
+                owner_id = targets[0]["owner_team_id"]
+                targets = [t for t in targets if t["owner_team_id"] == owner_id]
+                packages.append({
+                    "owner_team_id": owner_id,
+                    "owner_team_name": targets[0]["owner_team_name"],
+                    "target_ids": [t["fantrax_id"] for t in targets],
+                    "offer_ids": [o["fantrax_id"] for o in offers],
+                    "targets": [{"fantrax_id": t["fantrax_id"], "name": t["name"]} for t in targets],
+                    "offer": [{"fantrax_id": o["fantrax_id"], "name": o["name"]} for o in offers],
+                    "rationale": str(entry.get("rationale") or "").strip(),
+                })
+
+    clean = re.sub(r"```json\s*.+?\s*```", "", text, flags=re.DOTALL)
+    clean = re.sub(r"```\s*\[.+?\]\s*```", "", clean, flags=re.DOTALL).strip()
+    return clean, packages
