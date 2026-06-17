@@ -1,0 +1,221 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import { supabase } from "../lib/supabaseClient";
+
+type Contract = {
+  year2_raise?: number;
+  option_raise?: number;
+  extend_raise?: number;
+  extend_floor?: number;
+  extend_cap?: number;
+};
+
+type Rules = {
+  sport?: string;
+  league_size?: number;
+  in_season_cap?: number;
+  offseason_cap?: number;
+  scoring?: { hitting?: string[]; pitching?: string[] };
+  contract?: Contract | null;
+};
+
+const DEFAULT_HITTING = ["R", "HR", "RBI", "SB", "OBP"];
+const DEFAULT_PITCHING = ["QS", "SV", "K", "ERA", "WHIP"];
+const DEFAULT_CONTRACT: Required<Contract> = {
+  year2_raise: 1,
+  option_raise: 1,
+  extend_raise: 4,
+  extend_floor: 15,
+  extend_cap: 70,
+};
+
+function numStr(v: number | undefined, fallback: number): string {
+  return (v ?? fallback).toString();
+}
+function toNum(s: string): number {
+  const n = Number(s.trim());
+  return Number.isFinite(n) ? n : 0;
+}
+function toList(s: string): string[] {
+  return s.split(",").map((t) => t.trim()).filter(Boolean);
+}
+
+const inputCls =
+  "w-full px-3 py-2 rounded-xl border border-gray-200 bg-white text-sm outline-none focus:border-gray-400";
+const labelCls = "text-xs font-medium text-gray-500 uppercase tracking-wide";
+
+export function LeagueRulesEditor({ leagueId }: { leagueId: string }) {
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [sport, setSport] = useState("MLB");
+
+  const [leagueSize, setLeagueSize] = useState("");
+  const [inSeasonCap, setInSeasonCap] = useState("");
+  const [offseasonCap, setOffseasonCap] = useState("");
+  const [hitting, setHitting] = useState("");
+  const [pitching, setPitching] = useState("");
+  const [isContract, setIsContract] = useState(true);
+  const [year2, setYear2] = useState("");
+  const [option, setOption] = useState("");
+  const [extend, setExtend] = useState("");
+  const [floor, setFloor] = useState("");
+  const [capMax, setCapMax] = useState("");
+
+  useEffect(() => {
+    if (!leagueId) return;
+    let active = true;
+    (async () => {
+      const { data } = await supabase
+        .from("leagues")
+        .select("rules, sport")
+        .eq("id", leagueId)
+        .single();
+      if (!active) return;
+      const r: Rules = (data?.rules as Rules) ?? {};
+      const sp = (data?.sport as string) ?? r.sport ?? "MLB";
+      setSport(sp);
+      setLeagueSize(numStr(r.league_size, 10));
+      setInSeasonCap(numStr(r.in_season_cap, 450));
+      setOffseasonCap(numStr(r.offseason_cap, 335));
+      const defH = sp === "MLB" ? DEFAULT_HITTING : [];
+      const defP = sp === "MLB" ? DEFAULT_PITCHING : [];
+      setHitting((r.scoring?.hitting ?? defH).join(", "));
+      setPitching((r.scoring?.pitching ?? defP).join(", "));
+      // Contract object present -> on; explicitly null -> off; missing -> default by sport.
+      const c = r.contract;
+      const on = c ? true : c === null ? false : sp === "MLB";
+      setIsContract(on);
+      const cc = c ?? DEFAULT_CONTRACT;
+      setYear2(numStr(cc.year2_raise, DEFAULT_CONTRACT.year2_raise));
+      setOption(numStr(cc.option_raise, DEFAULT_CONTRACT.option_raise));
+      setExtend(numStr(cc.extend_raise, DEFAULT_CONTRACT.extend_raise));
+      setFloor(numStr(cc.extend_floor, DEFAULT_CONTRACT.extend_floor));
+      setCapMax(numStr(cc.extend_cap, DEFAULT_CONTRACT.extend_cap));
+      setLoaded(true);
+    })();
+    return () => {
+      active = false;
+    };
+  }, [leagueId]);
+
+  async function save() {
+    setSaving(true);
+    setErr(null);
+    setSaved(false);
+    const rules: Rules = {
+      sport,
+      league_size: toNum(leagueSize),
+      in_season_cap: toNum(inSeasonCap),
+      offseason_cap: toNum(offseasonCap),
+      scoring: { hitting: toList(hitting), pitching: toList(pitching) },
+      contract: isContract
+        ? {
+            year2_raise: toNum(year2),
+            option_raise: toNum(option),
+            extend_raise: toNum(extend),
+            extend_floor: toNum(floor),
+            extend_cap: toNum(capMax),
+          }
+        : null,
+    };
+    const { error } = await supabase
+      .from("leagues")
+      .update({ rules })
+      .eq("id", leagueId);
+    setSaving(false);
+    if (error) {
+      setErr(error.message);
+    } else {
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2500);
+    }
+  }
+
+  if (!loaded) {
+    return (
+      <div className="bg-white border rounded-2xl p-6 shadow-sm text-sm text-gray-400 animate-pulse">
+        Loading league rules...
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-white border rounded-2xl p-6 shadow-sm space-y-6">
+      <p className="text-sm text-gray-400 leading-relaxed">
+        These drive the AI trade advisor&apos;s understanding of your league. Caps and size
+        are auto-filled from Fantrax on each sync; categories and contract rules are yours to
+        set.
+      </p>
+
+      <div className="grid grid-cols-3 gap-3">
+        <div className="space-y-2">
+          <label className={labelCls}>League size</label>
+          <input className={inputCls} value={leagueSize} onChange={(e) => setLeagueSize(e.target.value)} inputMode="numeric" />
+        </div>
+        <div className="space-y-2">
+          <label className={labelCls}>In-season cap</label>
+          <input className={inputCls} value={inSeasonCap} onChange={(e) => setInSeasonCap(e.target.value)} inputMode="numeric" />
+        </div>
+        <div className="space-y-2">
+          <label className={labelCls}>Offseason budget</label>
+          <input className={inputCls} value={offseasonCap} onChange={(e) => setOffseasonCap(e.target.value)} inputMode="numeric" />
+        </div>
+      </div>
+
+      <div className="space-y-2">
+        <label className={labelCls}>Hitting categories</label>
+        <input className={inputCls} value={hitting} onChange={(e) => setHitting(e.target.value)} placeholder="R, HR, RBI, SB, OBP" />
+      </div>
+      <div className="space-y-2">
+        <label className={labelCls}>Pitching categories</label>
+        <input className={inputCls} value={pitching} onChange={(e) => setPitching(e.target.value)} placeholder="QS, SV, K, ERA, WHIP" />
+      </div>
+
+      <div className="space-y-3 border-t border-gray-100 pt-4">
+        <label className="flex items-center gap-2 text-sm text-gray-700">
+          <input type="checkbox" checked={isContract} onChange={(e) => setIsContract(e.target.checked)} />
+          Contract league (dynasty salary trajectory)
+        </label>
+        {isContract && (
+          <div className="grid grid-cols-3 gap-3">
+            <div className="space-y-2">
+              <label className={labelCls}>Yr-2 raise</label>
+              <input className={inputCls} value={year2} onChange={(e) => setYear2(e.target.value)} inputMode="numeric" />
+            </div>
+            <div className="space-y-2">
+              <label className={labelCls}>Option raise</label>
+              <input className={inputCls} value={option} onChange={(e) => setOption(e.target.value)} inputMode="numeric" />
+            </div>
+            <div className="space-y-2">
+              <label className={labelCls}>Extend raise</label>
+              <input className={inputCls} value={extend} onChange={(e) => setExtend(e.target.value)} inputMode="numeric" />
+            </div>
+            <div className="space-y-2">
+              <label className={labelCls}>Extend floor</label>
+              <input className={inputCls} value={floor} onChange={(e) => setFloor(e.target.value)} inputMode="numeric" />
+            </div>
+            <div className="space-y-2">
+              <label className={labelCls}>Extend cap (max)</label>
+              <input className={inputCls} value={capMax} onChange={(e) => setCapMax(e.target.value)} inputMode="numeric" />
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="flex items-center justify-end gap-3 pt-2">
+        {err && <span className="text-xs text-red-500">{err}</span>}
+        {saved && <span className="text-xs text-green-600">Saved</span>}
+        <button
+          onClick={save}
+          disabled={saving}
+          className="px-5 py-2 rounded-xl bg-black text-white text-sm font-medium disabled:opacity-30 disabled:cursor-not-allowed transition"
+        >
+          {saving ? "Saving..." : "Save"}
+        </button>
+      </div>
+    </div>
+  );
+}

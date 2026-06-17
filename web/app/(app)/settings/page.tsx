@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { supabase } from "../../lib/supabaseClient";
 import { useLeague } from "../../lib/useLeague";
 import { UploadAnalyze } from "../../components/UploadAnalyze";
+import { LeagueRulesEditor } from "../../components/LeagueRulesEditor";
 import type { AnalyzeResult } from "../../lib/types";
 
 type FantraxLeague = {
@@ -458,6 +459,19 @@ export default function SettingsPage() {
             </div>
 
           </div>
+        </div>
+      )}
+
+      {/* League Rules */}
+      {leagueId && (
+        <div className="grid grid-cols-1 md:grid-cols-[200px_1fr] gap-4 md:gap-8 py-8 border-t border-gray-200">
+          <div>
+            <div className="text-xs font-semibold uppercase tracking-widest text-gray-400">League Rules</div>
+            <p className="text-sm text-gray-400 mt-2 leading-relaxed">
+              Scoring, caps, and contract rules the AI uses to judge trades.
+            </p>
+          </div>
+          <LeagueRulesEditor leagueId={leagueId} />
         </div>
       )}
 

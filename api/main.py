@@ -109,6 +109,52 @@ def extract_league_profile(league_info: dict, team_id: str) -> dict:
     }
 
 
+def detect_rules(
+    league_info: dict,
+    team_roster: dict,
+    rosters: dict,
+    existing_rules: dict | None,
+    sport: str,
+) -> dict:
+    """Refresh the auto-detectable structural rule fields (league size, in-season
+    cap, offseason/auction budget) from Fantrax, while preserving user-owned
+    fields (scoring categories, contract trajectory). Never invents contract
+    rules — they stay as-is, or null until set in the Settings editor, so one
+    league never silently inherits another's house rules."""
+    rules = dict(existing_rules or {})
+    rules["sport"] = sport
+
+    if rosters:
+        rules["league_size"] = len(rosters)
+
+    cap = team_roster.get("salaryCap")
+    if cap:
+        try:
+            rules["in_season_cap"] = int(cap)
+        except (TypeError, ValueError):
+            pass
+
+    budget = (league_info.get("draftSettings") or {}).get("budget")
+    if budget is not None:
+        try:
+            rules["offseason_cap"] = int(budget)
+        except (TypeError, ValueError):
+            pass
+
+    # Scoring + contract are user-owned; only seed on first creation, and never
+    # assume contract terms for a league we haven't been told the rules for.
+    if "scoring" not in rules:
+        rules["scoring"] = (
+            {"hitting": ["R", "HR", "RBI", "SB", "OBP"], "pitching": ["QS", "SV", "K", "ERA", "WHIP"]}
+            if sport == "MLB"
+            else {"hitting": [], "pitching": []}
+        )
+    if "contract" not in rules:
+        rules["contract"] = None
+
+    return rules
+
+
 def resolve_all_players(rosters: dict, player_names: dict) -> None:
     """
     Background task: resolve Fantrax IDs to MLB IDs for all players
@@ -435,6 +481,7 @@ async def roster_sync(
             )
 
         # Step 2.5: Fetch league info and persist structural profile fields
+        league_info = {}
         try:
             league_info = get_league_info(fantrax_league_id)
             profile = extract_league_profile(league_info, team_id)
@@ -442,6 +489,27 @@ async def roster_sync(
             sb.table("leagues").update(profile).eq("fantrax_league_id", fantrax_league_id).execute()
         except Exception as e:
             print(f"[sync] League profile update failed (non-fatal): {e}")
+
+        # Step 2.5b: Auto-detect structural league rules (caps, size, budget),
+        # preserving any user-set scoring/contract. Isolated update so a missing
+        # rules column (migration not yet applied) can't break the profile write.
+        try:
+            sb = get_supabase()
+            existing = (
+                sb.table("leagues")
+                .select("rules")
+                .eq("fantrax_league_id", fantrax_league_id)
+                .single()
+                .execute()
+            )
+            merged_rules = detect_rules(
+                league_info, team_roster, rosters, (existing.data or {}).get("rules"), sport
+            )
+            sb.table("leagues").update({"rules": merged_rules}).eq(
+                "fantrax_league_id", fantrax_league_id
+            ).execute()
+        except Exception as e:
+            print(f"[sync] Rules auto-detect skipped (non-fatal): {e}")
 
         # Step 2.6: Persist all team rosters to Supabase
         try:
