@@ -28,17 +28,21 @@ function barWidth(rank: number): string {
 export function CategoryRanksWidget({
   leagueId,
   myTeamId,
+  initialRanks,
+  initialUpdatedAt,
 }: {
   leagueId: string;
   myTeamId: string;
+  initialRanks?: { [k: string]: number };
+  initialUpdatedAt?: string | null;
 }) {
-  const [ranks, setRanks] = useState<Ranks>({});
+  const [ranks, setRanks] = useState<Ranks>(initialRanks ?? {});
   const [loading, setLoading] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [computing, setComputing] = useState(false);
-  const [updatedAt, setUpdatedAt] = useState<string | null>(null);
+  const [updatedAt, setUpdatedAt] = useState<string | null>(initialUpdatedAt ?? null);
 
   async function fetchRanks() {
     if (!leagueId) return;
@@ -59,6 +63,15 @@ export function CategoryRanksWidget({
   }
 
   useEffect(() => { fetchRanks(); }, [leagueId]);
+
+  // Seed from the dashboard summary if it resolves first and we have nothing yet.
+  useEffect(() => {
+    if (initialRanks && Object.keys(initialRanks).length > 0 && Object.keys(ranks).length === 0) {
+      setRanks(initialRanks);
+      if (initialUpdatedAt) setUpdatedAt(initialUpdatedAt);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialRanks, initialUpdatedAt]);
 
   // Kick off the background approximation, then poll until the stored ranks change.
   async function autoCalc() {

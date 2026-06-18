@@ -12,11 +12,14 @@ import type { Alert } from "../components/StartSitPanel";
 
 type Record = { wins: number | null; losses: number | null; ties: number };
 type RosterSummary = { capUsed: number; capLimit: number; ilPlayers: string[] };
+type Standings = { wins: number | null; losses: number | null; ties: number | null };
+type CachedRanks = { content: { [k: string]: number }; updated_at: string } | null;
+type Summary = { standings: Standings | null; category_ranks: CachedRanks; start_sit: unknown };
 
 export default function DashboardPage() {
   const { leagueId } = useLeague();
   const [myTeamId, setMyTeamId] = useState("");
-  const [record, setRecord] = useState<Record | null>(null);
+  const [summary, setSummary] = useState<Summary | null>(null);
   const [recordLoading, setRecordLoading] = useState(false);
   const [rosterSummary, setRosterSummary] = useState<RosterSummary | null>(null);
   const [alerts, setAlerts] = useState<Alert[]>([]);
@@ -76,31 +79,36 @@ export default function DashboardPage() {
       });
   }, [leagueId, myTeamId]);
 
-  // Load standings from API
+  // One call for standings + cached widget contents (instant paint, then revalidate)
   useEffect(() => {
-    if (!leagueId || !myTeamId) { setRecord(null); return; }
-    const cacheKey = `dynastyos:record:${leagueId}:${myTeamId}`;
-    const cached = readCache<Record>(cacheKey);
-    setRecord(cached); // instant paint, then revalidate in the background
+    if (!leagueId || !myTeamId) { setSummary(null); return; }
+    const cacheKey = `dynastyos:summary:${leagueId}:${myTeamId}`;
+    setSummary(readCache<Summary>(cacheKey));
     setRecordLoading(true);
     supabase.auth.getSession().then(async ({ data: sessionData }) => {
       const token = sessionData.session?.access_token;
       try {
         const res = await fetch(
-          `/api/league/standings?league_id=${leagueId}&my_team_id=${myTeamId}`,
+          `/api/dashboard/summary?league_id=${leagueId}&my_team_id=${myTeamId}`,
           { headers: token ? { Authorization: `Bearer ${token}` } : {} }
         );
         if (res.ok) {
-          const json = await res.json();
-          const rec = { wins: json.wins, losses: json.losses, ties: json.ties ?? 0 };
-          setRecord(rec);
-          writeCache(cacheKey, rec);
+          const json = (await res.json()) as Summary;
+          setSummary(json);
+          writeCache(cacheKey, json);
         }
       } catch {}
       finally { setRecordLoading(false); }
     });
   }, [leagueId, myTeamId]);
 
+  const record: Record | null = summary?.standings
+    ? {
+        wins: summary.standings.wins,
+        losses: summary.standings.losses,
+        ties: summary.standings.ties ?? 0,
+      }
+    : null;
   const recordStr = record
     ? `${record.wins ?? "?"}–${record.losses ?? "?"}${record.ties ? `–${record.ties}` : ""}`
     : null;
@@ -164,7 +172,12 @@ export default function DashboardPage() {
               />
               <InjuryTicker alerts={alerts} />
             </div>
-            <CategoryRanksWidget leagueId={leagueId} myTeamId={myTeamId} />
+            <CategoryRanksWidget
+              leagueId={leagueId}
+              myTeamId={myTeamId}
+              initialRanks={summary?.category_ranks?.content}
+              initialUpdatedAt={summary?.category_ranks?.updated_at}
+            />
           </div>
         </>
       )}
