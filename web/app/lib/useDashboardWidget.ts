@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { supabase } from "./supabaseClient";
+import { readCache, writeCache } from "./clientCache";
 
 /**
  * fetch() wrapper that attaches the Supabase access token and JSON headers.
@@ -37,8 +38,14 @@ export function useDashboardWidget<T>(
   myTeamId: string,
   options?: { onSuccess?: (data: T) => void }
 ) {
-  const [data, setData] = useState<T | null>(null);
-  const [loading, setLoading] = useState(false);
+  const cacheKey =
+    leagueId && myTeamId ? `dynastyos:widget:${widget}:${leagueId}:${myTeamId}` : null;
+
+  // Paint the last-known response immediately (stale-while-revalidate).
+  const [data, setData] = useState<T | null>(() =>
+    cacheKey ? readCache<T>(cacheKey) : null
+  );
+  const [validating, setValidating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const onSuccessRef = useRef(options?.onSuccess);
@@ -46,10 +53,15 @@ export function useDashboardWidget<T>(
     onSuccessRef.current = options?.onSuccess;
   });
 
+  // Re-hydrate from cache when the league/team (and thus key) changes.
+  useEffect(() => {
+    setData(cacheKey ? readCache<T>(cacheKey) : null);
+  }, [cacheKey]);
+
   const refresh = useCallback(
     async (force = false) => {
       if (!leagueId || !myTeamId) return;
-      setLoading(true);
+      setValidating(true);
       setError(null);
       try {
         const res = await authedFetch(`/api/dashboard/${widget}`, {
@@ -63,19 +75,22 @@ export function useDashboardWidget<T>(
         if (!res.ok) throw new Error(await res.text());
         const json = (await res.json()) as T;
         setData(json);
+        if (cacheKey) writeCache(cacheKey, json);
         onSuccessRef.current?.(json);
       } catch (e: unknown) {
         setError(e instanceof Error ? e.message : "Something went wrong.");
       } finally {
-        setLoading(false);
+        setValidating(false);
       }
     },
-    [widget, leagueId, myTeamId]
+    [widget, leagueId, myTeamId, cacheKey]
   );
 
   useEffect(() => {
     refresh();
   }, [refresh]);
 
-  return { data, loading, error, refresh };
+  // Only surface a blocking spinner when there's nothing cached to show yet;
+  // a background revalidation over existing data stays silent.
+  return { data, loading: validating && data === null, validating, error, refresh };
 }
