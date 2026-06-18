@@ -880,7 +880,10 @@ async def dashboard_start_sit(
         if cached:
             try:
                 content = _json.loads(cached["content"])
-                return {"content": content, "updated_at": cached["updated_at"]}
+                # Ignore an empty cached result (a prior failed generation) so it
+                # doesn't stick for the full TTL — fall through and regenerate.
+                if content.get("players"):
+                    return {"content": content, "updated_at": cached["updated_at"]}
             except Exception:
                 pass  # Old prose cache — fall through to regenerate
 
@@ -1019,7 +1022,7 @@ Rules:
         ai = get_ai_client()
         response = ai.messages.create(
             model=MODEL_DASHBOARD,
-            max_tokens=3000,
+            max_tokens=4000,
             tools=[{"type": "web_search_20250305", "name": "web_search"}],
             messages=[{"role": "user", "content": prompt}],
         )
@@ -1049,6 +1052,30 @@ Rules:
         for alert in structured["alerts"]:
             seen[alert["name"]] = alert
         structured["alerts"] = list(seen.values())
+
+        # A generation with no start/sit recs means the model returned no parseable
+        # JSON (truncation / transient web_search miss), not that there's nothing to
+        # say. Don't poison the cache with it: reuse the last good players (with this
+        # run's fresh alerts) if we have them, else return uncached so the next load
+        # retries instead of showing a sticky "no recommendations".
+        if not structured.get("players"):
+            prev = (
+                sb.table("dashboard_cache")
+                .select("content,updated_at")
+                .eq("league_id", body.league_id)
+                .eq("widget", "start_sit")
+                .limit(1)
+                .execute()
+            )
+            if prev.data:
+                try:
+                    prev_content = _json.loads(prev.data[0]["content"])
+                except Exception:
+                    prev_content = None
+                if prev_content and prev_content.get("players"):
+                    prev_content["alerts"] = structured["alerts"]
+                    return {"content": prev_content, "updated_at": prev.data[0]["updated_at"]}
+            return {"content": structured, "updated_at": datetime.now(timezone.utc).isoformat()}
 
         updated_at = _upsert_cache(sb, body.league_id, "start_sit", _json.dumps(structured))
         return {"content": structured, "updated_at": updated_at}
