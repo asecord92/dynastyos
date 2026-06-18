@@ -45,6 +45,21 @@ rules = LeagueRules()
 
 DASHBOARD_CACHE_TTL = timedelta(hours=4)
 
+# Standings come from a live Fantrax call; cache them briefly in-process so a
+# dashboard load doesn't hit Fantrax every time (records change at most weekly).
+STANDINGS_TTL = timedelta(minutes=10)
+_standings_cache: dict[str, tuple[datetime, list]] = {}
+
+
+def _get_standings_cached(fantrax_league_id: str) -> list:
+    now = datetime.now(timezone.utc)
+    hit = _standings_cache.get(fantrax_league_id)
+    if hit and now - hit[0] < STANDINGS_TTL:
+        return hit[1]
+    teams = get_standings(fantrax_league_id)
+    _standings_cache[fantrax_league_id] = (now, teams)
+    return teams
+
 # Model selection: Opus for deep trade reasoning, Sonnet for the high-frequency
 # dashboard widgets (news / start_sit / waiver) — faster and ~40% cheaper.
 MODEL_TRADE = "claude-opus-4-8"
@@ -308,7 +323,7 @@ async def league_standings(
         if not fantrax_league_id:
             raise HTTPException(status_code=404, detail="No Fantrax league connected.")
 
-        teams = get_standings(fantrax_league_id)  # flat list
+        teams = _get_standings_cached(fantrax_league_id)  # flat list, 10-min cache
         total_teams = len(teams)
         team = next((t for t in teams if t.get("teamId") == my_team_id), None)
 

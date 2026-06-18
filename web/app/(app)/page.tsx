@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
 import { useLeague } from "../lib/useLeague";
+import { readCache, writeCache } from "../lib/clientCache";
 import { StatCard } from "../components/StatCard";
 import { StartSitPanel } from "../components/StartSitPanel";
 import { CategoryRanksWidget } from "../components/CategoryRanksWidget";
@@ -34,6 +35,8 @@ export default function DashboardPage() {
   // Load roster summary (cap + IL) directly from Supabase
   useEffect(() => {
     if (!leagueId || !myTeamId) { setRosterSummary(null); return; }
+    const cacheKey = `dynastyos:roster-summary:${leagueId}:${myTeamId}`;
+    setRosterSummary(readCache<RosterSummary>(cacheKey)); // instant paint, then revalidate
     supabase
       .from("rosters")
       .select("roster_items,salary_cap")
@@ -67,13 +70,18 @@ export default function DashboardPage() {
           .map((i) => nameMap[i.id] || i.name || "")
           .filter(Boolean);
 
-        setRosterSummary({ capUsed, capLimit: data.salary_cap ?? 450, ilPlayers });
+        const summary = { capUsed, capLimit: data.salary_cap ?? 450, ilPlayers };
+        setRosterSummary(summary);
+        writeCache(cacheKey, summary);
       });
   }, [leagueId, myTeamId]);
 
   // Load standings from API
   useEffect(() => {
     if (!leagueId || !myTeamId) { setRecord(null); return; }
+    const cacheKey = `dynastyos:record:${leagueId}:${myTeamId}`;
+    const cached = readCache<Record>(cacheKey);
+    setRecord(cached); // instant paint, then revalidate in the background
     setRecordLoading(true);
     supabase.auth.getSession().then(async ({ data: sessionData }) => {
       const token = sessionData.session?.access_token;
@@ -84,7 +92,9 @@ export default function DashboardPage() {
         );
         if (res.ok) {
           const json = await res.json();
-          setRecord({ wins: json.wins, losses: json.losses, ties: json.ties ?? 0 });
+          const rec = { wins: json.wins, losses: json.losses, ties: json.ties ?? 0 };
+          setRecord(rec);
+          writeCache(cacheKey, rec);
         }
       } catch {}
       finally { setRecordLoading(false); }
@@ -120,7 +130,7 @@ export default function DashboardPage() {
             <StatCard
               label="Record"
               value={recordStr}
-              loading={recordLoading}
+              loading={recordLoading && !record}
             />
             <StatCard
               label="Cap Used"
