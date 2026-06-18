@@ -742,56 +742,90 @@ async def trade_finder(
     body: TradeFinderRequest,
     user: dict = Depends(get_current_user),
 ):
-    """Category-first Trade Finder: rank league-wide acquisition targets for a
-    category the manager needs, with an AI recommendation. Returns structured JSON
-    so the UI can render clickable targets that prefill the trade builder."""
+    """Category-first Trade Finder. Streams newline-delimited JSON: a `meta` event
+    with the ranked targets first (so the UI shows them immediately, before the
+    slow Opus call), then `text` events as the recommendation streams, then a
+    final `packages` event with the parsed, validated offers."""
+    # Build context up front so input errors surface as a normal HTTP status
+    # (not mid-stream). This is also where the candidate ranking is computed.
     try:
         context = await build_finder_context(
             league_id=body.league_id,
             my_team_id=body.my_team_id,
             target_category=body.target_category,
         )
-        prompt = build_finder_prompt(context)
-        system_prompt = build_system_prompt(context["rules"], context["sport"])
-
-        ai = get_ai_client()
-        response = ai.messages.create(
-            model=MODEL_TRADE,
-            max_tokens=2000,
-            system=system_prompt,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        raw_analysis = _extract_text(response)
-        analysis, packages = parse_finder_response(
-            raw_analysis, context["candidates"], context.get("my_assets", [])
-        )
-
-        candidates = [
-            {
-                "fantrax_id": c["fantrax_id"],
-                "name": c["name"],
-                "position": c["position"],
-                "salary": c["salary"],
-                "contract": c["contract"],
-                "owner_team_id": c["owner_team_id"],
-                "owner_team_name": c["owner_team_name"],
-                "stat_value": c["stat_value"],
-                "value": c.get("value"),
-            }
-            for c in context["candidates"]
-        ]
-        return {
-            "target_category": context["target_category"],
-            "candidates": candidates,
-            "packages": packages,
-            "analysis": analysis,
-        }
-
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+    prompt = build_finder_prompt(context)
+    system_prompt = build_system_prompt(context["rules"], context["sport"])
+    candidates = [
+        {
+            "fantrax_id": c["fantrax_id"],
+            "name": c["name"],
+            "position": c["position"],
+            "salary": c["salary"],
+            "contract": c["contract"],
+            "owner_team_id": c["owner_team_id"],
+            "owner_team_name": c["owner_team_name"],
+            "stat_value": c["stat_value"],
+            "value": c.get("value"),
+        }
+        for c in context["candidates"]
+    ]
+    ai = get_ai_client()
+
+    def event(obj: dict) -> str:
+        return _json.dumps(obj) + "\n"
+
+    def stream():
+        # Targets are ready before the AI call — send them first.
+        yield event({
+            "type": "meta",
+            "target_category": context["target_category"],
+            "candidates": candidates,
+        })
+        full: list[str] = []
+        emitted = 0  # chars of the prose already streamed
+        stopped = False  # once the ```json fence starts, hold back the rest
+        try:
+            with ai.messages.stream(
+                model=MODEL_TRADE,
+                max_tokens=2000,
+                system=system_prompt,
+                messages=[{"role": "user", "content": prompt}],
+            ) as s:
+                for text in s.text_stream:
+                    full.append(text)
+                    if stopped:
+                        continue
+                    joined = "".join(full)
+                    fence = joined.find("```")
+                    if fence != -1:
+                        if fence > emitted:
+                            yield event({"type": "text", "delta": joined[emitted:fence]})
+                        emitted = fence
+                        stopped = True  # the rest is the JSON package block
+                    else:
+                        # Hold back a 2-char lookbehind so a fence split across
+                        # deltas is never shown to the user.
+                        safe = len(joined) - 2
+                        if safe > emitted:
+                            yield event({"type": "text", "delta": joined[emitted:safe]})
+                            emitted = safe
+            raw = "".join(full)
+            analysis, packages = parse_finder_response(
+                raw, context["candidates"], context.get("my_assets", [])
+            )
+            yield event({"type": "packages", "packages": packages, "analysis": analysis})
+        except Exception as e:
+            traceback.print_exc()
+            yield event({"type": "error", "detail": str(e)})
+
+    return StreamingResponse(stream(), media_type="application/x-ndjson")
 
 
 @app.post("/dashboard/news")

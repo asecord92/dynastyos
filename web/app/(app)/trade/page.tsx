@@ -38,6 +38,12 @@ type FinderResult = {
   analysis: string;
 };
 
+type FinderEvent =
+  | { type: "meta"; target_category: string; candidates: Candidate[] }
+  | { type: "text"; delta: string }
+  | { type: "packages"; packages: TradePackage[]; analysis: string }
+  | { type: "error"; detail: string };
+
 type TeamRoster = {
   fantrax_team_id: string;
   team_name: string;
@@ -313,6 +319,7 @@ export default function TradePage() {
     if (!leagueId || !myTeamId) return;
     setFinderLoading(true);
     setFinderError(null);
+    setFinder(null);
     try {
       const res = await authedFetch("/api/trade/finder", {
         method: "POST",
@@ -322,8 +329,54 @@ export default function TradePage() {
           target_category: category ?? null,
         }),
       });
-      if (!res.ok) throw new Error(await res.text());
-      setFinder((await res.json()) as FinderResult);
+      if (!res.ok || !res.body) throw new Error(await res.text());
+
+      let analysisText = "";
+      const apply = (evt: FinderEvent) => {
+        if (evt.type === "meta") {
+          // Targets arrive before the AI — render them and drop the spinner.
+          setFinder({
+            target_category: evt.target_category,
+            candidates: evt.candidates ?? [],
+            packages: [],
+            analysis: "",
+          });
+          setFinderLoading(false);
+        } else if (evt.type === "text") {
+          analysisText += evt.delta ?? "";
+          setFinder((prev) => (prev ? { ...prev, analysis: analysisText } : prev));
+        } else if (evt.type === "packages") {
+          setFinder((prev) =>
+            prev
+              ? { ...prev, packages: evt.packages ?? [], analysis: evt.analysis ?? analysisText }
+              : prev
+          );
+        } else if (evt.type === "error") {
+          setFinderError(evt.detail ?? "Something went wrong.");
+        }
+      };
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+      const flush = (line: string) => {
+        const t = line.trim();
+        if (!t) return;
+        try {
+          apply(JSON.parse(t) as FinderEvent);
+        } catch {
+          /* ignore a partial/garbled line */
+        }
+      };
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split("\n");
+        buf = lines.pop() ?? "";
+        for (const line of lines) flush(line);
+      }
+      flush(buf);
     } catch (e: unknown) {
       setFinderError(e instanceof Error ? e.message : "Something went wrong.");
     } finally {
@@ -661,7 +714,7 @@ export default function TradePage() {
                         </div>
                       </div>
                     )}
-                    {finder.analysis && (
+                    {finder.analysis ? (
                       <div className="bg-white border rounded-2xl p-5 shadow-sm">
                         <div className="text-xs font-semibold uppercase tracking-widest text-gray-400 mb-3">
                           Recommendation
@@ -673,6 +726,10 @@ export default function TradePage() {
                             </p>
                           ))}
                         </div>
+                      </div>
+                    ) : (
+                      <div className="bg-white border rounded-2xl p-5 shadow-sm text-sm text-gray-400 animate-pulse">
+                        Analyzing targets and building offers…
                       </div>
                     )}
                   </>
