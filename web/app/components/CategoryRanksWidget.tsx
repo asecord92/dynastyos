@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
+import { readCache, writeCache } from "../lib/clientCache";
 
 const CATEGORIES = ["R", "HR", "RBI", "SB", "OBP", "QS", "SV", "K", "ERA", "WHIP"];
 const TOTAL_TEAMS = 10;
@@ -36,13 +37,26 @@ export function CategoryRanksWidget({
   initialRanks?: { [k: string]: number };
   initialUpdatedAt?: string | null;
 }) {
-  const [ranks, setRanks] = useState<Ranks>(initialRanks ?? {});
+  const cacheKey = leagueId ? `dynastyos:catranks:${leagueId}` : null;
+  const seeded = cacheKey
+    ? readCache<{ ranks: Ranks; updatedAt: string | null }>(cacheKey)
+    : null;
+
+  const [ranks, setRanks] = useState<Ranks>(
+    (initialRanks && Object.keys(initialRanks).length ? initialRanks : seeded?.ranks) ?? {}
+  );
   const [loading, setLoading] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [computing, setComputing] = useState(false);
-  const [updatedAt, setUpdatedAt] = useState<string | null>(initialUpdatedAt ?? null);
+  const [updatedAt, setUpdatedAt] = useState<string | null>(
+    initialUpdatedAt ?? seeded?.updatedAt ?? null
+  );
+
+  function cacheRanks(r: Ranks, u: string | null) {
+    if (cacheKey) writeCache(cacheKey, { ranks: r, updatedAt: u });
+  }
 
   async function fetchRanks() {
     if (!leagueId) return;
@@ -57,6 +71,7 @@ export function CategoryRanksWidget({
         const json = await res.json();
         setRanks(json.ranks ?? {});
         setUpdatedAt(json.updated_at ?? null);
+        cacheRanks(json.ranks ?? {}, json.updated_at ?? null);
       }
     } catch {}
     finally { setLoading(false); }
@@ -102,6 +117,7 @@ export function CategoryRanksWidget({
           if (json.updated_at && json.updated_at !== before) {
             setRanks(json.ranks ?? {});
             setUpdatedAt(json.updated_at);
+            cacheRanks(json.ranks ?? {}, json.updated_at);
             break;
           }
         }
@@ -138,6 +154,8 @@ export function CategoryRanksWidget({
         body: JSON.stringify({ league_id: leagueId, ranks: payload }),
       });
       setRanks(payload);
+      setUpdatedAt(new Date().toISOString());
+      cacheRanks(payload, new Date().toISOString());
       setEditOpen(false);
     } catch {}
     finally { setSaving(false); }
@@ -178,7 +196,7 @@ export function CategoryRanksWidget({
           </div>
         </div>
 
-        {loading && (
+        {loading && !hasRanks && (
           <div className="space-y-2 animate-pulse">
             {CATEGORIES.map((c) => (
               <div key={c} className="flex items-center gap-2">
@@ -207,7 +225,7 @@ export function CategoryRanksWidget({
           </p>
         )}
 
-        {!loading && hasRanks && (
+        {hasRanks && (
           <div className="space-y-2">
             {CATEGORIES.map((cat) => {
               const rank = ranks[cat];
