@@ -1,0 +1,29 @@
+name: Refresh dashboard widgets
+
+# Re-warms each active league's AI widgets (news / start_sit / waiver) every 3
+# hours, before their 4h cache lapses — so users always hit warm cache and never
+# trigger a slow on-demand generation. Set repo secrets KEEPWARM_URL (backend
+# base URL) and CRON_SECRET (must match the backend's CRON_SECRET env var); if
+# either is unset the job no-ops. A Railway cron service is a more reliable
+# trigger than GitHub's best-effort scheduler if you prefer.
+
+on:
+  schedule:
+    - cron: "0 */3 * * *"
+  workflow_dispatch:
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger widget refresh
+        env:
+          KEEPWARM_URL: ${{ secrets.KEEPWARM_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$KEEPWARM_URL" ] || [ -z "$CRON_SECRET" ]; then
+            echo "KEEPWARM_URL or CRON_SECRET not set; skipping."
+            exit 0
+          fi
+          curl -fsS --max-time 120 -X POST "${KEEPWARM_URL%/}/cron/refresh-widgets" \
+            -H "x-cron-secret: $CRON_SECRET" && echo " — refreshed"

@@ -4,7 +4,7 @@ import os
 import re
 import json as _json
 import tempfile
-from fastapi import FastAPI, UploadFile, File, Query, HTTPException, BackgroundTasks, Depends
+from fastapi import FastAPI, UploadFile, File, Query, HTTPException, BackgroundTasks, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -59,6 +59,30 @@ def _get_standings_cached(fantrax_league_id: str) -> list:
     teams = get_standings(fantrax_league_id)
     _standings_cache[fantrax_league_id] = (now, teams)
     return teams
+
+
+# Re-warm AI widgets in the background before their 4h cache lapses, so a user
+# never triggers a slow on-demand Sonnet+web_search generation themselves.
+REFRESH_AFTER = timedelta(hours=3)
+
+
+def _cache_age(sb, league_id: str, widget: str) -> timedelta | None:
+    """Age of a cached widget, or None if it has never been generated."""
+    try:
+        row = (
+            sb.table("dashboard_cache")
+            .select("updated_at")
+            .eq("league_id", league_id)
+            .eq("widget", widget)
+            .limit(1)
+            .execute()
+        )
+        if not row.data:
+            return None
+        updated = datetime.fromisoformat(row.data[0]["updated_at"].replace("Z", "+00:00"))
+        return datetime.now(timezone.utc) - updated
+    except Exception:
+        return None
 
 # Model selection: Opus for deep trade reasoning, Sonnet for the high-frequency
 # dashboard widgets (news / start_sit / waiver) — faster and ~40% cheaper.
@@ -302,6 +326,45 @@ def _load_category_ranks(sb, league_id: str) -> dict:
 @app.get("/health")
 def health():
     return {"ok": True}
+
+
+@app.post("/cron/refresh-widgets")
+async def cron_refresh_widgets(x_cron_secret: str = Header(default="")):
+    """Machine-triggered re-warm of the AI dashboard widgets so users never wait
+    on an on-demand generation. Guarded by the CRON_SECRET shared secret (not a
+    user JWT). Only refreshes widgets that already have a cache entry near expiry,
+    so dormant leagues incur no AI cost."""
+    secret = os.getenv("CRON_SECRET")
+    if not secret or x_cron_secret != secret:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    sb = get_supabase()
+    leagues = (sb.table("leagues").select("id, fantrax_team_id").execute().data) or []
+
+    handlers = {
+        "news": dashboard_news,
+        "start_sit": dashboard_start_sit,
+        "waiver": dashboard_waiver,
+    }
+    refreshed: list[str] = []
+    for lg in leagues:
+        league_id = lg.get("id")
+        team_id = lg.get("fantrax_team_id")
+        if not league_id or not team_id:
+            continue
+        for widget, handler in handlers.items():
+            age = _cache_age(sb, league_id, widget)
+            if age is None or age < REFRESH_AFTER:
+                continue  # never generated (dormant league) or still fresh
+            try:
+                await handler(
+                    DashboardRequest(league_id=league_id, my_team_id=team_id, force=True),
+                    user={},
+                )
+                refreshed.append(f"{league_id}:{widget}")
+            except Exception as e:
+                print(f"[cron] refresh failed {league_id}:{widget}: {e}")
+    return {"refreshed": refreshed, "count": len(refreshed)}
 
 
 @app.get("/league/standings")
