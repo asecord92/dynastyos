@@ -367,6 +367,29 @@ async def cron_refresh_widgets(x_cron_secret: str = Header(default="")):
     return {"refreshed": refreshed, "count": len(refreshed)}
 
 
+def _build_standings(fantrax_league_id: str, my_team_id: str) -> dict:
+    """Resolve a team's record from the (10-min cached) Fantrax standings list."""
+    teams = _get_standings_cached(fantrax_league_id)
+    total_teams = len(teams)
+    team = next((t for t in teams if t.get("teamId") == my_team_id), None)
+    if not team:
+        return {"wins": None, "losses": None, "ties": None, "record": "—",
+                "rank": None, "team_name": "", "total_teams": total_teams}
+    parts = (team.get("points") or "0-0-0").split("-")
+
+    def _p(i: int) -> int:
+        try:
+            return int(parts[i])
+        except (IndexError, ValueError):
+            return 0
+
+    return {
+        "wins": _p(0), "losses": _p(1), "ties": _p(2),
+        "record": team.get("points", "—"), "rank": team.get("rank"),
+        "team_name": team.get("teamName", ""), "total_teams": total_teams,
+    }
+
+
 @app.get("/league/standings")
 async def league_standings(
     league_id: str = Query(...),
@@ -385,28 +408,7 @@ async def league_standings(
         fantrax_league_id = league_row.data.get("fantrax_league_id") if league_row.data else None
         if not fantrax_league_id:
             raise HTTPException(status_code=404, detail="No Fantrax league connected.")
-
-        teams = _get_standings_cached(fantrax_league_id)  # flat list, 10-min cache
-        total_teams = len(teams)
-        team = next((t for t in teams if t.get("teamId") == my_team_id), None)
-
-        if not team:
-            return {"wins": None, "losses": None, "ties": None, "record": "—", "total_teams": total_teams}
-
-        parts = (team.get("points") or "0-0-0").split("-")
-        wins = int(parts[0]) if len(parts) > 0 else 0
-        losses = int(parts[1]) if len(parts) > 1 else 0
-        ties = int(parts[2]) if len(parts) > 2 else 0
-
-        return {
-            "wins": wins,
-            "losses": losses,
-            "ties": ties,
-            "record": team.get("points", "—"),
-            "rank": team.get("rank"),
-            "team_name": team.get("teamName", ""),
-            "total_teams": total_teams,
-        }
+        return _build_standings(fantrax_league_id, my_team_id)
     except HTTPException:
         raise
     except Exception as e:
@@ -436,6 +438,52 @@ async def get_category_ranks(
                 ranks = {}
             return {"ranks": ranks, "updated_at": result.data[0]["updated_at"]}
         return {"ranks": {}, "updated_at": None}
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/dashboard/summary")
+async def dashboard_summary(
+    league_id: str = Query(...),
+    my_team_id: str = Query(...),
+    user: dict = Depends(get_current_user),
+):
+    """One call for the dashboard: standings + the cached start_sit and
+    category_ranks contents. No AI generation here — pure cache reads (kept warm
+    by /cron/refresh-widgets), so the page fetches once instead of three times."""
+    try:
+        sb = get_supabase()
+        league_row = (
+            sb.table("leagues").select("fantrax_league_id").eq("id", league_id).single().execute()
+        )
+        flid = league_row.data.get("fantrax_league_id") if league_row.data else None
+        standings = _build_standings(flid, my_team_id) if flid else None
+
+        def _cached(widget: str):
+            row = (
+                sb.table("dashboard_cache")
+                .select("content,updated_at")
+                .eq("league_id", league_id)
+                .eq("widget", widget)
+                .limit(1)
+                .execute()
+            )
+            if not row.data:
+                return None
+            try:
+                return {
+                    "content": _json.loads(row.data[0]["content"]),
+                    "updated_at": row.data[0]["updated_at"],
+                }
+            except Exception:
+                return None
+
+        return {
+            "standings": standings,
+            "start_sit": _cached("start_sit"),
+            "category_ranks": _cached("category_ranks"),
+        }
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
