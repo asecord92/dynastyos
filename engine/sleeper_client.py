@@ -51,22 +51,31 @@ def get_traded_picks(league_id: str) -> list:
 
 
 def get_players() -> dict:
-    """Full NFL player dump (player_id -> metadata). ~5MB; cached a day in-process."""
+    """Full NFL player dump (player_id -> metadata). ~5MB; cached a day in-process.
+    A transient empty/invalid response is never cached, so a bad fetch can't
+    poison the 24h window."""
     now = time.time()
-    if _players_cache["data"] is None or now - _players_cache["ts"] > _DUMP_TTL:
-        _players_cache["data"] = _get(f"{SLEEPER_BASE}/players/nfl", timeout=60)
+    if _players_cache["data"] is not None and now - _players_cache["ts"] <= _DUMP_TTL:
+        return _players_cache["data"]
+    data = _get(f"{SLEEPER_BASE}/players/nfl", timeout=60)
+    if isinstance(data, dict) and data:
+        _players_cache["data"] = data
         _players_cache["ts"] = now
-    return _players_cache["data"]
+        return data
+    return _players_cache["data"] or {}
 
 
 def get_season_stats(season: str | int) -> dict:
     """Per-player regular-season fantasy stats for a season (player_id -> stats incl.
-    pts_half_ppr / pts_ppr / pts_std and pos_rank_*). Cached a day in-process."""
+    pts_half_ppr / pts_ppr / pts_std and pos_rank_*). Cached a day in-process; an
+    empty/invalid response is never cached."""
     season = str(season)
     hit = _stats_cache.get(season)
     now = time.time()
     if hit and now - hit["ts"] <= _DUMP_TTL:
         return hit["data"]
     data = _get(f"{SLEEPER_BASE}/stats/nfl/regular/{season}", timeout=40)
-    _stats_cache[season] = {"data": data, "ts": now}
-    return data
+    if isinstance(data, dict) and data:
+        _stats_cache[season] = {"data": data, "ts": now}
+        return data
+    return (hit or {}).get("data", {})
