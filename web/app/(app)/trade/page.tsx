@@ -219,7 +219,8 @@ function AnalysisRenderer({ text }: { text: string }) {
 }
 
 export default function TradePage() {
-  const { leagueId } = useLeague();
+  const { leagueId, sport } = useLeague();
+  const isNFL = sport === "NFL";
 
   const [myTeamId, setMyTeamId] = useState("");
   const [teams, setTeams] = useState<TeamRoster[]>([]);
@@ -503,7 +504,17 @@ export default function TradePage() {
         </div>
       )}
 
-      {leagueId && (
+      {leagueId && isNFL && (
+        <div className="bg-white border rounded-2xl p-6 shadow-sm space-y-2">
+          <h2 className="text-lg font-semibold">Football trades — coming soon</h2>
+          <p className="text-sm text-gray-500">
+            Your Sleeper league is synced. Football trade analysis (with draft
+            picks) is on the way.
+          </p>
+        </div>
+      )}
+
+      {leagueId && !isNFL && (
         <div className="space-y-6">
           {/* Mode toggle */}
           <div className="flex gap-2">

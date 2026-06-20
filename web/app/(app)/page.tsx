@@ -17,7 +17,8 @@ type CachedRanks = { content: { [k: string]: number }; updated_at: string } | nu
 type Summary = { standings: Standings | null; category_ranks: CachedRanks; start_sit: unknown };
 
 export default function DashboardPage() {
-  const { leagueId } = useLeague();
+  const { leagueId, sport } = useLeague();
+  const isNFL = sport === "NFL";
   const [myTeamId, setMyTeamId] = useState("");
   const [summary, setSummary] = useState<Summary | null>(null);
   const [recordLoading, setRecordLoading] = useState(false);
@@ -131,7 +132,17 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {leagueId && myTeamId && (
+      {leagueId && myTeamId && isNFL && (
+        <div className="bg-white border rounded-2xl p-6 shadow-sm space-y-2">
+          <h2 className="text-lg font-semibold">Football dashboard — coming soon</h2>
+          <p className="text-sm text-gray-500">
+            Your Sleeper league is connected and rosters are synced. Football
+            trade tools and dashboards are on the way.
+          </p>
+        </div>
+      )}
+
+      {leagueId && myTeamId && !isNFL && (
         <>
           {/* Stat cards */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">

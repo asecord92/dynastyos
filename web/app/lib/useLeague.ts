@@ -2,6 +2,8 @@
 
 import { useRouter, usePathname, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
+import { supabase } from "./supabaseClient";
+import { readCache, writeCache } from "./clientCache";
 
 const STORAGE_KEY = "dynastyos:selected_league_id";
 
@@ -37,6 +39,25 @@ export function useLeague() {
     }
   }, []);
 
+  // The selected league's sport (MLB | NFL), cached for instant subsequent reads.
+  const [sport, setSport] = useState<string>(() =>
+    leagueId ? readCache<string>(`dynastyos:sport:${leagueId}`) ?? "" : ""
+  );
+  useEffect(() => {
+    if (!leagueId) { setSport(""); return; }
+    setSport(readCache<string>(`dynastyos:sport:${leagueId}`) ?? "");
+    supabase
+      .from("leagues")
+      .select("sport")
+      .eq("id", leagueId)
+      .single()
+      .then(({ data }: { data: { sport: string | null } | null }) => {
+        const s = data?.sport ?? "";
+        setSport(s);
+        if (s) writeCache(`dynastyos:sport:${leagueId}`, s);
+      });
+  }, [leagueId]);
+
   const setLeague = useCallback((id: string) => {
     setLeagueIdState(id);
     localStorage.setItem(STORAGE_KEY, id);
@@ -50,5 +71,5 @@ export function useLeague() {
     return `${path}?league=${leagueId}`;
   }, [leagueId]);
 
-  return { leagueId, setLeague, buildHref };
+  return { leagueId, sport, setLeague, buildHref };
 }
