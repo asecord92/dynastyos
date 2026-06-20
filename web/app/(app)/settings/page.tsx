@@ -6,13 +6,15 @@ import { supabase } from "../../lib/supabaseClient";
 import { useLeague } from "../../lib/useLeague";
 import { UploadAnalyze } from "../../components/UploadAnalyze";
 import { LeagueRulesEditor } from "../../components/LeagueRulesEditor";
+import { authedFetch } from "../../lib/useDashboardWidget";
 import type { AnalyzeResult } from "../../lib/types";
 
 type FantraxLeague = {
   leagueId: string;
   leagueName: string;
-  teamName: string;
+  teamName?: string;
   sport: string;
+  season?: string;
 };
 
 type LeagueRow = {
@@ -90,8 +92,11 @@ export default function SettingsPage() {
   const [showModal, setShowModal] = useState(false);
   const pendingNavRef = useRef<string | null>(null);
 
-  // Fantrax connect state
+  // Connect state (Fantrax + Sleeper share the league picker)
+  const [platform, setPlatform] = useState<"fantrax" | "sleeper">("fantrax");
   const [secretId, setSecretId] = useState("");
+  const [sleeperUsername, setSleeperUsername] = useState("");
+  const [sleeperUserId, setSleeperUserId] = useState("");
   const [fantraxLeagues, setFantraxLeagues] = useState<FantraxLeague[]>([]);
   const [selectedFantraxLeagueId, setSelectedFantraxLeagueId] = useState("");
   const [connectLoading, setConnectLoading] = useState(false);
@@ -268,7 +273,105 @@ export default function SettingsPage() {
     }
   }
 
+  function findLeagues() {
+    return platform === "sleeper" ? fetchSleeperLeagues() : fetchFantraxLeagues();
+  }
+
+  async function fetchSleeperLeagues() {
+    if (!sleeperUsername) return;
+    setConnectLoading(true);
+    setConnectMsg(null);
+    try {
+      const res = await fetch(`/api/sleeper/leagues?username=${encodeURIComponent(sleeperUsername)}`);
+      if (!res.ok) throw new Error(await res.text());
+      const json = await res.json();
+      setSleeperUserId(json.user_id ?? "");
+      const fetched: FantraxLeague[] = (json.leagues ?? []).map(
+        (l: { leagueId: string; leagueName: string; sport: string; season?: string }) => ({
+          leagueId: l.leagueId,
+          leagueName: l.leagueName,
+          sport: l.sport,
+          season: l.season,
+          teamName: l.season ? `${l.season}` : undefined,
+        })
+      );
+      if (fetched.length === 0) {
+        setConnectMsg("No NFL leagues found for that username.");
+        return;
+      }
+      setFantraxLeagues(fetched);
+      setSelectedFantraxLeagueId(fetched[0].leagueId);
+      setConnectStep("pick");
+    } catch (e: any) {
+      setConnectMsg(e?.message ?? "Something went wrong.");
+    } finally {
+      setConnectLoading(false);
+    }
+  }
+
+  async function connectSleeperLeague() {
+    if (!selectedFantraxLeagueId) return;
+    setConnectLoading(true);
+    setConnectMsg(null);
+    const picked = fantraxLeagues.find((l) => l.leagueId === selectedFantraxLeagueId);
+    if (!picked) { setConnectLoading(false); return; }
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const user = sessionData.session?.user;
+      if (!user) throw new Error("Not logged in.");
+
+      const { data: existing } = await supabase
+        .from("leagues")
+        .select("id")
+        .eq("owner_user_id", user.id)
+        .eq("sleeper_league_id", picked.leagueId)
+        .maybeSingle();
+
+      const fields = {
+        name: picked.leagueName,
+        platform: "sleeper",
+        sleeper_username: sleeperUsername,
+        sleeper_user_id: sleeperUserId,
+        sleeper_league_id: picked.leagueId,
+        sport: "NFL",
+      };
+
+      let leagueRowId: string;
+      if (existing) {
+        leagueRowId = existing.id;
+        await supabase.from("leagues").update(fields).eq("id", existing.id);
+      } else {
+        const { data: newLeague, error } = await supabase
+          .from("leagues")
+          .insert({ owner_user_id: user.id, ...fields })
+          .select("id")
+          .single();
+        if (error) throw new Error(error.message);
+        leagueRowId = newLeague.id;
+      }
+
+      setLeague(leagueRowId);
+      setConnectStep("done");
+      setSleeperUsername("");
+      showToast();
+      window.dispatchEvent(new Event("dynastyos:leagues-updated"));
+
+      const syncRes = await authedFetch("/api/sleeper/sync", {
+        method: "POST",
+        body: JSON.stringify({ league_id: leagueRowId, sleeper_league_id: picked.leagueId }),
+      });
+      if (!syncRes.ok) {
+        setConnectMsg("Connected, but the roster sync failed: " + (await syncRes.text()));
+      }
+    } catch (e: any) {
+      setConnectMsg(e?.message ?? "Something went wrong.");
+    } finally {
+      setConnectLoading(false);
+    }
+  }
+
   async function connectLeague() {
+    if (platform === "sleeper") return connectSleeperLeague();
     if (!selectedFantraxLeagueId) return;
     setConnectLoading(true);
     setConnectMsg(null);
@@ -486,32 +589,65 @@ export default function SettingsPage() {
         <div className="space-y-4">
           <div className="bg-white border rounded-2xl p-6 shadow-sm space-y-4">
             <h3 className="text-lg font-semibold">Connect a League</h3>
-            <p className="text-sm text-gray-500">
-              Enter your Fantrax Secret ID — found on your Fantrax profile page —
-              to import your leagues directly.
-            </p>
-
-            {connectStep === "done" && (
-              <div className="text-sm text-gray-700 bg-gray-50 border border-gray-200 rounded-xl p-3">
-                Fantrax connected. To connect another league, enter a Secret ID below.
-              </div>
-            )}
 
             <div className="space-y-2">
               <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">
-                Fantrax Secret ID
+                Platform
               </label>
-              <input
-                value={secretId}
+              <select
+                value={platform}
                 onChange={(e) => {
-                  setSecretId(e.target.value);
+                  setPlatform(e.target.value as "fantrax" | "sleeper");
                   setConnectStep("idle");
                   setFantraxLeagues([]);
+                  setConnectMsg(null);
                 }}
-                placeholder="Found on your Fantrax profile page"
                 className="w-full px-3 py-2 rounded-xl border border-gray-200 bg-white text-sm outline-none focus:border-gray-400"
-              />
+              >
+                <option value="fantrax">Fantrax (baseball)</option>
+                <option value="sleeper">Sleeper (football)</option>
+              </select>
             </div>
+
+            {connectStep === "done" && (
+              <div className="text-sm text-gray-700 bg-gray-50 border border-gray-200 rounded-xl p-3">
+                Connected. To connect another league, pick a platform and find leagues below.
+              </div>
+            )}
+
+            {platform === "fantrax" ? (
+              <div className="space-y-2">
+                <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+                  Fantrax Secret ID
+                </label>
+                <input
+                  value={secretId}
+                  onChange={(e) => {
+                    setSecretId(e.target.value);
+                    setConnectStep("idle");
+                    setFantraxLeagues([]);
+                  }}
+                  placeholder="Found on your Fantrax profile page"
+                  className="w-full px-3 py-2 rounded-xl border border-gray-200 bg-white text-sm outline-none focus:border-gray-400"
+                />
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+                  Sleeper Username
+                </label>
+                <input
+                  value={sleeperUsername}
+                  onChange={(e) => {
+                    setSleeperUsername(e.target.value);
+                    setConnectStep("idle");
+                    setFantraxLeagues([]);
+                  }}
+                  placeholder="Your public Sleeper username"
+                  className="w-full px-3 py-2 rounded-xl border border-gray-200 bg-white text-sm outline-none focus:border-gray-400"
+                />
+              </div>
+            )}
 
             {connectStep === "pick" && fantraxLeagues.length > 0 && (
               <div className="space-y-2">
@@ -525,7 +661,7 @@ export default function SettingsPage() {
                 >
                   {fantraxLeagues.map((l) => (
                     <option key={l.leagueId} value={l.leagueId}>
-                      {l.leagueName} — {l.teamName}
+                      {l.leagueName}{l.teamName ? ` — ${l.teamName}` : ""}
                     </option>
                   ))}
                 </select>
@@ -535,8 +671,8 @@ export default function SettingsPage() {
             <div className="flex gap-2">
               {connectStep !== "pick" && (
                 <button
-                  onClick={fetchFantraxLeagues}
-                  disabled={!secretId || connectLoading}
+                  onClick={findLeagues}
+                  disabled={connectLoading || (platform === "fantrax" ? !secretId : !sleeperUsername)}
                   className="px-4 py-2 rounded-xl bg-black text-white disabled:opacity-40 text-sm"
                 >
                   {connectLoading ? "Loading..." : "Find Leagues"}

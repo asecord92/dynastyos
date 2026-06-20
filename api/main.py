@@ -14,6 +14,16 @@ from datetime import datetime, timedelta, timezone
 from engine.rules import LeagueRules
 from engine.roster_analyzer import analyze_roster_from_csv
 from engine.fantrax_client import get_leagues, get_team_rosters, get_player_ids, get_league_info, get_standings
+from engine.sleeper_client import (
+    get_user as sleeper_get_user,
+    get_user_leagues as sleeper_get_user_leagues,
+    get_league as sleeper_get_league,
+    get_rosters as sleeper_get_rosters,
+    get_users as sleeper_get_users,
+    get_traded_picks as sleeper_get_traded_picks,
+    get_players as sleeper_get_players,
+)
+from engine.sleeper_sync import build_nfl_rules, compute_pick_inventory, build_roster_items
 from engine.supabase_client import get_supabase
 from engine.fantrax_mapper import map_roster_to_analyze_result
 from engine.player_resolver import resolve_player, refresh_roster_statuses
@@ -102,6 +112,11 @@ def get_ai_client() -> anthropic.Anthropic:
 class RosterSyncRequest(BaseModel):
     user_secret_id: str
     fantrax_league_id: str
+
+
+class SleeperSyncRequest(BaseModel):
+    league_id: str          # our leagues.id (UUID)
+    sleeper_league_id: str
 
 
 class TradeAnalyzeRequest(BaseModel):
@@ -569,6 +584,110 @@ async def fantrax_leagues(user_secret_id: str = Query(...)):
         leagues = get_leagues(user_secret_id)
         return {"leagues": leagues}
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/sleeper/leagues")
+async def sleeper_leagues(username: str = Query(...), season: int = Query(None)):
+    """Resolve a Sleeper username and list their NFL leagues for a season
+    (falling back to the prior season in the offseason)."""
+    try:
+        season = season or datetime.now(timezone.utc).year
+        user = sleeper_get_user(username)
+        if not user or not user.get("user_id"):
+            raise HTTPException(status_code=404, detail="Sleeper user not found.")
+        user_id = user["user_id"]
+        leagues = sleeper_get_user_leagues(user_id, season)
+        if not leagues:
+            leagues = sleeper_get_user_leagues(user_id, season - 1)
+        return {
+            "user_id": user_id,
+            "leagues": [
+                {
+                    "leagueId": lg["league_id"],
+                    "leagueName": lg.get("name"),
+                    "season": lg.get("season"),
+                    "status": lg.get("status"),
+                    "sport": "NFL",
+                }
+                for lg in leagues
+            ],
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/sleeper/sync")
+async def sleeper_sync(body: SleeperSyncRequest, user: dict = Depends(get_current_user)):
+    """Sync a Sleeper NFL league: persist every roster (with player metadata
+    embedded from the players dump + computed pick inventory) and the league's
+    rules. Requires the leagues row to already carry sleeper_user_id."""
+    try:
+        sb = get_supabase()
+        league_row = (
+            sb.table("leagues").select("id, sleeper_user_id").eq("id", body.league_id).single().execute()
+        )
+        if not league_row.data:
+            raise HTTPException(status_code=404, detail="League not found.")
+        sleeper_user_id = league_row.data.get("sleeper_user_id")
+
+        detail = sleeper_get_league(body.sleeper_league_id)
+        rosters = sleeper_get_rosters(body.sleeper_league_id)
+        users = sleeper_get_users(body.sleeper_league_id)
+        traded = sleeper_get_traded_picks(body.sleeper_league_id)
+        players = sleeper_get_players()
+
+        settings = detail.get("settings") or {}
+        total = detail.get("total_rosters") or len(rosters) or 10
+        draft_rounds = settings.get("draft_rounds") or 4
+        league_season = int(detail.get("season") or datetime.now(timezone.utc).year)
+
+        rules = build_nfl_rules(detail)
+        picks = compute_pick_inventory(traded, total, draft_rounds, league_season)
+
+        team_names = {}
+        for u in users:
+            meta = u.get("metadata") or {}
+            team_names[u["user_id"]] = meta.get("team_name") or u.get("display_name") or "Team"
+
+        my_roster_id = None
+        roster_upserts = []
+        for r in rosters:
+            rid = r["roster_id"]
+            owner = r.get("owner_id")
+            if owner and owner == sleeper_user_id:
+                my_roster_id = rid
+            roster_upserts.append({
+                "league_id": body.league_id,
+                "fantrax_team_id": str(rid),
+                "team_name": team_names.get(owner, f"Roster {rid}"),
+                "roster_items": build_roster_items(r.get("players"), r.get("starters"), players),
+                "salary_cap": None,
+                "draft_picks": picks.get(rid, []),
+                "synced_at": datetime.now(timezone.utc).isoformat(),
+            })
+
+        sb.table("rosters").upsert(
+            roster_upserts, on_conflict="league_id,fantrax_team_id"
+        ).execute()
+
+        league_update = {"name": detail.get("name"), "sport": "NFL", "rules": rules}
+        if my_roster_id is not None:
+            league_update["fantrax_team_id"] = str(my_roster_id)
+        sb.table("leagues").update(league_update).eq("id", body.league_id).execute()
+
+        return {
+            "ok": True,
+            "teams": len(roster_upserts),
+            "my_team_id": str(my_roster_id) if my_roster_id is not None else None,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 
