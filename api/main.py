@@ -39,8 +39,6 @@ from engine.nfl_widgets import (
     waiver_pool as nfl_waiver_pool,
     waiver_prompt as nfl_waiver_prompt,
 )
-
-_WEB_SEARCH = [{"type": "web_search_20250305", "name": "web_search"}]
 from engine.supabase_client import get_supabase
 from engine.fantrax_mapper import map_roster_to_analyze_result
 from engine.player_resolver import resolve_player, refresh_roster_statuses
@@ -115,6 +113,8 @@ def _cache_age(sb, league_id: str, widget: str) -> timedelta | None:
 # dashboard widgets (news / start_sit / waiver) — faster and ~40% cheaper.
 MODEL_TRADE = "claude-opus-4-8"
 MODEL_DASHBOARD = "claude-sonnet-4-6"
+
+_WEB_SEARCH = [{"type": "web_search_20250305", "name": "web_search"}]
 
 _ai_client: anthropic.Anthropic | None = None
 
