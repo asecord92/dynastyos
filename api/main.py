@@ -24,6 +24,13 @@ from engine.sleeper_client import (
     get_players as sleeper_get_players,
 )
 from engine.sleeper_sync import build_nfl_rules, compute_pick_inventory, build_roster_items
+from engine.nfl_trade import (
+    build_nfl_trade_context,
+    build_nfl_trade_prompt,
+    build_nfl_finder_context,
+    build_nfl_finder_prompt,
+    build_nfl_system_prompt,
+)
 from engine.supabase_client import get_supabase
 from engine.fantrax_mapper import map_roster_to_analyze_result
 from engine.player_resolver import resolve_player, refresh_roster_statuses
@@ -818,6 +825,15 @@ async def roster_sync(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _league_sport(sb, league_id: str) -> str:
+    """The selected league's sport ('MLB' | 'NFL'), defaulting to MLB."""
+    try:
+        row = sb.table("leagues").select("sport").eq("id", league_id).single().execute()
+        return (row.data or {}).get("sport") or "MLB"
+    except Exception:
+        return "MLB"
+
+
 @app.post("/trade/analyze")
 async def trade_analyze(
     body: TradeAnalyzeRequest,
@@ -827,15 +843,22 @@ async def trade_analyze(
         offering = [x.strip() for x in body.offering_ids.split(",") if x.strip()]
         receiving = [x.strip() for x in body.receiving_ids.split(",") if x.strip()]
 
-        context = await build_trade_context(
-            league_id=body.league_id,
-            my_team_id=body.my_team_id,
-            opponent_team_id=body.opponent_team_id,
-            offering_ids=offering,
-            receiving_ids=receiving,
-        )
-        prompt = build_trade_prompt(context)
-        system_prompt = build_system_prompt(context["rules"], context["sport"])
+        if _league_sport(get_supabase(), body.league_id) == "NFL":
+            context = await build_nfl_trade_context(
+                body.league_id, body.my_team_id, body.opponent_team_id, offering, receiving
+            )
+            prompt = build_nfl_trade_prompt(context)
+            system_prompt = build_nfl_system_prompt(context["rules"])
+        else:
+            context = await build_trade_context(
+                league_id=body.league_id,
+                my_team_id=body.my_team_id,
+                opponent_team_id=body.opponent_team_id,
+                offering_ids=offering,
+                receiving_ids=receiving,
+            )
+            prompt = build_trade_prompt(context)
+            system_prompt = build_system_prompt(context["rules"], context["sport"])
 
         ai = get_ai_client()
 
@@ -867,34 +890,65 @@ async def trade_finder(
     final `packages` event with the parsed, validated offers."""
     # Build context up front so input errors surface as a normal HTTP status
     # (not mid-stream). This is also where the candidate ranking is computed.
+    # The finder's `target_category` field carries an NFL position for football.
+    sport = _league_sport(get_supabase(), body.league_id)
     try:
-        context = await build_finder_context(
-            league_id=body.league_id,
-            my_team_id=body.my_team_id,
-            target_category=body.target_category,
-        )
+        if sport == "NFL":
+            context = await build_nfl_finder_context(
+                body.league_id, body.my_team_id, target_position=body.target_category
+            )
+        else:
+            context = await build_finder_context(
+                league_id=body.league_id,
+                my_team_id=body.my_team_id,
+                target_category=body.target_category,
+            )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
-    prompt = build_finder_prompt(context)
-    system_prompt = build_system_prompt(context["rules"], context["sport"])
-    candidates = [
-        {
-            "fantrax_id": c["fantrax_id"],
-            "name": c["name"],
-            "position": c["position"],
-            "salary": c["salary"],
-            "contract": c["contract"],
-            "owner_team_id": c["owner_team_id"],
-            "owner_team_name": c["owner_team_name"],
-            "stat_value": c["stat_value"],
-            "value": c.get("value"),
-        }
-        for c in context["candidates"]
-    ]
+    if sport == "NFL":
+        target_label = context["target_position"]
+        candidates = [
+            {
+                "fantrax_id": c["id"],
+                "name": c["name"],
+                "position": c.get("position"),
+                "team": c.get("team"),
+                "owner_team_id": c["owner_team_id"],
+                "owner_team_name": c["owner_team_name"],
+                "stat_value": c.get("points"),
+                "value": c.get("value"),
+            }
+            for c in context["candidates"]
+        ]
+        # parse_finder_response keys on `fantrax_id`; football assets/candidates use `id`.
+        parse_candidates = [{**c, "fantrax_id": c["id"]} for c in context["candidates"]]
+        parse_assets = [{**a, "fantrax_id": a["id"]} for a in context["my_assets"]]
+        prompt = build_nfl_finder_prompt(context)
+        system_prompt = build_nfl_system_prompt(context["rules"])
+    else:
+        target_label = context["target_category"]
+        candidates = [
+            {
+                "fantrax_id": c["fantrax_id"],
+                "name": c["name"],
+                "position": c["position"],
+                "salary": c["salary"],
+                "contract": c["contract"],
+                "owner_team_id": c["owner_team_id"],
+                "owner_team_name": c["owner_team_name"],
+                "stat_value": c["stat_value"],
+                "value": c.get("value"),
+            }
+            for c in context["candidates"]
+        ]
+        parse_candidates = context["candidates"]
+        parse_assets = context.get("my_assets", [])
+        prompt = build_finder_prompt(context)
+        system_prompt = build_system_prompt(context["rules"], context["sport"])
     ai = get_ai_client()
 
     def event(obj: dict) -> str:
@@ -904,7 +958,7 @@ async def trade_finder(
         # Targets are ready before the AI call — send them first.
         yield event({
             "type": "meta",
-            "target_category": context["target_category"],
+            "target_category": target_label,
             "candidates": candidates,
         })
         full: list[str] = []
@@ -936,9 +990,7 @@ async def trade_finder(
                             yield event({"type": "text", "delta": joined[emitted:safe]})
                             emitted = safe
             raw = "".join(full)
-            analysis, packages = parse_finder_response(
-                raw, context["candidates"], context.get("my_assets", [])
-            )
+            analysis, packages = parse_finder_response(raw, parse_candidates, parse_assets)
             yield event({"type": "packages", "packages": packages, "analysis": analysis})
         except Exception as e:
             traceback.print_exc()

@@ -6,13 +6,15 @@ import { useLeague } from "../../lib/useLeague";
 import { authedFetch } from "../../lib/useDashboardWidget";
 
 const CATEGORIES = ["R", "HR", "RBI", "SB", "OBP", "QS", "SV", "K", "ERA", "WHIP"];
+const NFL_POSITIONS = ["QB", "RB", "WR", "TE"];
 
 type Candidate = {
   fantrax_id: string;
   name: string;
   position: string;
-  salary: number;
-  contract: string;
+  salary?: number;
+  contract?: string;
+  team?: string;
   owner_team_id: string;
   owner_team_name: string;
   stat_value: number;
@@ -44,18 +46,23 @@ type FinderEvent =
   | { type: "packages"; packages: TradePackage[]; analysis: string }
   | { type: "error"; detail: string };
 
+type DraftPick = { season: number; round: number; label: string; original_roster_id: number };
+
 type TeamRoster = {
   fantrax_team_id: string;
   team_name: string;
   roster_items: RosterItem[];
+  draft_picks?: DraftPick[];
 };
 
 type RosterItem = {
   id: string;
   position: string;
-  salary: number;
+  salary?: number;
   status: string;
-  contract: { name: string; smallId: string };
+  contract?: { name: string; smallId: string };
+  name?: string;   // embedded for Sleeper/NFL
+  team?: string;   // embedded for Sleeper/NFL
 };
 
 type PlayerOption = {
@@ -65,6 +72,8 @@ type PlayerOption = {
   salary: number;
   contract: string;
   status: string;
+  detail?: string;  // right-aligned label (NFL: position/team); MLB falls back to salary
+  isPick?: boolean;
 };
 
 function PlayerSearch({
@@ -115,12 +124,14 @@ function PlayerSearch({
               <span className="text-xs text-gray-400">
                 {p.position}
               </span>
-              <span className="text-xs text-gray-400">
-                {p.contract} yr
-              </span>
+              {!p.detail && (
+                <span className="text-xs text-gray-400">
+                  {p.contract} yr
+                </span>
+              )}
             </div>
             <span className={`text-xs font-medium ${selected.includes(p.id) ? "text-gray-300" : "text-gray-500"}`}>
-              ${p.salary}
+              {p.detail ?? `$${p.salary}`}
             </span>
           </button>
         ))}
@@ -256,38 +267,37 @@ export default function TradePage() {
         setMyTeamId(leagueRow.fantrax_team_id);
       }
 
-      // Load all rosters
+      // Load all rosters (draft_picks is NFL-only)
       const { data: rosterRows } = await supabase
         .from("rosters")
-        .select("fantrax_team_id, team_name, roster_items")
+        .select("fantrax_team_id, team_name, roster_items, draft_picks")
         .eq("league_id", leagueId);
 
       if (rosterRows) setTeams(rosterRows as TeamRoster[]);
 
-      // Get all fantrax IDs from loaded rosters
+      // Base name map from embedded roster data (Sleeper/NFL carries names inline).
+      const map: Record<string, string> = {};
+      (rosterRows as TeamRoster[])?.forEach((r) =>
+        r.roster_items.forEach((item) => {
+          if (item.name) map[item.id] = item.name;
+        })
+      );
+
+      // For Fantrax/MLB, resolve names from the id maps (NFL ids aren't there).
       const allRosterIds = (rosterRows as TeamRoster[])?.flatMap(
         (r) => r.roster_items.map((item) => item.id)
       ) ?? [];
-
-      // Load player name map — resolved players first, fill gaps from fantrax_players
       const { data: idMapRows } = await supabase
         .from("player_id_map")
         .select("fantrax_id, full_name")
         .in("fantrax_id", allRosterIds);
-
       const { data: fantraxPlayerRows } = await supabase
         .from("fantrax_players")
         .select("fantrax_id, name")
         .in("fantrax_id", allRosterIds);
-
-      if (idMapRows || fantraxPlayerRows) {
-        const map: Record<string, string> = {};
-        // fantrax_players first (lower priority)
-        fantraxPlayerRows?.forEach((r) => { map[r.fantrax_id] = r.name; });
-        // resolved players override (higher priority — better names)
-        idMapRows?.forEach((r) => { map[r.fantrax_id] = r.full_name; });
-        setPlayerNameMap(map);
-      }
+      fantraxPlayerRows?.forEach((r) => { map[r.fantrax_id] = r.name; });
+      idMapRows?.forEach((r) => { map[r.fantrax_id] = r.full_name; });
+      setPlayerNameMap(map);
     }
 
     load();
@@ -297,7 +307,7 @@ export default function TradePage() {
     if (!myTeamId || teams.length === 0) return;
     const myTeam = teams.find((t) => t.fantrax_team_id === myTeamId);
     if (myTeam) {
-      setMyPlayers(buildPlayerOptions(myTeam.roster_items, playerNameMap));
+      setMyPlayers(buildPlayerOptions(myTeam.roster_items, playerNameMap, myTeam.draft_picks));
     }
   }, [myTeamId, teams, playerNameMap]);
 
@@ -305,7 +315,7 @@ export default function TradePage() {
     if (!opponentTeamId || teams.length === 0) return;
     const oppTeam = teams.find((t) => t.fantrax_team_id === opponentTeamId);
     if (oppTeam) {
-      setOppPlayers(buildPlayerOptions(oppTeam.roster_items, playerNameMap));
+      setOppPlayers(buildPlayerOptions(oppTeam.roster_items, playerNameMap, oppTeam.draft_picks));
     }
     // Preserve a prefilled target (from the Trade Finder), else clear selection.
     if (pendingReceiveRef.current) {
@@ -410,18 +420,32 @@ export default function TradePage() {
 
   function buildPlayerOptions(
     items: RosterItem[],
-    nameMap: Record<string, string>
+    nameMap: Record<string, string>,
+    picks?: DraftPick[]
   ): PlayerOption[] {
-    return items
-      .map((item) => ({
-        id: item.id,
-        name: nameMap[item.id] || `Unknown (${item.id})`,
-        position: item.position,
-        salary: item.salary,
-        contract: item.contract?.name ?? "?",
-        status: item.status,
-      }))
-      .sort((a, b) => b.salary - a.salary);
+    const players: PlayerOption[] = items.map((item) => ({
+      id: item.id,
+      name: nameMap[item.id] || item.name || `Unknown (${item.id})`,
+      position: item.position,
+      salary: item.salary ?? 0,
+      contract: item.contract?.name ?? "?",
+      status: item.status,
+      detail: isNFL ? (item.team || "FA") : undefined,
+    }));
+    if (!isNFL) return players.sort((a, b) => b.salary - a.salary);
+    // NFL: players A-Z, then draft picks as tradeable assets.
+    players.sort((a, b) => a.name.localeCompare(b.name));
+    const pickOptions: PlayerOption[] = (picks ?? []).map((pk) => ({
+      id: `pick:${pk.season}:${pk.round}:${pk.original_roster_id}`,
+      name: pk.label,
+      position: "PICK",
+      salary: 0,
+      contract: "?",
+      status: "",
+      detail: "draft pick",
+      isPick: true,
+    }));
+    return [...players, ...pickOptions];
   }
 
   function toggleOffering(id: string) {
@@ -504,17 +528,7 @@ export default function TradePage() {
         </div>
       )}
 
-      {leagueId && isNFL && (
-        <div className="bg-white border rounded-2xl p-6 shadow-sm space-y-2">
-          <h2 className="text-lg font-semibold">Football trades — coming soon</h2>
-          <p className="text-sm text-gray-500">
-            Your Sleeper league is synced. Football trade analysis (with draft
-            picks) is on the way.
-          </p>
-        </div>
-      )}
-
-      {leagueId && !isNFL && (
+      {leagueId && (
         <div className="space-y-6">
           {/* Mode toggle */}
           <div className="flex gap-2">
@@ -609,11 +623,12 @@ export default function TradePage() {
               <div className="bg-white border rounded-2xl p-5 shadow-sm space-y-4 lg:sticky lg:top-6">
                 <h2 className="text-lg font-semibold">Find Targets</h2>
                 <p className="text-sm text-gray-500">
-                  Pick a category you need help in. We&apos;ll rank the best targets across
-                  the league by their production in that category.
+                  {isNFL
+                    ? "Pick a position you need help at. We'll rank the best targets across the league by last season's fantasy points."
+                    : "Pick a category you need help in. We'll rank the best targets across the league by their production in that category."}
                 </p>
                 <div className="flex flex-wrap gap-2">
-                  {CATEGORIES.map((cat) => (
+                  {(isNFL ? NFL_POSITIONS : CATEGORIES).map((cat) => (
                     <button
                       key={cat}
                       onClick={() => runFinder(cat)}
@@ -633,7 +648,11 @@ export default function TradePage() {
                   disabled={finderLoading || !myTeamId}
                   className="w-full px-4 py-3 rounded-xl bg-black text-white text-sm font-medium disabled:opacity-30 disabled:cursor-not-allowed transition hover:bg-gray-800"
                 >
-                  {finderLoading ? "Finding..." : "Find my weakest category"}
+                  {finderLoading
+                    ? "Finding..."
+                    : isNFL
+                    ? "Find my weakest position"
+                    : "Find my weakest category"}
                 </button>
                 {finderError && (
                   <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-xl p-3">
@@ -646,7 +665,7 @@ export default function TradePage() {
               <div className="space-y-4">
                 {!finder && !finderLoading && (
                   <div className="bg-white border rounded-2xl p-6 shadow-sm text-sm text-gray-400">
-                    Pick a category to see acquisition targets.
+                    Pick a {isNFL ? "position" : "category"} to see acquisition targets.
                   </div>
                 )}
                 {finderLoading && (
@@ -673,13 +692,15 @@ export default function TradePage() {
                                 <span className="text-xs text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded">
                                   {c.position}
                                 </span>
-                                <span className="text-xs text-gray-400">${c.salary}</span>
+                                <span className="text-xs text-gray-400">
+                                  {isNFL ? c.team : `$${c.salary}`}
+                                </span>
                               </div>
                               <p className="text-xs text-gray-400 mt-0.5">{c.owner_team_name}</p>
                             </div>
                             <span className="shrink-0 text-right">
                               <span className="block text-sm font-semibold text-gray-900">
-                                {finder.target_category} {c.stat_value}
+                                {isNFL ? `${c.stat_value} pts` : `${finder.target_category} ${c.stat_value}`}
                               </span>
                               {c.value != null && (
                                 <span className="block text-xs text-gray-400">val {c.value}</span>
