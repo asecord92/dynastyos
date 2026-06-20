@@ -152,44 +152,66 @@ export function AppNav() {
     try {
       const { data: leagueData, error: leagueError } = await supabase
         .from("leagues")
-        .select("fantrax_secret_id, fantrax_league_id")
+        .select("platform, sport, fantrax_secret_id, fantrax_league_id, sleeper_league_id")
         .eq("id", leagueId)
         .single();
 
-      if (leagueError || !leagueData?.fantrax_secret_id || !leagueData?.fantrax_league_id) {
-        showSyncToast("Connect Fantrax in Settings first.");
+      if (leagueError || !leagueData) {
+        showSyncToast("League not found.");
         return;
       }
 
-      const { fantrax_secret_id, fantrax_league_id } = leagueData;
-
       const { data: sessionData } = await supabase.auth.getSession();
       const accessToken = sessionData.session?.access_token;
+      const authHeaders = {
+        "Content-Type": "application/json",
+        ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+      };
 
-      const res = await fetch("/api/roster/sync", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
-        },
-        body: JSON.stringify({ user_secret_id: fantrax_secret_id, fantrax_league_id }),
-      });
+      const isSleeper =
+        leagueData.platform === "sleeper" || leagueData.sport === "NFL";
 
-      if (!res.ok) throw new Error(await res.text());
-      const json = await res.json();
-
-      const user = sessionData.session?.user;
-
-      if (user) {
-        const { error: snapError } = await supabase
-          .from("snapshots")
-          .upsert({
+      if (isSleeper) {
+        if (!leagueData.sleeper_league_id) {
+          showSyncToast("Reconnect this Sleeper league in Settings.");
+          return;
+        }
+        const res = await fetch("/api/sleeper/sync", {
+          method: "POST",
+          headers: authHeaders,
+          body: JSON.stringify({
             league_id: leagueId,
-            owner_user_id: user.id,
-            source: "fantrax",
-            data: json,
-          }, { onConflict: "league_id,source" });
-        if (snapError) throw new Error(snapError.message);
+            sleeper_league_id: leagueData.sleeper_league_id,
+          }),
+        });
+        if (!res.ok) throw new Error(await res.text());
+      } else {
+        if (!leagueData.fantrax_secret_id || !leagueData.fantrax_league_id) {
+          showSyncToast("Connect Fantrax in Settings first.");
+          return;
+        }
+        const res = await fetch("/api/roster/sync", {
+          method: "POST",
+          headers: authHeaders,
+          body: JSON.stringify({
+            user_secret_id: leagueData.fantrax_secret_id,
+            fantrax_league_id: leagueData.fantrax_league_id,
+          }),
+        });
+        if (!res.ok) throw new Error(await res.text());
+        const json = await res.json();
+        const user = sessionData.session?.user;
+        if (user) {
+          const { error: snapError } = await supabase
+            .from("snapshots")
+            .upsert({
+              league_id: leagueId,
+              owner_user_id: user.id,
+              source: "fantrax",
+              data: json,
+            }, { onConflict: "league_id,source" });
+          if (snapError) throw new Error(snapError.message);
+        }
       }
 
       const now = new Date();
