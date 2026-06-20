@@ -48,10 +48,12 @@ export function StartSitPanel({
   leagueId,
   myTeamId,
   onAlertsChange,
+  isNFL = false,
 }: {
   leagueId: string;
   myTeamId: string;
   onAlertsChange?: (alerts: Alert[]) => void;
+  isNFL?: boolean;
 }) {
   const [showAll, setShowAll] = useState(false);
   const [tab, setTab] = useState<"startsit" | "minors">("startsit");
@@ -83,9 +85,11 @@ export function StartSitPanel({
           <button onClick={() => setTab("startsit")} className={tabClass(tab === "startsit")}>
             Start / Sit
           </button>
-          <button onClick={() => setTab("minors")} className={tabClass(tab === "minors")}>
-            Minors
-          </button>
+          {!isNFL && (
+            <button onClick={() => setTab("minors")} className={tabClass(tab === "minors")}>
+              Minors
+            </button>
+          )}
         </div>
         {tab === "startsit" && (
           <div className="flex items-center gap-3 ml-auto">

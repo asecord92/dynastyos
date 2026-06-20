@@ -4,6 +4,9 @@ import { useEffect, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
 import { readCache, writeCache } from "../lib/clientCache";
 import { StatCard } from "./StatCard";
+import { StartSitPanel } from "./StartSitPanel";
+import { InjuryTicker } from "./InjuryTicker";
+import type { Alert } from "./StartSitPanel";
 
 type Standing = {
   team_id: string;
@@ -32,6 +35,7 @@ function posColor(rank: number, total: number): string {
 export function FootballDashboard({ leagueId, myTeamId }: { leagueId: string; myTeamId: string }) {
   const cacheKey = `dynastyos:nfldash:${leagueId}:${myTeamId}`;
   const [data, setData] = useState<NFLDash | null>(() => readCache<NFLDash>(cacheKey));
+  const [alerts, setAlerts] = useState<Alert[]>([]);
 
   useEffect(() => {
     if (!leagueId || !myTeamId) return;
@@ -86,13 +90,10 @@ export function FootballDashboard({ leagueId, myTeamId }: { leagueId: string; my
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-6 items-start">
-        {/* Left — Start/Sit (next PR) */}
-        <div className="bg-white border rounded-2xl p-6 shadow-sm space-y-2">
-          <h2 className="text-lg font-semibold">Start / Sit — coming soon</h2>
-          <p className="text-sm text-gray-500">
-            Weekly start/sit calls (matchup, bye week, injury) and waiver targets for football
-            are on the way. Standings and positional strength are live in the right rail.
-          </p>
+        {/* Left — Start/Sit + injury ticker */}
+        <div className="flex flex-col gap-4">
+          <StartSitPanel leagueId={leagueId} myTeamId={myTeamId} isNFL onAlertsChange={setAlerts} />
+          <InjuryTicker alerts={alerts} />
         </div>
 
         {/* Right rail — positional strength + standings */}

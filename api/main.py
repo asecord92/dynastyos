@@ -32,6 +32,15 @@ from engine.nfl_trade import (
     build_nfl_system_prompt,
 )
 from engine.nfl_dashboard import build_nfl_dashboard
+from engine.nfl_widgets import (
+    my_roster as nfl_my_roster,
+    start_sit_prompt as nfl_start_sit_prompt,
+    news_prompt as nfl_news_prompt,
+    waiver_pool as nfl_waiver_pool,
+    waiver_prompt as nfl_waiver_prompt,
+)
+
+_WEB_SEARCH = [{"type": "web_search_20250305", "name": "web_search"}]
 from engine.supabase_client import get_supabase
 from engine.fantrax_mapper import map_roster_to_analyze_result
 from engine.player_resolver import resolve_player, refresh_roster_statuses
@@ -1015,6 +1024,71 @@ async def trade_finder(
     return StreamingResponse(stream(), media_type="application/x-ndjson")
 
 
+# --- Football dashboard widgets (start_sit / news / waiver) -------------------
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+async def _nfl_start_sit(sb, body) -> dict:
+    team_name, items = nfl_my_roster(sb, body.league_id, body.my_team_id)
+    if not items:
+        raise HTTPException(status_code=404, detail="No roster found. Sync your league first.")
+    out_alerts = [
+        {"name": it.get("name"), "status": it.get("injury_status"), "detail": f"Listed {it.get('injury_status')}"}
+        for it in items if it.get("injury_status")
+    ]
+    ai = get_ai_client()
+    response = ai.messages.create(
+        model=MODEL_DASHBOARD, max_tokens=4000, tools=_WEB_SEARCH,
+        messages=[{"role": "user", "content": nfl_start_sit_prompt(team_name, items)}],
+    )
+    raw = _extract_text(response)
+    structured = {"players": [], "alerts": []}
+    m = re.search(r"```json\s*([\s\S]*?)\s*```", raw)
+    if m:
+        try:
+            structured = _json.loads(m.group(1))
+        except Exception:
+            pass
+    structured["alerts"] = out_alerts + structured.get("alerts", [])
+    seen = {a["name"]: a for a in structured["alerts"] if a.get("name")}
+    structured["alerts"] = list(seen.values())
+    if not structured.get("players"):  # don't cache an empty generation
+        return {"content": structured, "updated_at": _now_iso()}
+    return {"content": structured, "updated_at": _upsert_cache(sb, body.league_id, "start_sit", _json.dumps(structured))}
+
+
+async def _nfl_news(sb, body) -> dict:
+    team_name, items = nfl_my_roster(sb, body.league_id, body.my_team_id)
+    if not items:
+        return {"content": "Sync your league to see news.", "updated_at": _now_iso()}
+    ai = get_ai_client()
+    response = ai.messages.create(
+        model=MODEL_DASHBOARD, max_tokens=2000, tools=_WEB_SEARCH,
+        messages=[{"role": "user", "content": nfl_news_prompt(team_name, items)}],
+    )
+    content = _extract_text(response)
+    if not content.strip():
+        return {"content": content, "updated_at": _now_iso()}
+    return {"content": content, "updated_at": _upsert_cache(sb, body.league_id, "news", content)}
+
+
+async def _nfl_waiver(sb, body) -> dict:
+    league = sb.table("leagues").select("rules").eq("id", body.league_id).single().execute().data or {}
+    fmt_key = f"pts_{((league.get('rules') or {}).get('scoring_format') or 'half_ppr')}"
+    team_name, _items = nfl_my_roster(sb, body.league_id, body.my_team_id)
+    fas = nfl_waiver_pool(sb, body.league_id, fmt_key)
+    ai = get_ai_client()
+    response = ai.messages.create(
+        model=MODEL_DASHBOARD, max_tokens=2000, tools=_WEB_SEARCH,
+        messages=[{"role": "user", "content": nfl_waiver_prompt(team_name or "Your Team", fas)}],
+    )
+    content = _extract_text(response)
+    if not content.strip():
+        return {"content": content, "updated_at": _now_iso()}
+    return {"content": content, "updated_at": _upsert_cache(sb, body.league_id, "waiver", content)}
+
+
 @app.post("/dashboard/news")
 async def dashboard_news(
     body: DashboardRequest,
@@ -1026,6 +1100,9 @@ async def dashboard_news(
         cached = _check_cache(sb, body.league_id, "news", body.force)
         if cached:
             return {"content": cached["content"], "updated_at": cached["updated_at"]}
+
+        if _league_sport(sb, body.league_id) == "NFL":
+            return await _nfl_news(sb, body)
 
         roster_result = (
             sb.table("rosters")
@@ -1107,6 +1184,9 @@ async def dashboard_start_sit(
                     return {"content": content, "updated_at": cached["updated_at"]}
             except Exception:
                 pass  # Old prose cache — fall through to regenerate
+
+        if _league_sport(sb, body.league_id) == "NFL":
+            return await _nfl_start_sit(sb, body)
 
         roster_result = (
             sb.table("rosters")
@@ -1319,6 +1399,9 @@ async def dashboard_waiver(
         cached = _check_cache(sb, body.league_id, "waiver", body.force)
         if cached:
             return {"content": cached["content"], "updated_at": cached["updated_at"]}
+
+        if _league_sport(sb, body.league_id) == "NFL":
+            return await _nfl_waiver(sb, body)
 
         # Collect all claimed fantrax IDs across every team's roster
         all_rosters_result = (
