@@ -39,6 +39,9 @@ export function FootballDashboard({ leagueId, myTeamId }: { leagueId: string; my
 
   useEffect(() => {
     if (!leagueId || !myTeamId) return;
+    // Ignore a superseded fetch: when myTeamId settles (e.g. switching leagues),
+    // a stale in-flight request must not land last and overwrite good data.
+    let active = true;
     setData(readCache<NFLDash>(cacheKey));
     supabase.auth.getSession().then(async ({ data: sess }) => {
       const token = sess.session?.access_token;
@@ -47,13 +50,16 @@ export function FootballDashboard({ leagueId, myTeamId }: { leagueId: string; my
           `/api/nfl/dashboard?league_id=${leagueId}&my_team_id=${myTeamId}`,
           { headers: token ? { Authorization: `Bearer ${token}` } : {} }
         );
-        if (res.ok) {
+        if (res.ok && active) {
           const j = (await res.json()) as NFLDash;
           setData(j);
           writeCache(cacheKey, j);
         }
       } catch {}
     });
+    return () => {
+      active = false;
+    };
   }, [leagueId, myTeamId]);
 
   const rec = data?.record;
