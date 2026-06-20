@@ -31,6 +31,7 @@ from engine.nfl_trade import (
     build_nfl_finder_prompt,
     build_nfl_system_prompt,
 )
+from engine.nfl_dashboard import build_nfl_dashboard
 from engine.supabase_client import get_supabase
 from engine.fantrax_mapper import map_roster_to_analyze_result
 from engine.player_resolver import resolve_player, refresh_roster_statuses
@@ -433,6 +434,21 @@ async def league_standings(
         return _build_standings(fantrax_league_id, my_team_id)
     except HTTPException:
         raise
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/nfl/dashboard")
+async def nfl_dashboard(
+    league_id: str = Query(...),
+    my_team_id: str = Query(...),
+    user: dict = Depends(get_current_user),
+):
+    """Football dashboard data: record, standings + points-for, positional
+    strength, and players currently out."""
+    try:
+        return await build_nfl_dashboard(league_id, my_team_id)
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))

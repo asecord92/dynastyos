@@ -8,6 +8,7 @@ import { StatCard } from "../components/StatCard";
 import { StartSitPanel } from "../components/StartSitPanel";
 import { CategoryRanksWidget } from "../components/CategoryRanksWidget";
 import { InjuryTicker } from "../components/InjuryTicker";
+import { FootballDashboard } from "../components/FootballDashboard";
 import type { Alert } from "../components/StartSitPanel";
 
 type Record = { wins: number | null; losses: number | null; ties: number };
@@ -133,13 +134,7 @@ export default function DashboardPage() {
       )}
 
       {leagueId && myTeamId && isNFL && (
-        <div className="bg-white border rounded-2xl p-6 shadow-sm space-y-2">
-          <h2 className="text-lg font-semibold">Football dashboard — coming soon</h2>
-          <p className="text-sm text-gray-500">
-            Your Sleeper league is connected and rosters are synced. Football
-            trade tools and dashboards are on the way.
-          </p>
-        </div>
+        <FootballDashboard leagueId={leagueId} myTeamId={myTeamId} />
       )}
 
       {leagueId && myTeamId && !isNFL && (
