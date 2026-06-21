@@ -36,6 +36,9 @@ def build_nfl_rules(league_detail: dict) -> dict:
         "draft_rounds": settings.get("draft_rounds") or 4,
         "ppr": scoring.get("rec", 0),
         "pass_td": scoring.get("pass_td"),
+        "taxi_slots": settings.get("taxi_slots"),
+        "taxi_years": settings.get("taxi_years"),
+        "playoff_teams": settings.get("playoff_teams"),
     }
 
 
