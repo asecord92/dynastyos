@@ -88,6 +88,9 @@ export default function SettingsPage() {
     capPhilosophy !== savedCapPhilosophy ||
     goals !== savedGoals;
 
+  // View vs edit mode for the philosophy card
+  const [editing, setEditing] = useState(false);
+
   // Unsaved modal state
   const [showModal, setShowModal] = useState(false);
   const pendingNavRef = useRef<string | null>(null);
@@ -115,6 +118,7 @@ export default function SettingsPage() {
   // Load league row
   useEffect(() => {
     if (!leagueId) return;
+    setEditing(false); // switching leagues returns the card to view mode
     supabase
       .from("leagues")
       .select("mode, fantrax_league_id, name, competitive_window, cap_philosophy, goals")
@@ -187,8 +191,16 @@ export default function SettingsPage() {
       setSavedWindow(competitiveWindow);
       setSavedCapPhilosophy(capPhilosophy);
       setSavedGoals(goals);
+      setEditing(false);
       showToast();
     }
+  }
+
+  function cancelEdit() {
+    setCompetitiveWindow(savedWindow);
+    setCapPhilosophy(savedCapPhilosophy);
+    setGoals(savedGoals);
+    setEditing(false);
   }
 
   // Modal actions
@@ -205,6 +217,7 @@ export default function SettingsPage() {
     setCompetitiveWindow(savedWindow);
     setCapPhilosophy(savedCapPhilosophy);
     setGoals(savedGoals);
+    setEditing(false);
     setShowModal(false);
     if (pendingNavRef.current) {
       router.push(pendingNavRef.current);
@@ -491,75 +504,140 @@ export default function SettingsPage() {
         <div className="grid grid-cols-1 md:grid-cols-[200px_1fr] gap-4 md:gap-8 py-8 border-t border-gray-200">
           <div>
             <div className="text-xs font-semibold uppercase tracking-widest text-gray-400">Team Philosophy</div>
-            {leagueName && (
-              <p className="text-sm text-gray-500 mt-1 font-medium">{leagueName}</p>
-            )}
             <p className="text-sm text-gray-400 mt-2 leading-relaxed">
               Context used by the AI advisor across all tools.
             </p>
           </div>
-          <div className="bg-white border rounded-2xl p-6 shadow-sm space-y-6">
+          <div className="bg-white border rounded-2xl p-6 shadow-sm space-y-5">
 
-            {/* Competitive Window */}
-            <div className="space-y-2">
-              <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">
-                Competitive Window
-              </label>
-              <div className="flex gap-2">
-                {COMPETITIVE_WINDOWS.map((w) => (
-                  <button
-                    key={w}
-                    onClick={() => setCompetitiveWindow(w)}
-                    className={`px-4 py-2 rounded-xl text-sm font-medium border transition ${
-                      competitiveWindow === w
-                        ? "bg-black text-white border-black"
-                        : "bg-white text-gray-600 border-gray-200 hover:border-gray-400"
-                    }`}
-                  >
-                    {w.charAt(0).toUpperCase() + w.slice(1)}
-                  </button>
-                ))}
+            {/* Card header: which league + edit toggle */}
+            <div className="flex items-start justify-between gap-3 pb-1">
+              <div className="min-w-0">
+                <div className="text-[11px] font-medium uppercase tracking-wide text-gray-400">
+                  {editing ? "Editing philosophy for" : "Philosophy for"}
+                </div>
+                <div className="text-base font-semibold text-gray-900 truncate">
+                  {leagueName || "Your league"}
+                </div>
               </div>
+              {!editing && (
+                <button
+                  onClick={() => setEditing(true)}
+                  className="shrink-0 px-3 py-1.5 rounded-xl text-sm border border-gray-200 text-gray-700 hover:border-gray-400 transition"
+                >
+                  Edit
+                </button>
+              )}
             </div>
 
-            {/* Cap Philosophy */}
-            <div className="space-y-2">
-              <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">
-                Cap Philosophy
-              </label>
-              <textarea
-                value={capPhilosophy}
-                onChange={(e) => setCapPhilosophy(e.target.value)}
-                placeholder="e.g. Stay aggressive under cap, prioritize upside over floor, avoid long commitments to injury-prone players"
-                rows={3}
-                className="w-full px-3 py-2 rounded-xl border border-gray-200 bg-white text-sm outline-none focus:border-gray-400 resize-none"
-              />
-            </div>
+            {editing ? (
+              <>
+                {/* Competitive Window */}
+                <div className="space-y-2">
+                  <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+                    Competitive Window
+                  </label>
+                  <div className="flex gap-2">
+                    {COMPETITIVE_WINDOWS.map((w) => (
+                      <button
+                        key={w}
+                        onClick={() => setCompetitiveWindow(w)}
+                        className={`px-4 py-2 rounded-xl text-sm font-medium border transition ${
+                          competitiveWindow === w
+                            ? "bg-black text-white border-black"
+                            : "bg-white text-gray-600 border-gray-200 hover:border-gray-400"
+                        }`}
+                      >
+                        {w.charAt(0).toUpperCase() + w.slice(1)}
+                      </button>
+                    ))}
+                  </div>
+                </div>
 
-            {/* Goals */}
-            <div className="space-y-2">
-              <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">
-                Season Goals
-              </label>
-              <textarea
-                value={goals}
-                onChange={(e) => setGoals(e.target.value)}
-                placeholder="e.g. Win the championship this year, upgrade SB and QS before the deadline"
-                rows={3}
-                className="w-full px-3 py-2 rounded-xl border border-gray-200 bg-white text-sm outline-none focus:border-gray-400 resize-none"
-              />
-            </div>
+                {/* Cap Philosophy */}
+                <div className="space-y-2">
+                  <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+                    Cap Philosophy
+                  </label>
+                  <textarea
+                    value={capPhilosophy}
+                    onChange={(e) => setCapPhilosophy(e.target.value)}
+                    placeholder="e.g. Stay aggressive under cap, prioritize upside over floor, avoid long commitments to injury-prone players"
+                    rows={3}
+                    className="w-full px-3 py-2 rounded-xl border border-gray-200 bg-white text-sm outline-none focus:border-gray-400 resize-none"
+                  />
+                </div>
 
-            {/* Save button */}
-            <div className="flex justify-end pt-2">
-              <button
-                onClick={savePhilosophy}
-                disabled={!isDirty}
-                className="px-5 py-2 rounded-xl bg-black text-white text-sm font-medium disabled:opacity-30 disabled:cursor-not-allowed transition"
-              >
-                Save
-              </button>
-            </div>
+                {/* Goals */}
+                <div className="space-y-2">
+                  <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+                    Season Goals
+                  </label>
+                  <textarea
+                    value={goals}
+                    onChange={(e) => setGoals(e.target.value)}
+                    placeholder="e.g. Win the championship this year, upgrade SB and QS before the deadline"
+                    rows={3}
+                    className="w-full px-3 py-2 rounded-xl border border-gray-200 bg-white text-sm outline-none focus:border-gray-400 resize-none"
+                  />
+                </div>
+
+                {/* Save / Cancel */}
+                <div className="flex justify-end gap-2 pt-2">
+                  <button
+                    onClick={cancelEdit}
+                    className="px-4 py-2 rounded-xl border border-gray-200 text-gray-600 text-sm font-medium hover:border-gray-400 transition"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={savePhilosophy}
+                    disabled={!isDirty}
+                    className="px-5 py-2 rounded-xl bg-black text-white text-sm font-medium disabled:opacity-30 disabled:cursor-not-allowed transition"
+                  >
+                    Save
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                {/* Read-only view */}
+                <div className="space-y-1.5">
+                  <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+                    Competitive Window
+                  </div>
+                  {competitiveWindow ? (
+                    <span className="inline-block px-3 py-1 rounded-lg bg-gray-100 text-gray-700 text-sm font-medium capitalize">
+                      {competitiveWindow}
+                    </span>
+                  ) : (
+                    <p className="text-sm text-gray-300 italic">Not set</p>
+                  )}
+                </div>
+
+                <div className="space-y-1.5">
+                  <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+                    Cap Philosophy
+                  </div>
+                  {capPhilosophy ? (
+                    <p className="text-sm text-gray-700 leading-relaxed whitespace-pre-line">{capPhilosophy}</p>
+                  ) : (
+                    <p className="text-sm text-gray-300 italic">Not set</p>
+                  )}
+                </div>
+
+                <div className="space-y-1.5">
+                  <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+                    Season Goals
+                  </div>
+                  {goals ? (
+                    <p className="text-sm text-gray-700 leading-relaxed whitespace-pre-line">{goals}</p>
+                  ) : (
+                    <p className="text-sm text-gray-300 italic">Not set</p>
+                  )}
+                </div>
+              </>
+            )}
 
           </div>
         </div>
