@@ -278,7 +278,7 @@ export function LeagueRulesEditor({ leagueId }: { leagueId: string }) {
         <button
           onClick={save}
           disabled={saving}
-          className="px-5 py-2 rounded-xl bg-black text-white text-sm font-medium disabled:opacity-30 disabled:cursor-not-allowed transition"
+          className="px-5 py-2 rounded-xl bg-indigo-600 text-white text-sm font-medium disabled:opacity-30 disabled:cursor-not-allowed transition"
         >
           {saving ? "Saving..." : "Save"}
         </button>

@@ -9,7 +9,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   return (
     <AuthGate>
       <Suspense>
-        <div className="min-h-screen bg-gray-100 text-gray-900">
+        <div className="min-h-screen bg-canvas text-gray-900">
           <AppNav />
           <AutoSync />
           {/* Extra bottom padding on mobile so content clears the bottom tab bar */}

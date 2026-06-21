@@ -1,12 +1,42 @@
 @import "tailwindcss";
 
-/* optional: your defaults */
-html,
-body {
-  height: 100%;
+@theme {
+  /* Inter (loaded via next/font in layout.tsx) as the default sans. */
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+
+  /* Page surface — a touch deeper/cooler than card white so cards lift off it. */
+  --color-canvas: #f3f5f8;
+
+  /* Soft, layered shadows — redefining the scale re-skins every existing
+     shadow-sm / shadow-md card without touching them. Subtle, not flashy. */
+  --shadow-sm: 0 1px 2px rgb(15 23 42 / 0.04), 0 1px 3px rgb(15 23 42 / 0.05);
+  --shadow-md: 0 2px 4px rgb(15 23 42 / 0.05), 0 8px 20px rgb(15 23 42 / 0.07);
 }
 
-body {
-  color: #0f172a;
-  background: #f6f8fa;
+@layer base {
+  html,
+  body {
+    height: 100%;
+  }
+
+  body {
+    color: #0f172a;
+    background: var(--color-canvas);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Tighter heading tracking reads as more "designed". */
+  h1,
+  h2,
+  h3 {
+    letter-spacing: -0.011em;
+  }
+
+  /* App-wide focus polish (there were no focus styles before). */
+  :where(button, a, input, textarea, select):focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px #fff, 0 0 0 4px rgb(79 70 229 / 0.45);
+  }
 }

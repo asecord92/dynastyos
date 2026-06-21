@@ -87,7 +87,7 @@ export default function LoginPage() {
       <div className="w-full max-w-[420px]">
         {/* Logo */}
         <div className="flex justify-center mb-6">
-          <div className="h-12 w-12 rounded-full bg-black text-white flex items-center justify-center font-semibold text-lg">
+          <div className="h-12 w-12 rounded-full bg-indigo-600 text-white flex items-center justify-center font-semibold text-lg">
             D
           </div>
         </div>
