@@ -649,7 +649,7 @@ export default function SettingsPage() {
           <div>
             <div className="text-xs font-semibold uppercase tracking-widest text-gray-400">League Rules</div>
             <p className="text-sm text-gray-400 mt-2 leading-relaxed">
-              Scoring, caps, and contract rules the AI uses to judge trades.
+              The league setup the AI uses to judge trades.
             </p>
           </div>
           <LeagueRulesEditor leagueId={leagueId} />

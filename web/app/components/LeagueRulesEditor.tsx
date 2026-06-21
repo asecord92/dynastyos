@@ -18,7 +18,29 @@ type Rules = {
   offseason_cap?: number;
   scoring?: { hitting?: string[]; pitching?: string[] };
   contract?: Contract | null;
+  // Football (Sleeper) — auto-detected, read-only
+  scoring_format?: string;
+  superflex?: boolean;
+  roster_positions?: string[];
+  draft_rounds?: number;
+  taxi_slots?: number;
+  taxi_years?: number;
 };
+
+const PPR_LABEL: Record<string, string> = {
+  ppr: "Full PPR",
+  half_ppr: "0.5 PPR (half)",
+  std: "Standard (non-PPR)",
+};
+
+function lineupSummary(positions: string[]): string {
+  const slots = positions.filter((p) => !["BN", "IR", "TAXI"].includes(p));
+  const counts: Record<string, number> = {};
+  for (const p of slots) counts[p] = (counts[p] ?? 0) + 1;
+  const label = (p: string) =>
+    p === "SUPER_FLEX" ? "SuperFlex" : p === "FLEX" ? "Flex" : p === "DEF" ? "DEF" : p;
+  return Object.entries(counts).map(([p, c]) => `${c} ${label(p)}`).join(" · ");
+}
 
 const DEFAULT_HITTING = ["R", "HR", "RBI", "SB", "OBP"];
 const DEFAULT_PITCHING = ["QS", "SV", "K", "ERA", "WHIP"];
@@ -51,6 +73,7 @@ export function LeagueRulesEditor({ leagueId }: { leagueId: string }) {
   const [saved, setSaved] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [sport, setSport] = useState("MLB");
+  const [rawRules, setRawRules] = useState<Rules>({});
 
   const [leagueSize, setLeagueSize] = useState("");
   const [inSeasonCap, setInSeasonCap] = useState("");
@@ -77,6 +100,7 @@ export function LeagueRulesEditor({ leagueId }: { leagueId: string }) {
       const r: Rules = (data?.rules as Rules) ?? {};
       const sp = (data?.sport as string) ?? r.sport ?? "MLB";
       setSport(sp);
+      setRawRules(r);
       setLeagueSize(numStr(r.league_size, 10));
       setInSeasonCap(numStr(r.in_season_cap, 450));
       setOffseasonCap(numStr(r.offseason_cap, 335));
@@ -138,6 +162,49 @@ export function LeagueRulesEditor({ leagueId }: { leagueId: string }) {
     return (
       <div className="bg-white border rounded-2xl p-6 shadow-sm text-sm text-gray-400 animate-pulse">
         Loading league rules...
+      </div>
+    );
+  }
+
+  // Football: a read-only summary of what Sleeper gives us (points-based — no
+  // categories, caps, or contracts to hand-edit).
+  if (sport === "NFL") {
+    const fmt = PPR_LABEL[rawRules.scoring_format ?? "half_ppr"] ?? "0.5 PPR";
+    const sf = rawRules.superflex ? "Superflex" : "Single-QB";
+    const positions = rawRules.roster_positions ?? [];
+    const bench = positions.filter((p) => p === "BN").length;
+
+    const rows: [string, string][] = [
+      ["Scoring", `${fmt} · ${sf}`],
+      ["League size", `${rawRules.league_size ?? "?"} teams`],
+    ];
+    if (positions.length) rows.push(["Starting lineup", lineupSummary(positions)]);
+    if (bench) rows.push(["Bench", `${bench} spots`]);
+    if (rawRules.taxi_slots) {
+      rows.push([
+        "Taxi squad",
+        `${rawRules.taxi_slots} slots${rawRules.taxi_years ? ` · up to ${rawRules.taxi_years} yrs` : ""}`,
+      ]);
+    }
+    rows.push(["Rookie draft", `${rawRules.draft_rounds ?? 4} rounds`]);
+
+    return (
+      <div className="bg-white border rounded-2xl p-6 shadow-sm space-y-4">
+        <p className="text-sm text-gray-400 leading-relaxed">
+          Auto-detected from Sleeper on each sync. Football is points-based — there are no scoring
+          categories, salary cap, or contracts to set.
+        </p>
+        <div>
+          {rows.map(([label, value]) => (
+            <div
+              key={label}
+              className="flex items-baseline justify-between gap-3 py-1.5 border-b border-gray-50 last:border-0"
+            >
+              <span className="text-xs font-medium uppercase tracking-wide text-gray-400">{label}</span>
+              <span className="text-sm text-gray-800 text-right">{value}</span>
+            </div>
+          ))}
+        </div>
       </div>
     );
   }
