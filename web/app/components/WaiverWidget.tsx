@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useDashboardWidget } from "../lib/useDashboardWidget";
+import { Spinner } from "./ui/Spinner";
 
 type WidgetData = { content: string; updated_at: string };
 
@@ -50,7 +51,7 @@ export function WaiverWidget({
   myTeamId: string;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const { data, loading, error, refresh } = useDashboardWidget<WidgetData>(
+  const { data, loading, validating, error, refresh } = useDashboardWidget<WidgetData>(
     "waiver",
     leagueId,
     myTeamId,
@@ -69,10 +70,11 @@ export function WaiverWidget({
           )}
           <button
             onClick={() => refresh(true)}
-            disabled={loading}
-            className="px-3 py-1.5 rounded-xl text-xs border border-gray-200 hover:border-gray-300 disabled:opacity-40 transition"
+            disabled={validating}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs border border-gray-200 hover:border-gray-300 disabled:opacity-60 transition"
           >
-            {loading ? "Loading..." : "Refresh"}
+            {validating && <Spinner />}
+            {validating ? "Refreshing…" : "Refresh"}
           </button>
         </div>
       </div>
