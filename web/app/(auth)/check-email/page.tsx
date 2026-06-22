@@ -37,7 +37,7 @@ export default function CheckEmailPage() {
           <span className="font-medium text-gray-900">{email || "your inbox"}</span>.
         </p>
 
-        <div className="mt-6 bg-white border border-gray-300 rounded-md p-4 shadow-sm text-left">
+        <div className="mt-6 bg-gray-50 border border-gray-300 rounded-md p-4 shadow-sm text-left">
           <ul className="text-sm text-gray-700 space-y-2">
             <li>• Check spam/promotions if you don’t see it.</li>
             <li>• The link can take a minute to arrive.</li>
@@ -46,7 +46,7 @@ export default function CheckEmailPage() {
           <button
             onClick={resend}
             disabled={!email || sending}
-            className="mt-4 w-full rounded-md border border-gray-300 bg-white hover:bg-gray-50
+            className="mt-4 w-full rounded-md border border-gray-300 bg-gray-50 hover:bg-gray-50
                        text-sm font-medium py-2 transition active:scale-[0.98] active:translate-y-[1px]
                        disabled:opacity-50"
           >

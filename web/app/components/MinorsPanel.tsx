@@ -24,8 +24,8 @@ function timeAgo(iso: string): string {
 }
 
 const trendStyle: Record<string, { glyph: string; className: string }> = {
-  up: { glyph: "▲", className: "text-green-600" },
-  down: { glyph: "▼", className: "text-red-600" },
+  up: { glyph: "▲", className: "text-green-400" },
+  down: { glyph: "▼", className: "text-red-400" },
   steady: { glyph: "–", className: "text-gray-400" },
 };
 
@@ -74,7 +74,7 @@ export function MinorsPanel({
 
       {/* Error */}
       {error && (
-        <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-xl p-3">
+        <div className="text-sm text-red-300 bg-red-50 border border-red-500/30 rounded-xl p-3">
           {error}{" "}
           <button onClick={() => refresh()} className="underline">
             Retry
@@ -98,7 +98,7 @@ export function MinorsPanel({
                       </span>
                     )}
                     {p.level && (
-                      <span className="text-xs text-indigo-700 bg-indigo-50 px-1.5 py-0.5 rounded">
+                      <span className="text-xs text-indigo-300 bg-indigo-50 px-1.5 py-0.5 rounded">
                         {p.level}
                       </span>
                     )}

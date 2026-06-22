@@ -64,7 +64,7 @@ function toList(s: string): string[] {
 }
 
 const inputCls =
-  "w-full px-3 py-2 rounded-xl border border-gray-200 bg-white text-sm outline-none focus:border-gray-400";
+  "w-full px-3 py-2 rounded-xl border border-gray-200 bg-gray-50 text-sm outline-none focus:border-gray-400";
 const labelCls = "text-xs font-medium text-gray-500 uppercase tracking-wide";
 
 export function LeagueRulesEditor({ leagueId }: { leagueId: string }) {
@@ -160,7 +160,7 @@ export function LeagueRulesEditor({ leagueId }: { leagueId: string }) {
 
   if (!loaded) {
     return (
-      <div className="bg-white border rounded-2xl p-6 shadow-sm text-sm text-gray-400 animate-pulse">
+      <div className="bg-gray-50 border rounded-2xl p-6 shadow-sm text-sm text-gray-400 animate-pulse">
         Loading league rules...
       </div>
     );
@@ -189,7 +189,7 @@ export function LeagueRulesEditor({ leagueId }: { leagueId: string }) {
     rows.push(["Rookie draft", `${rawRules.draft_rounds ?? 4} rounds`]);
 
     return (
-      <div className="bg-white border rounded-2xl p-6 shadow-sm space-y-4">
+      <div className="bg-gray-50 border rounded-2xl p-6 shadow-sm space-y-4">
         <p className="text-sm text-gray-400 leading-relaxed">
           Auto-detected from Sleeper on each sync. Football is points-based — there are no scoring
           categories, salary cap, or contracts to set.
@@ -210,7 +210,7 @@ export function LeagueRulesEditor({ leagueId }: { leagueId: string }) {
   }
 
   return (
-    <div className="bg-white border rounded-2xl p-6 shadow-sm space-y-6">
+    <div className="bg-gray-50 border rounded-2xl p-6 shadow-sm space-y-6">
       <p className="text-sm text-gray-400 leading-relaxed">
         These drive the AI trade advisor&apos;s understanding of your league. Caps and size
         are auto-filled from Fantrax on each sync; categories and contract rules are yours to
@@ -274,7 +274,7 @@ export function LeagueRulesEditor({ leagueId }: { leagueId: string }) {
 
       <div className="flex items-center justify-end gap-3 pt-2">
         {err && <span className="text-xs text-red-500">{err}</span>}
-        {saved && <span className="text-xs text-green-600">Saved</span>}
+        {saved && <span className="text-xs text-green-400">Saved</span>}
         <button
           onClick={save}
           disabled={saving}

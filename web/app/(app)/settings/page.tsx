@@ -36,7 +36,7 @@ function UnsavedModal({ onSave, onDiscard, onCancel }: {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onCancel} />
-      <div className="relative bg-white rounded-2xl shadow-xl p-6 w-full max-w-sm mx-4 space-y-4">
+      <div className="relative bg-gray-50 rounded-2xl shadow-xl p-6 w-full max-w-sm mx-4 space-y-4">
         <h2 className="text-lg font-semibold text-gray-900">Unsaved changes</h2>
         <p className="text-sm text-gray-500">
           You have unsaved changes to your Team Philosophy. What would you like to do?
@@ -483,7 +483,7 @@ export default function SettingsPage() {
 
       {/* Toast */}
       <div
-        className={`fixed bottom-6 right-6 bg-gray-900 text-white text-sm px-4 py-2 rounded-xl shadow-lg transition-opacity duration-300 z-50 ${
+        className={`fixed bottom-6 right-6 bg-gray-100 text-gray-900 text-sm px-4 py-2 rounded-xl shadow-lg transition-opacity duration-300 z-50 ${
           toastVisible ? "opacity-100" : "opacity-0 pointer-events-none"
         }`}
       >
@@ -508,7 +508,7 @@ export default function SettingsPage() {
               Context used by the AI advisor across all tools.
             </p>
           </div>
-          <div className="bg-white border rounded-2xl p-6 shadow-sm space-y-5">
+          <div className="bg-gray-50 border rounded-2xl p-6 shadow-sm space-y-5">
 
             {/* Card header: which league + edit toggle */}
             <div className="flex items-start justify-between gap-3 pb-1">
@@ -545,7 +545,7 @@ export default function SettingsPage() {
                         className={`px-4 py-2 rounded-xl text-sm font-medium border transition ${
                           competitiveWindow === w
                             ? "bg-indigo-600 text-white border-indigo-600"
-                            : "bg-white text-gray-600 border-gray-200 hover:border-gray-400"
+                            : "bg-gray-50 text-gray-600 border-gray-200 hover:border-gray-400"
                         }`}
                       >
                         {w.charAt(0).toUpperCase() + w.slice(1)}
@@ -564,7 +564,7 @@ export default function SettingsPage() {
                     onChange={(e) => setCapPhilosophy(e.target.value)}
                     placeholder="e.g. Stay aggressive under cap, prioritize upside over floor, avoid long commitments to injury-prone players"
                     rows={3}
-                    className="w-full px-3 py-2 rounded-xl border border-gray-200 bg-white text-sm outline-none focus:border-gray-400 resize-none"
+                    className="w-full px-3 py-2 rounded-xl border border-gray-200 bg-gray-50 text-sm outline-none focus:border-gray-400 resize-none"
                   />
                 </div>
 
@@ -578,7 +578,7 @@ export default function SettingsPage() {
                     onChange={(e) => setGoals(e.target.value)}
                     placeholder="e.g. Win the championship this year, upgrade SB and QS before the deadline"
                     rows={3}
-                    className="w-full px-3 py-2 rounded-xl border border-gray-200 bg-white text-sm outline-none focus:border-gray-400 resize-none"
+                    className="w-full px-3 py-2 rounded-xl border border-gray-200 bg-gray-50 text-sm outline-none focus:border-gray-400 resize-none"
                   />
                 </div>
 
@@ -665,7 +665,7 @@ export default function SettingsPage() {
           </p>
         </div>
         <div className="space-y-4">
-          <div className="bg-white border rounded-2xl p-6 shadow-sm space-y-4">
+          <div className="bg-gray-50 border rounded-2xl p-6 shadow-sm space-y-4">
             <h3 className="text-lg font-semibold">Connect a League</h3>
 
             <div className="space-y-2">
@@ -680,7 +680,7 @@ export default function SettingsPage() {
                   setFantraxLeagues([]);
                   setConnectMsg(null);
                 }}
-                className="w-full px-3 py-2 rounded-xl border border-gray-200 bg-white text-sm outline-none focus:border-gray-400"
+                className="w-full px-3 py-2 rounded-xl border border-gray-200 bg-gray-50 text-sm outline-none focus:border-gray-400"
               >
                 <option value="fantrax">Fantrax (baseball)</option>
                 <option value="sleeper">Sleeper (football)</option>
@@ -706,7 +706,7 @@ export default function SettingsPage() {
                     setFantraxLeagues([]);
                   }}
                   placeholder="Found on your Fantrax profile page"
-                  className="w-full px-3 py-2 rounded-xl border border-gray-200 bg-white text-sm outline-none focus:border-gray-400"
+                  className="w-full px-3 py-2 rounded-xl border border-gray-200 bg-gray-50 text-sm outline-none focus:border-gray-400"
                 />
               </div>
             ) : (
@@ -722,7 +722,7 @@ export default function SettingsPage() {
                     setFantraxLeagues([]);
                   }}
                   placeholder="Your public Sleeper username"
-                  className="w-full px-3 py-2 rounded-xl border border-gray-200 bg-white text-sm outline-none focus:border-gray-400"
+                  className="w-full px-3 py-2 rounded-xl border border-gray-200 bg-gray-50 text-sm outline-none focus:border-gray-400"
                 />
               </div>
             )}
@@ -735,7 +735,7 @@ export default function SettingsPage() {
                 <select
                   value={selectedFantraxLeagueId}
                   onChange={(e) => setSelectedFantraxLeagueId(e.target.value)}
-                  className="w-full px-3 py-2 rounded-xl border border-gray-200 bg-white text-sm outline-none focus:border-gray-400"
+                  className="w-full px-3 py-2 rounded-xl border border-gray-200 bg-gray-50 text-sm outline-none focus:border-gray-400"
                 >
                   {fantraxLeagues.map((l) => (
                     <option key={l.leagueId} value={l.leagueId}>
@@ -768,14 +768,14 @@ export default function SettingsPage() {
             </div>
 
             {connectMsg && (
-              <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-xl p-3">
+              <div className="text-sm text-red-300 bg-red-50 border border-red-500/30 rounded-xl p-3">
                 {connectMsg}
               </div>
             )}
           </div>
 
           {leagues.length > 0 && (
-            <div className="bg-white border rounded-2xl p-6 shadow-sm space-y-3">
+            <div className="bg-gray-50 border rounded-2xl p-6 shadow-sm space-y-3">
               <h3 className="text-lg font-semibold">Your Leagues</h3>
               <p className="text-sm text-gray-500">Manage your connected leagues.</p>
               <div className="space-y-2">
@@ -794,7 +794,7 @@ export default function SettingsPage() {
                     </div>
                     {confirmDeleteId === l.id ? (
                       <div className="flex items-center gap-2">
-                        <span className="text-xs text-red-600">Erases ranks, history &amp; cache</span>
+                        <span className="text-xs text-red-400">Erases ranks, history &amp; cache</span>
                         <button
                           onClick={() => deleteLeague(l.id)}
                           className="text-xs px-3 py-1 rounded-lg bg-red-600 text-white hover:bg-red-700 transition"
@@ -811,7 +811,7 @@ export default function SettingsPage() {
                     ) : (
                       <button
                         onClick={() => setConfirmDeleteId(l.id)}
-                        className="text-xs px-3 py-1 rounded-lg border border-gray-200 text-gray-500 hover:border-red-300 hover:text-red-600 transition"
+                        className="text-xs px-3 py-1 rounded-lg border border-gray-200 text-gray-500 hover:border-red-300 hover:text-red-400 transition"
                       >
                         Delete
                       </button>
@@ -833,7 +833,7 @@ export default function SettingsPage() {
               Configure how roster data is calculated and displayed.
             </p>
           </div>
-          <div className="bg-white border rounded-2xl p-6 shadow-sm space-y-3">
+          <div className="bg-gray-50 border rounded-2xl p-6 shadow-sm space-y-3">
             <h3 className="text-lg font-semibold">Cap Mode</h3>
             <p className="text-sm text-gray-500">
               Controls which cap limit is used when analyzing a CSV upload.
@@ -848,7 +848,7 @@ export default function SettingsPage() {
                 className="relative inline-flex h-7 w-12 items-center rounded-full bg-indigo-600 transition-colors duration-200 focus:outline-none"
               >
                 <span
-                  className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform duration-200 ${
+                  className={`inline-block h-5 w-5 transform rounded-full bg-gray-50 shadow transition-transform duration-200 ${
                     mode === "in_season" ? "translate-x-6" : "translate-x-1"
                   }`}
                 />
@@ -870,7 +870,7 @@ export default function SettingsPage() {
           </p>
         </div>
         <div className="space-y-4">
-          <div className="bg-white border rounded-2xl p-6 shadow-sm space-y-3">
+          <div className="bg-gray-50 border rounded-2xl p-6 shadow-sm space-y-3">
             <h3 className="text-lg font-semibold">Create League Manually</h3>
             <p className="text-sm text-gray-500">
               Not using Fantrax sync? Create a league manually and upload a CSV instead.
@@ -879,7 +879,7 @@ export default function SettingsPage() {
               value={csvLeagueName}
               onChange={(e) => setCsvLeagueName(e.target.value)}
               placeholder="e.g., Inglorious Bashers"
-              className="w-full px-3 py-2 rounded-xl border border-gray-200 bg-white text-sm outline-none focus:border-gray-400"
+              className="w-full px-3 py-2 rounded-xl border border-gray-200 bg-gray-50 text-sm outline-none focus:border-gray-400"
             />
             <button
               onClick={createCsvLeague}
@@ -896,7 +896,7 @@ export default function SettingsPage() {
           </div>
 
           {leagueId && (
-            <div className="bg-white border rounded-2xl p-6 shadow-sm space-y-3">
+            <div className="bg-gray-50 border rounded-2xl p-6 shadow-sm space-y-3">
               <h3 className="text-lg font-semibold">Upload Roster CSV</h3>
               <p className="text-sm text-gray-500">
                 Export your roster from Fantrax and upload it here. This will become

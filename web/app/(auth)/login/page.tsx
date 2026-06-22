@@ -99,9 +99,9 @@ export default function LoginPage() {
         <p className="text-center text-gray-500 mt-1">Secord Labs</p>
 
         {/* Card */}
-        <div className="mt-8 bg-white border border-gray-200 rounded-xl shadow-sm p-6">
+        <div className="mt-8 bg-gray-50 border border-gray-200 rounded-xl shadow-sm p-6">
           {errorMsg && (
-            <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+            <div className="mb-4 rounded-lg border border-red-500/30 bg-red-50 px-3 py-2 text-sm text-red-300">
               {errorMsg}
             </div>
           )}
@@ -147,7 +147,7 @@ export default function LoginPage() {
             onClick={signInWithGoogle}
             disabled={disabled}
             className="w-full flex items-center justify-center gap-3 rounded-md py-2 text-sm font-semibold
-                       border border-gray-300 bg-white hover:bg-gray-50 text-gray-900
+                       border border-gray-300 bg-gray-50 hover:bg-gray-50 text-gray-900
                        transition active:scale-[0.98] active:translate-y-[1px]
                        disabled:opacity-50 disabled:cursor-not-allowed"
           >

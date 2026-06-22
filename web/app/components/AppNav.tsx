@@ -234,7 +234,7 @@ export function AppNav() {
 
   return (
     <>
-    <div className="border-b bg-white sticky top-0 z-40">
+    <div className="border-b bg-gray-50 sticky top-0 z-40">
       <div className="w-full px-6 py-3 flex lg:grid items-center justify-between gap-3 lg:gap-4" style={{gridTemplateColumns: "1fr auto 1fr"}}>
 
         {/* Left — Logo */}
@@ -264,7 +264,7 @@ export function AppNav() {
                 href={buildHref(item.href)}
                 className={`px-3 py-1.5 rounded-xl border transition whitespace-nowrap ${
                   active
-                    ? "bg-indigo-50 text-indigo-700 border-indigo-100"
+                    ? "bg-indigo-50 text-indigo-300 border-indigo-100"
                     : "text-gray-600 border-gray-200 hover:border-gray-300"
                 }`}
               >
@@ -281,7 +281,7 @@ export function AppNav() {
               <select
                 value={leagueId}
                 onChange={(e) => setLeague(e.target.value)}
-                className="px-3 py-1.5 rounded-xl border border-gray-200 bg-white text-sm truncate max-w-[40vw] lg:max-w-none"
+                className="px-3 py-1.5 rounded-xl border border-gray-200 bg-gray-50 text-sm truncate max-w-[40vw] lg:max-w-none"
                 title="Select league"
               >
                 <option value="">Select league…</option>
@@ -299,7 +299,7 @@ export function AppNav() {
                     onMouseEnter={() => setShowTooltip(true)}
                     onMouseLeave={() => setShowTooltip(false)}
                     disabled={syncing}
-                    className="w-8 h-8 rounded-full border border-gray-200 bg-white hover:border-gray-300 flex items-center justify-center disabled:opacity-40 transition"
+                    className="w-8 h-8 rounded-full border border-gray-200 bg-gray-50 hover:border-gray-300 flex items-center justify-center disabled:opacity-40 transition"
                   >
                     <svg
                       xmlns="http://www.w3.org/2000/svg"
@@ -318,7 +318,7 @@ export function AppNav() {
                     </svg>
                   </button>
                   {showTooltip && !syncing && (
-                    <div className="absolute right-0 top-10 bg-gray-900 text-white text-xs px-3 py-1.5 rounded-lg whitespace-nowrap z-50">
+                    <div className="absolute right-0 top-10 bg-gray-100 text-gray-900 text-xs px-3 py-1.5 rounded-lg whitespace-nowrap z-50">
                       {lastSynced ? `Last synced ${timeAgo(lastSynced)}` : "Never synced"}
                     </div>
                   )}
@@ -352,7 +352,7 @@ export function AppNav() {
   </button>
 
                 {dropdownOpen && (
-                  <div className="absolute right-0 top-10 w-52 bg-white border border-gray-200 rounded-xl shadow-lg z-50 overflow-hidden">
+                  <div className="absolute right-0 top-10 w-52 bg-gray-50 border border-gray-200 rounded-xl shadow-lg z-50 overflow-hidden">
                     {/* Email */}
                     <div className="px-4 py-3 border-b border-gray-100">
                       <p className="text-xs text-gray-400 truncate">{email}</p>
@@ -368,7 +368,7 @@ export function AppNav() {
                     {/* Log out */}
                     <button
                       onClick={logout}
-                      className="w-full text-left flex items-center px-4 py-2.5 text-sm text-red-600 hover:bg-red-50 transition"
+                      className="w-full text-left flex items-center px-4 py-2.5 text-sm text-red-400 hover:bg-red-50 transition"
                     >
                       Log out
                     </button>
@@ -379,7 +379,7 @@ export function AppNav() {
           ) : (
             <Link
               href="/login"
-              className="px-3 py-1.5 rounded-xl text-sm border border-gray-200 bg-white hover:border-gray-300 transition whitespace-nowrap"
+              className="px-3 py-1.5 rounded-xl text-sm border border-gray-200 bg-gray-50 hover:border-gray-300 transition whitespace-nowrap"
             >
               Log in
             </Link>
@@ -389,7 +389,7 @@ export function AppNav() {
 
       {/* Sync toast */}
       <div
-        className={`fixed bottom-6 right-6 bg-gray-900 text-white text-sm px-4 py-2 rounded-xl shadow-lg transition-opacity duration-300 z-50 ${
+        className={`fixed bottom-6 right-6 bg-gray-100 text-gray-900 text-sm px-4 py-2 rounded-xl shadow-lg transition-opacity duration-300 z-50 ${
           syncToast ? "opacity-100" : "opacity-0 pointer-events-none"
         }`}
       >
@@ -399,7 +399,7 @@ export function AppNav() {
 
     {/* Mobile bottom tab bar — hidden on desktop */}
     {email && (
-      <nav className="lg:hidden fixed bottom-0 left-0 right-0 z-40 flex border-t border-gray-200 bg-white pb-[env(safe-area-inset-bottom)]">
+      <nav className="lg:hidden fixed bottom-0 left-0 right-0 z-40 flex border-t border-gray-200 bg-gray-50 pb-[env(safe-area-inset-bottom)]">
         {MOBILE_TABS.map((tab) => {
           const active = pathname === tab.href;
           return (

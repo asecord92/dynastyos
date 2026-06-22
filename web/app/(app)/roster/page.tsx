@@ -55,7 +55,7 @@ export default function RosterPage() {
       </header>
 
       {!leagueId && (
-        <div className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-xl p-4">
+        <div className="text-sm text-amber-300 bg-amber-50 border border-amber-500/30 rounded-xl p-4">
           Select a league from the nav to load your roster.
         </div>
       )}
@@ -65,7 +65,7 @@ export default function RosterPage() {
       )}
 
       {!loading && leagueId && !data && (
-        <div className="text-sm text-gray-500 bg-white border rounded-2xl p-6 shadow-sm">
+        <div className="text-sm text-gray-500 bg-gray-50 border rounded-2xl p-6 shadow-sm">
           No snapshot found for this league yet. Go to Settings to connect Fantrax or upload a CSV.
         </div>
       )}
@@ -76,7 +76,7 @@ export default function RosterPage() {
 
           <DecisionQueueTable items={data.decision_queue} />
 
-          <div className="bg-white border rounded-2xl p-6 shadow-sm space-y-4">
+          <div className="bg-gray-50 border rounded-2xl p-6 shadow-sm space-y-4">
             <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <h2 className="text-xl font-semibold">Roster</h2>
 
@@ -85,7 +85,7 @@ export default function RosterPage() {
                   value={activeFS.query}
                   onChange={(e) => activeFS.setQuery(e.target.value)}
                   placeholder="Search player..."
-                  className="w-full md:w-64 px-3 py-2 rounded-xl border border-gray-200 bg-white text-sm outline-none focus:border-gray-400"
+                  className="w-full md:w-64 px-3 py-2 rounded-xl border border-gray-200 bg-gray-50 text-sm outline-none focus:border-gray-400"
                 />
 
                 <div className="flex gap-2">
@@ -94,7 +94,7 @@ export default function RosterPage() {
                     className={`px-3 py-1.5 rounded-xl text-sm border transition ${
                       rosterTab === "hitting"
                         ? "bg-indigo-600 text-white border-indigo-600"
-                        : "bg-white text-gray-700 border-gray-200 hover:border-gray-300"
+                        : "bg-gray-50 text-gray-700 border-gray-200 hover:border-gray-300"
                     }`}
                   >
                     Hitting ({majorsHitting.length})
@@ -105,7 +105,7 @@ export default function RosterPage() {
                     className={`px-3 py-1.5 rounded-xl text-sm border transition ${
                       rosterTab === "pitching"
                         ? "bg-indigo-600 text-white border-indigo-600"
-                        : "bg-white text-gray-700 border-gray-200 hover:border-gray-300"
+                        : "bg-gray-50 text-gray-700 border-gray-200 hover:border-gray-300"
                     }`}
                   >
                     Pitching ({majorsPitching.length})
@@ -116,7 +116,7 @@ export default function RosterPage() {
                     className={`px-3 py-1.5 rounded-xl text-sm border transition ${
                       rosterTab === "minors"
                         ? "bg-indigo-600 text-white border-indigo-600"
-                        : "bg-white text-gray-700 border-gray-200 hover:border-gray-300"
+                        : "bg-gray-50 text-gray-700 border-gray-200 hover:border-gray-300"
                     }`}
                   >
                     Minors ({minors.length})

@@ -75,7 +75,7 @@ export function UploadAnalyze({
   return (
     <div className="space-y-4">
       {!leagueId && (
-        <div className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-xl p-3">
+        <div className="text-sm text-amber-300 bg-amber-50 border border-amber-500/30 rounded-xl p-3">
           Select a league from the nav to analyze your roster.
         </div>
       )}
@@ -91,7 +91,7 @@ export function UploadAnalyze({
 
         <label
           htmlFor="csv-upload"
-          className="px-4 py-2 rounded-xl bg-gray-900 text-white cursor-pointer hover:bg-black transition"
+          className="px-4 py-2 rounded-xl bg-gray-100 text-gray-900 cursor-pointer hover:bg-gray-200 transition"
         >
           {file ? "Change File" : "Choose File"}
         </label>
@@ -110,7 +110,7 @@ export function UploadAnalyze({
       </button>
 
       {error && (
-        <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-xl p-3">
+        <div className="text-sm text-red-300 bg-red-50 border border-red-500/30 rounded-xl p-3">
           {error}
         </div>
       )}

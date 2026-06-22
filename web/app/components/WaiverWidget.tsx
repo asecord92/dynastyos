@@ -58,7 +58,7 @@ export function WaiverWidget({
   );
 
   return (
-    <div className="bg-white border rounded-2xl p-6 shadow-sm space-y-4">
+    <div className="bg-gray-50 border rounded-2xl p-6 shadow-sm space-y-4">
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold">Waiver Spotlight</h2>
         <div className="flex items-center gap-3">
@@ -86,7 +86,7 @@ export function WaiverWidget({
       )}
 
       {error && (
-        <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-xl p-3">
+        <div className="text-sm text-red-300 bg-red-50 border border-red-500/30 rounded-xl p-3">
           {error}{" "}
           <button onClick={() => refresh()} className="underline">
             Retry
@@ -99,7 +99,7 @@ export function WaiverWidget({
           <div className={`relative ${expanded ? "" : "max-h-48 overflow-hidden"}`}>
             <ContentRenderer text={data.content} />
             {!expanded && (
-              <div className="absolute bottom-0 left-0 right-0 h-12 bg-gradient-to-t from-white to-transparent" />
+              <div className="absolute bottom-0 left-0 right-0 h-12 bg-gradient-to-t from-gray-50 to-transparent" />
             )}
           </div>
           <button

@@ -3,7 +3,7 @@ import { money } from "../lib/rosterUtils";
 
 export function DecisionQueueTable({ items }: { items: DecisionItem[] }) {
   return (
-    <div className="bg-white border rounded-2xl p-6 shadow-sm">
+    <div className="bg-gray-50 border rounded-2xl p-6 shadow-sm">
       <div className="flex justify-between items-center mb-4">
         <h2 className="text-xl font-semibold">Decision Queue (3rd Year)</h2>
         <span className="text-sm text-gray-700">{items.length} players</span>
@@ -27,9 +27,9 @@ export function DecisionQueueTable({ items }: { items: DecisionItem[] }) {
               const rec = String(p.recommendation ?? "option").toLowerCase();
               const pill =
                 rec === "extend"
-                  ? "bg-green-100 text-green-800 border-green-200"
+                  ? "bg-green-100 text-green-800 border-green-500/30"
                   : rec === "cut"
-                  ? "bg-red-100 text-red-800 border-red-200"
+                  ? "bg-red-100 text-red-800 border-red-500/30"
                   : "bg-gray-100 text-gray-800 border-gray-200";
 
               return (

@@ -16,9 +16,9 @@ function rankColor(rank: number): string {
 }
 
 function rankTextColor(rank: number): string {
-  if (rank <= 3) return "text-green-700";
-  if (rank <= 7) return "text-amber-700";
-  return "text-red-600";
+  if (rank <= 3) return "text-green-300";
+  if (rank <= 7) return "text-amber-300";
+  return "text-red-400";
 }
 
 function barWidth(rank: number): string {
@@ -165,7 +165,7 @@ export function CategoryRanksWidget({
 
   return (
     <>
-      <div className="bg-white border rounded-2xl p-6 shadow-sm space-y-4">
+      <div className="bg-gray-50 border rounded-2xl p-6 shadow-sm space-y-4">
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-semibold">Category Ranks</h2>
           <div className="flex items-center gap-1">
@@ -260,7 +260,7 @@ export function CategoryRanksWidget({
             className="absolute inset-0 bg-black/40 backdrop-blur-sm"
             onClick={() => setEditOpen(false)}
           />
-          <div className="relative bg-white rounded-2xl shadow-xl p-6 w-full max-w-sm mx-4 space-y-5">
+          <div className="relative bg-gray-50 rounded-2xl shadow-xl p-6 w-full max-w-sm mx-4 space-y-5">
             <h2 className="text-lg font-semibold">Edit Category Ranks</h2>
             <p className="text-xs text-gray-500">
               Enter your rank for each category (1 = best, {TOTAL_TEAMS} = worst).
