@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useDashboardWidget } from "../lib/useDashboardWidget";
 import { MinorsPanel } from "./MinorsPanel";
+import { Spinner } from "./ui/Spinner";
 
 type PlayerRec = {
   name: string;
@@ -57,7 +58,7 @@ export function StartSitPanel({
 }) {
   const [showAll, setShowAll] = useState(false);
   const [tab, setTab] = useState<"startsit" | "minors">("startsit");
-  const { data, loading, error, refresh } = useDashboardWidget<WidgetResponse>(
+  const { data, loading, validating, error, refresh } = useDashboardWidget<WidgetResponse>(
     "start_sit",
     leagueId,
     myTeamId,
@@ -100,10 +101,11 @@ export function StartSitPanel({
             )}
             <button
               onClick={() => refresh(true)}
-              disabled={loading}
-              className="px-3 py-1.5 rounded-xl text-xs border border-gray-200 hover:border-gray-300 disabled:opacity-40 transition"
+              disabled={validating}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs border border-gray-200 hover:border-gray-300 disabled:opacity-60 transition"
             >
-              {loading ? "Loading..." : "Refresh"}
+              {validating && <Spinner />}
+              {validating ? "Refreshing…" : "Refresh"}
             </button>
           </div>
         )}
