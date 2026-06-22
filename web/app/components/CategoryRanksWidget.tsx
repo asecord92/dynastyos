@@ -10,15 +10,15 @@ const TOTAL_TEAMS = 10;
 type Ranks = Partial<Record<string, number>>;
 
 function rankColor(rank: number): string {
-  if (rank <= 3) return "bg-green-500";
-  if (rank <= 7) return "bg-amber-400";
-  return "bg-red-500";
+  if (rank <= 3) return "bg-emerald-400/80";
+  if (rank <= 7) return "bg-amber-400/70";
+  return "bg-rose-400/70";
 }
 
 function rankTextColor(rank: number): string {
-  if (rank <= 3) return "text-green-300";
+  if (rank <= 3) return "text-emerald-300";
   if (rank <= 7) return "text-amber-300";
-  return "text-red-400";
+  return "text-rose-300";
 }
 
 function barWidth(rank: number): string {
@@ -285,7 +285,7 @@ export function CategoryRanksWidget({
               <button
                 onClick={saveRanks}
                 disabled={saving}
-                className="flex-1 px-4 py-2 rounded-xl bg-indigo-600 text-white text-sm font-medium disabled:opacity-40 transition"
+                className="flex-1 px-4 py-2 rounded-xl bg-violet-600 text-white text-sm font-medium disabled:opacity-40 transition"
               >
                 {saving ? "Saving..." : "Save"}
               </button>

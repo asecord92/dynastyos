@@ -264,7 +264,7 @@ export function AppNav() {
                 href={buildHref(item.href)}
                 className={`px-3 py-1.5 rounded-xl border transition whitespace-nowrap ${
                   active
-                    ? "bg-indigo-50 text-indigo-300 border-indigo-100"
+                    ? "bg-violet-50 text-violet-300 border-violet-100"
                     : "text-gray-600 border-gray-200 hover:border-gray-300"
                 }`}
               >
@@ -332,7 +332,7 @@ export function AppNav() {
     className="flex items-center gap-1 hover:opacity-80 transition"
     title={email}
   >
-    <div className="w-8 h-8 rounded-full bg-indigo-600 text-white flex items-center justify-center text-xs font-semibold">
+    <div className="w-8 h-8 rounded-full bg-violet-600 text-white flex items-center justify-center text-xs font-semibold">
       {badge}
     </div>
     <svg
@@ -407,7 +407,7 @@ export function AppNav() {
               key={tab.href}
               href={buildHref(tab.href)}
               className={`flex-1 flex flex-col items-center justify-center gap-0.5 py-2 text-[11px] font-medium transition ${
-                active ? "text-indigo-600" : "text-gray-400"
+                active ? "text-violet-600" : "text-gray-400"
               }`}
             >
               {tab.icon}

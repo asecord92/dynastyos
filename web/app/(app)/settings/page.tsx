@@ -44,7 +44,7 @@ function UnsavedModal({ onSave, onDiscard, onCancel }: {
         <div className="flex flex-col gap-2">
           <button
             onClick={onSave}
-            className="w-full px-4 py-2 rounded-xl bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700 transition"
+            className="w-full px-4 py-2 rounded-xl bg-violet-600 text-white text-sm font-medium hover:bg-violet-700 transition"
           >
             Save and continue
           </button>
@@ -544,7 +544,7 @@ export default function SettingsPage() {
                         onClick={() => setCompetitiveWindow(w)}
                         className={`px-4 py-2 rounded-xl text-sm font-medium border transition ${
                           competitiveWindow === w
-                            ? "bg-indigo-600 text-white border-indigo-600"
+                            ? "bg-violet-600 text-white border-violet-600"
                             : "bg-gray-50 text-gray-600 border-gray-200 hover:border-gray-400"
                         }`}
                       >
@@ -593,7 +593,7 @@ export default function SettingsPage() {
                   <button
                     onClick={savePhilosophy}
                     disabled={!isDirty}
-                    className="px-5 py-2 rounded-xl bg-indigo-600 text-white text-sm font-medium disabled:opacity-30 disabled:cursor-not-allowed transition"
+                    className="px-5 py-2 rounded-xl bg-violet-600 text-white text-sm font-medium disabled:opacity-30 disabled:cursor-not-allowed transition"
                   >
                     Save
                   </button>
@@ -751,7 +751,7 @@ export default function SettingsPage() {
                 <button
                   onClick={findLeagues}
                   disabled={connectLoading || (platform === "fantrax" ? !secretId : !sleeperUsername)}
-                  className="px-4 py-2 rounded-xl bg-indigo-600 text-white disabled:opacity-40 text-sm"
+                  className="px-4 py-2 rounded-xl bg-violet-600 text-white disabled:opacity-40 text-sm"
                 >
                   {connectLoading ? "Loading..." : "Find Leagues"}
                 </button>
@@ -760,7 +760,7 @@ export default function SettingsPage() {
                 <button
                   onClick={connectLeague}
                   disabled={!selectedFantraxLeagueId || connectLoading}
-                  className="px-4 py-2 rounded-xl bg-indigo-600 text-white disabled:opacity-40 text-sm"
+                  className="px-4 py-2 rounded-xl bg-violet-600 text-white disabled:opacity-40 text-sm"
                 >
                   {connectLoading ? "Connecting & syncing..." : "Connect"}
                 </button>
@@ -845,7 +845,7 @@ export default function SettingsPage() {
               </span>
               <button
                 onClick={() => saveMode(mode === "in_season" ? "offseason" : "in_season")}
-                className="relative inline-flex h-7 w-12 items-center rounded-full bg-indigo-600 transition-colors duration-200 focus:outline-none"
+                className="relative inline-flex h-7 w-12 items-center rounded-full bg-violet-600 transition-colors duration-200 focus:outline-none"
               >
                 <span
                   className={`inline-block h-5 w-5 transform rounded-full bg-gray-50 shadow transition-transform duration-200 ${
@@ -884,7 +884,7 @@ export default function SettingsPage() {
             <button
               onClick={createCsvLeague}
               disabled={!csvLeagueName}
-              className="px-4 py-2 rounded-xl bg-indigo-600 text-white disabled:opacity-40 text-sm"
+              className="px-4 py-2 rounded-xl bg-violet-600 text-white disabled:opacity-40 text-sm"
             >
               Create
             </button>

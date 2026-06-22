@@ -1,25 +1,23 @@
 @import "tailwindcss";
 
 /*
-  Dark "command center" theme. The cleanest way to flip the whole app at once is
-  to invert Tailwind's gray ramp in @theme: the codebase uses gray-50/100/200/300
-  for surfaces & borders (now dark) and gray-400..900 for text (now light), so
-  every text-gray / bg-gray / border-gray utility re-themes centrally. Cards
-  (`bg-white`) are swept to `bg-gray-50` (the dark card surface). One vivid
-  indigo/violet accent; depth comes from surface + hairline contrast, not shadow.
+  Dark "command center" theme. Inverting Tailwind's gray ramp in @theme re-themes
+  the whole app centrally: gray-50/100/200/300 are dark surfaces/borders,
+  gray-400..900 are light text. Cards are swept to bg-gray-50; accent is violet.
 */
 @theme {
   --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-display: var(--font-display-grotesk), var(--font-inter), ui-sans-serif, system-ui, sans-serif;
 
-  /* Page base — darker than the card surface so cards lift. */
-  --color-canvas: #0d1016;
+  /* Page base — clearly darker than the card surface so cards read as elevated. */
+  --color-canvas: #0a0c11;
 
-  /* Inverted gray ramp: 50-300 = surfaces/borders (dark), 400-900 = text (light). */
-  --color-gray-50: #14181f;   /* card surface */
-  --color-gray-100: #1b212b;  /* elevated / hover / skeletons */
-  --color-gray-200: #283039;  /* hairline borders */
-  --color-gray-300: #3a434f;  /* stronger borders / hover */
+  /* Inverted gray ramp: 50-300 surfaces/borders (dark), 400-900 text (light).
+     Wider canvas↔card gap + a more visible hairline for real depth. */
+  --color-gray-50: #181d27;   /* card surface */
+  --color-gray-100: #222a37;  /* elevated / hover / skeletons */
+  --color-gray-200: #2d3644;  /* hairline borders */
+  --color-gray-300: #404a5a;  /* stronger borders / hover */
   --color-gray-400: #8b94a3;  /* subtle/muted text */
   --color-gray-500: #9aa4b3;  /* muted text */
   --color-gray-600: #b3bcc9;  /* secondary text */
@@ -27,16 +25,16 @@
   --color-gray-800: #e0e5ec;
   --color-gray-900: #f0f3f8;  /* primary text */
 
-  /* Tinted status/accent surfaces — light Tailwind -50s would glare on dark. */
-  --color-indigo-50: #1e1b3a;
-  --color-indigo-100: #2a2660;
+  /* Tinted status/accent surfaces (dark so the light Tailwind -50s don't glare). */
+  --color-violet-50: #1e1838;
+  --color-violet-100: #2c2363;
   --color-red-50: #2a1518;
   --color-amber-50: #2a2010;
   --color-green-50: #102219;
 
-  /* Soft elevation (subtle on dark; surface + border do most of the work). */
-  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.3), 0 1px 3px rgb(0 0 0 / 0.25);
-  --shadow-md: 0 4px 12px rgb(0 0 0 / 0.35), 0 12px 28px rgb(0 0 0 / 0.4);
+  /* Elevation: a real drop shadow under cards (canvas is dark enough to show it). */
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.4), 0 2px 6px rgb(0 0 0 / 0.35);
+  --shadow-md: 0 6px 16px rgb(0 0 0 / 0.45), 0 16px 36px rgb(0 0 0 / 0.45);
 }
 
 @layer base {
@@ -53,7 +51,6 @@
     text-rendering: optimizeLegibility;
   }
 
-  /* Headings get the display grotesk + tight tracking for a confident, "OS" feel. */
   h1,
   h2,
   h3 {
@@ -61,13 +58,12 @@
     letter-spacing: -0.02em;
   }
 
-  /* Focus ring: gap matches the dark canvas, ring is a brighter indigo. */
+  /* Focus ring: gap matches the dark canvas; ring is a bright violet. */
   :where(button, a, input, textarea, select):focus-visible {
     outline: none;
-    box-shadow: 0 0 0 2px var(--color-canvas), 0 0 0 4px rgb(129 140 248 / 0.55);
+    box-shadow: 0 0 0 2px var(--color-canvas), 0 0 0 4px rgb(167 139 250 / 0.55);
   }
 
-  /* Form controls read on dark. */
   input,
   textarea,
   select {

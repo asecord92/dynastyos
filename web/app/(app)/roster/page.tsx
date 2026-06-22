@@ -93,7 +93,7 @@ export default function RosterPage() {
                     onClick={() => setRosterTab("hitting")}
                     className={`px-3 py-1.5 rounded-xl text-sm border transition ${
                       rosterTab === "hitting"
-                        ? "bg-indigo-600 text-white border-indigo-600"
+                        ? "bg-violet-600 text-white border-violet-600"
                         : "bg-gray-50 text-gray-700 border-gray-200 hover:border-gray-300"
                     }`}
                   >
@@ -104,7 +104,7 @@ export default function RosterPage() {
                     onClick={() => setRosterTab("pitching")}
                     className={`px-3 py-1.5 rounded-xl text-sm border transition ${
                       rosterTab === "pitching"
-                        ? "bg-indigo-600 text-white border-indigo-600"
+                        ? "bg-violet-600 text-white border-violet-600"
                         : "bg-gray-50 text-gray-700 border-gray-200 hover:border-gray-300"
                     }`}
                   >
@@ -115,7 +115,7 @@ export default function RosterPage() {
                     onClick={() => setRosterTab("minors")}
                     className={`px-3 py-1.5 rounded-xl text-sm border transition ${
                       rosterTab === "minors"
-                        ? "bg-indigo-600 text-white border-indigo-600"
+                        ? "bg-violet-600 text-white border-violet-600"
                         : "bg-gray-50 text-gray-700 border-gray-200 hover:border-gray-300"
                     }`}
                   >

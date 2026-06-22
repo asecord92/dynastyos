@@ -98,7 +98,7 @@ export function MinorsPanel({
                       </span>
                     )}
                     {p.level && (
-                      <span className="text-xs text-indigo-300 bg-indigo-50 px-1.5 py-0.5 rounded">
+                      <span className="text-xs text-violet-300 bg-violet-50 px-1.5 py-0.5 rounded">
                         {p.level}
                       </span>
                     )}

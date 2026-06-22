@@ -1,14 +1,9 @@
 import "./globals.css";
 import type { Metadata, Viewport } from "next";
-import { Inter, Space_Grotesk } from "next/font/google";
+import { Inter, Geist } from "next/font/google";
 
 const inter = Inter({ subsets: ["latin"], variable: "--font-inter", display: "swap" });
-const grotesk = Space_Grotesk({
-  subsets: ["latin"],
-  variable: "--font-display-grotesk",
-  display: "swap",
-  weight: ["500", "600", "700"],
-});
+const geist = Geist({ subsets: ["latin"], variable: "--font-display-grotesk", display: "swap" });
 
 export const metadata: Metadata = {
   title: "DynastyOS",
@@ -31,7 +26,7 @@ export const viewport: Viewport = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={`${inter.variable} ${grotesk.variable}`}>
+    <html lang="en" className={`${inter.variable} ${geist.variable}`}>
       <body>{children}</body>
     </html>
   );
