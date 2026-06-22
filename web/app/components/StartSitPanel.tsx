@@ -67,7 +67,7 @@ export function StartSitPanel({
   const tabClass = (active: boolean) =>
     `px-3 py-1.5 rounded-xl text-sm border transition ${
       active
-        ? "bg-black text-white border-black"
+        ? "bg-indigo-600 text-white border-indigo-600"
         : "bg-white text-gray-700 border-gray-200 hover:border-gray-300"
     }`;
 

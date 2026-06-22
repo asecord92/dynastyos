@@ -251,30 +251,27 @@ export function AppNav() {
 
         {/* Center — Nav links (desktop; mobile uses the bottom tab bar) */}
         <nav className="hidden lg:flex items-center justify-center gap-1 text-sm">
-          <Link
-            className="px-3 py-1.5 rounded-xl border border-gray-200 hover:border-gray-300 transition whitespace-nowrap"
-            href={buildHref("/")}
-          >
-            Dashboard
-          </Link>
-          <Link
-            className="px-3 py-1.5 rounded-xl border border-gray-200 hover:border-gray-300 transition whitespace-nowrap"
-            href={buildHref("/roster")}
-          >
-            Roster
-          </Link>
-          <Link
-            className="px-3 py-1.5 rounded-xl border border-gray-200 hover:border-gray-300 transition whitespace-nowrap"
-            href={buildHref("/waivers")}
-          >
-            Waivers
-          </Link>
-          <Link
-            className="px-3 py-1.5 rounded-xl border border-gray-200 hover:border-gray-300 transition whitespace-nowrap"
-            href={buildHref("/trade")}
-          >
-            Trade
-          </Link>
+          {[
+            { href: "/", label: "Dashboard" },
+            { href: "/roster", label: "Roster" },
+            { href: "/waivers", label: "Waivers" },
+            { href: "/trade", label: "Trade" },
+          ].map((item) => {
+            const active = pathname === item.href;
+            return (
+              <Link
+                key={item.href}
+                href={buildHref(item.href)}
+                className={`px-3 py-1.5 rounded-xl border transition whitespace-nowrap ${
+                  active
+                    ? "bg-indigo-50 text-indigo-700 border-indigo-100"
+                    : "text-gray-600 border-gray-200 hover:border-gray-300"
+                }`}
+              >
+                {item.label}
+              </Link>
+            );
+          })}
         </nav>
 
         {/* Right — Actions */}
@@ -335,7 +332,7 @@ export function AppNav() {
     className="flex items-center gap-1 hover:opacity-80 transition"
     title={email}
   >
-    <div className="w-8 h-8 rounded-full bg-black text-white flex items-center justify-center text-xs font-semibold">
+    <div className="w-8 h-8 rounded-full bg-indigo-600 text-white flex items-center justify-center text-xs font-semibold">
       {badge}
     </div>
     <svg
@@ -410,7 +407,7 @@ export function AppNav() {
               key={tab.href}
               href={buildHref(tab.href)}
               className={`flex-1 flex flex-col items-center justify-center gap-0.5 py-2 text-[11px] font-medium transition ${
-                active ? "text-black" : "text-gray-400"
+                active ? "text-indigo-600" : "text-gray-400"
               }`}
             >
               {tab.icon}

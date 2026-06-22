@@ -285,7 +285,7 @@ export function CategoryRanksWidget({
               <button
                 onClick={saveRanks}
                 disabled={saving}
-                className="flex-1 px-4 py-2 rounded-xl bg-black text-white text-sm font-medium disabled:opacity-40 transition"
+                className="flex-1 px-4 py-2 rounded-xl bg-indigo-600 text-white text-sm font-medium disabled:opacity-40 transition"
               >
                 {saving ? "Saving..." : "Save"}
               </button>

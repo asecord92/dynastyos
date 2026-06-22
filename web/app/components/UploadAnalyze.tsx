@@ -104,7 +104,7 @@ export function UploadAnalyze({
       <button
         onClick={analyze}
         disabled={!file || !leagueId || loading}
-        className="px-4 py-2 rounded-xl bg-black text-white disabled:opacity-40"
+        className="px-4 py-2 rounded-xl bg-indigo-600 text-white disabled:opacity-40"
       >
         {loading ? "Analyzing..." : "Analyze"}
       </button>
