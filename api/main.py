@@ -1227,11 +1227,13 @@ async def dashboard_start_sit(
 
             if fantrax_status == "INJURED_RESERVE":
                 il_type = il_type_map.get(fid) or "IL"
-                il_alerts.append({
-                    "name": name,
-                    "status": il_type,
-                    "detail": f"On {il_type} — check return timeline",
-                })
+                # Honest fallback (the AI enriches with the real injury/return below
+                # when it can find it). Long-term IL isn't an actionable timeline.
+                if "60" in il_type:
+                    detail = "Long-term injury — on the 60-day IL"
+                else:
+                    detail = f"On the {il_type}"
+                il_alerts.append({"name": name, "status": il_type, "detail": detail})
             elif fantrax_status == "MINORS":
                 milb_alerts.append({
                     "name": name,
@@ -1258,12 +1260,13 @@ async def dashboard_start_sit(
             and status_map.get(item.get("id", "")) not in ("IL", "Minors")
         ]
 
-        # Short-term IL players to include in AI research (return timelines)
-        short_term_il_names = [
-            name_map.get(item.get("id", "")) or item.get("name", "")
+        # IL players to research — all of them, so 60-day stashes get a real
+        # injury + return note instead of a generic flag.
+        il_research = [
+            (name_map.get(item.get("id", "")) or item.get("name", ""),
+             il_type_map.get(item.get("id", "")) or "IL")
             for item in roster_items
             if item.get("status", "").upper() == "INJURED_RESERVE"
-            and il_type_map.get(item.get("id", "")) in ("10-Day IL", "15-Day IL")
         ]
 
         player_lines = []
@@ -1283,12 +1286,12 @@ async def dashboard_start_sit(
                 f"{cat}:{rank}" for cat, rank in category_ranks.items()
             )
 
-        short_term_il_section = ""
-        if short_term_il_names:
-            short_term_il_section = f"""
-Short-term IL players (10-Day or 15-Day) — search for return timeline for each:
-{chr(10).join(f"- {n}" for n in short_term_il_names)}
-If a return timeline is found, include each in the alerts array with status "DTD" or the IL type and the expected return detail.
+        il_section = ""
+        if il_research:
+            il_section = f"""
+Injured (IL) players — for each, search for the injury and the expected return:
+{chr(10).join(f"- {n} ({il})" for n, il in il_research)}
+For each you can confirm, add an alert: status = the IL type, detail = one concrete sentence with the injury and expected return (e.g. "Hamstring strain, targeting a late-June return" or "Torn ACL, out for the season"). Do not invent a timeline you can't find — skip those and the roster's listed status will be shown instead.
 """
 
         prompt = f"""You are a fantasy baseball analyst for a dynasty contract league.
@@ -1298,10 +1301,10 @@ Team: {team_name}
 Active/Reserve Roster (name | position | MLB team | salary):
 {chr(10).join(player_lines) if player_lines else "No active players."}
 {ranks_line}
-{short_term_il_section}
+{il_section}
 The team and status shown for each player above are current as of today. Every player listed is on an active MLB roster — do NOT describe any of them as a minor leaguer, prospect, or "stash"; base your analysis only on the data above and current web-search results, not on prior-season assumptions.
 
-Use web search to check current status for this roster. Limit yourself to 2-3 searches total — search for a general injury report and maybe one targeted search for a specific player concern. Do not search every player individually.
+Use web search to check current status for this roster. Limit yourself to 3-5 searches total — a general injury report plus targeted searches for the injured (IL) players listed above. Prioritize getting a real injury + return note for the IL players over searching healthy starters individually.
 
 Based on what you find, assign each player a start/sit recommendation for the current week. Consider: injuries, recent form, upcoming matchups, platoon situations.
 
@@ -1317,7 +1320,7 @@ Return ONLY a ```json code block — no other text before or after it:
 
 Rules:
 - recommendation must be exactly: start, monitor, or sit
-- alerts: include DTD players and any short-term IL return timelines found — do not re-list confirmed IL/MiLB players
+- alerts: include DTD players and the IL players you researched above (status = IL type, detail = injury + expected return you found). Do not re-list MiLB players.
 - Include every player from the Active/Reserve roster above in the players array"""
 
         ai = get_ai_client()
