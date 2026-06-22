@@ -104,7 +104,7 @@ export function FootballDashboard({ leagueId, myTeamId }: { leagueId: string; my
 
         {/* Right rail — positional strength + standings */}
         <div className="space-y-4">
-          <div className="bg-white border rounded-2xl p-5 shadow-sm space-y-3">
+          <div className="bg-gray-50 border rounded-2xl p-5 shadow-sm space-y-3">
             <div className="text-xs font-semibold uppercase tracking-widest text-gray-400">
               Positional Strength
             </div>
@@ -135,7 +135,7 @@ export function FootballDashboard({ leagueId, myTeamId }: { leagueId: string; my
             </div>
           </div>
 
-          <div className="bg-white border rounded-2xl p-5 shadow-sm space-y-3">
+          <div className="bg-gray-50 border rounded-2xl p-5 shadow-sm space-y-3">
             <div className="text-xs font-semibold uppercase tracking-widest text-gray-400">
               Standings
             </div>

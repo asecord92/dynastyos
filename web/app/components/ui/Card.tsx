@@ -18,7 +18,7 @@ export function Card({
 }) {
   return (
     <div
-      className={`bg-white rounded-2xl border border-gray-200/80 shadow-sm ${
+      className={`bg-gray-50 rounded-2xl border border-gray-200/80 shadow-sm ${
         hover ? "transition-shadow hover:shadow-md" : ""
       } ${padding} ${className}`}
     >

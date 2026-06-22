@@ -88,7 +88,7 @@ export function CapReliefTool({ data }: { data: AnalyzeResult }) {
   return (
     <div className="space-y-6">
       {/* Summary */}
-      <div className="bg-white border rounded-2xl p-6 shadow-sm">
+      <div className="bg-gray-50 border rounded-2xl p-6 shadow-sm">
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
           <div>
             <h1 className="text-2xl font-semibold">Cap Relief</h1>
@@ -100,7 +100,7 @@ export function CapReliefTool({ data }: { data: AnalyzeResult }) {
           <button
             type="button"
             onClick={clearAll}
-            className="px-3 py-2 rounded-xl text-sm border border-gray-200 bg-white hover:border-gray-300"
+            className="px-3 py-2 rounded-xl text-sm border border-gray-200 bg-gray-50 hover:border-gray-300"
           >
             Clear all
           </button>
@@ -114,14 +114,14 @@ export function CapReliefTool({ data }: { data: AnalyzeResult }) {
 
           <div className="border rounded-2xl p-4">
             <div className="text-sm text-gray-600">Cap Remaining Now</div>
-            <div className={`text-2xl font-semibold ${capRemaining < 0 ? "text-red-600" : "text-green-600"}`}>
+            <div className={`text-2xl font-semibold ${capRemaining < 0 ? "text-red-400" : "text-green-400"}`}>
               {money(capRemaining)}
             </div>
           </div>
 
           <div className="border rounded-2xl p-4">
             <div className="text-sm text-gray-600">Cap Remaining If Cut</div>
-            <div className={`text-2xl font-semibold ${capRemainingIfCut < 0 ? "text-red-600" : "text-green-600"}`}>
+            <div className={`text-2xl font-semibold ${capRemainingIfCut < 0 ? "text-red-400" : "text-green-400"}`}>
               {money(capRemainingIfCut)}
             </div>
           </div>
@@ -129,7 +129,7 @@ export function CapReliefTool({ data }: { data: AnalyzeResult }) {
       </div>
 
       {/* Controls */}
-      <div className="bg-white border rounded-2xl p-6 shadow-sm space-y-4">
+      <div className="bg-gray-50 border rounded-2xl p-6 shadow-sm space-y-4">
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div className="flex gap-2">
             {(["all", "hitting", "pitching"] as const).map((t) => (
@@ -139,7 +139,7 @@ export function CapReliefTool({ data }: { data: AnalyzeResult }) {
                 className={`px-3 py-1.5 rounded-xl text-sm border transition ${
                   tab === t
                     ? "bg-indigo-600 text-white border-indigo-600"
-                    : "bg-white text-gray-700 border-gray-200 hover:border-gray-300"
+                    : "bg-gray-50 text-gray-700 border-gray-200 hover:border-gray-300"
                 }`}
               >
                 {t}
@@ -152,21 +152,21 @@ export function CapReliefTool({ data }: { data: AnalyzeResult }) {
               value={activeFS.query}
               onChange={(e) => activeFS.setQuery(e.target.value)}
               placeholder="Search player..."
-              className="w-full md:w-64 px-3 py-2 rounded-xl border border-gray-200 bg-white text-sm outline-none focus:border-gray-400"
+              className="w-full md:w-64 px-3 py-2 rounded-xl border border-gray-200 bg-gray-50 text-sm outline-none focus:border-gray-400"
             />
 
             <div className="flex gap-2">
               <button
                 type="button"
                 onClick={() => selectVisible(activeFS.rows)}
-                className="px-3 py-2 rounded-xl text-sm border border-gray-200 bg-white hover:border-gray-300"
+                className="px-3 py-2 rounded-xl text-sm border border-gray-200 bg-gray-50 hover:border-gray-300"
               >
                 Select visible
               </button>
               <button
                 type="button"
                 onClick={() => clearVisible(activeFS.rows)}
-                className="px-3 py-2 rounded-xl text-sm border border-gray-200 bg-white hover:border-gray-300"
+                className="px-3 py-2 rounded-xl text-sm border border-gray-200 bg-gray-50 hover:border-gray-300"
               >
                 Clear visible
               </button>

@@ -33,12 +33,12 @@ export function InjuryTicker({ alerts }: { alerts: Alert[] }) {
   }
 
   return (
-    <div className="min-h-[120px] bg-white border rounded-2xl shadow-sm border-l-4 border-l-orange-400 flex flex-col justify-center px-6 py-5">
+    <div className="min-h-[120px] bg-gray-50 border rounded-2xl shadow-sm border-l-4 border-l-orange-400 flex flex-col justify-center px-6 py-5">
       <div
         className={`transition-opacity duration-300 ${visible ? "opacity-100" : "opacity-0"}`}
       >
         <div className="flex items-start gap-2 mb-1.5">
-          <span className="text-xs font-bold text-amber-600 uppercase tracking-wide min-w-0 break-words">
+          <span className="text-xs font-bold text-amber-400 uppercase tracking-wide min-w-0 break-words">
             {headerLabel(alert.status)} — {alert.name}
           </span>
           {alert.status && (

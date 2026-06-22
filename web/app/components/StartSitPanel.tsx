@@ -37,9 +37,9 @@ function timeAgo(iso: string): string {
 }
 
 const recPill: Record<string, string> = {
-  start: "bg-green-100 text-green-700",
-  monitor: "bg-amber-100 text-amber-700",
-  sit: "bg-red-100 text-red-600",
+  start: "bg-green-500/15 text-green-300",
+  monitor: "bg-amber-500/15 text-amber-300",
+  sit: "bg-red-500/15 text-red-300",
 };
 
 export type { Alert };
@@ -68,7 +68,7 @@ export function StartSitPanel({
     `px-3 py-1.5 rounded-xl text-sm border transition ${
       active
         ? "bg-indigo-600 text-white border-indigo-600"
-        : "bg-white text-gray-700 border-gray-200 hover:border-gray-300"
+        : "bg-gray-50 text-gray-700 border-gray-200 hover:border-gray-300"
     }`;
 
   const recOrder: Record<string, number> = { sit: 0, monitor: 1, start: 2 };
@@ -78,7 +78,7 @@ export function StartSitPanel({
   const players = showAll ? allPlayers : allPlayers.slice(0, 6);
 
   return (
-    <div className="bg-white border rounded-2xl p-6 shadow-sm space-y-4">
+    <div className="bg-gray-50 border rounded-2xl p-6 shadow-sm space-y-4">
       {/* Tabs */}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex gap-2">
@@ -125,7 +125,7 @@ export function StartSitPanel({
 
       {/* Error */}
       {tab === "startsit" && error && (
-        <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-xl p-3">
+        <div className="text-sm text-red-300 bg-red-50 border border-red-500/30 rounded-xl p-3">
           {error}{" "}
           <button onClick={() => refresh()} className="underline">
             Retry

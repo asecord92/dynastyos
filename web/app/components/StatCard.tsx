@@ -9,8 +9,8 @@ type StatCardProps = {
 };
 
 const subtextColors = {
-  green: "text-green-600",
-  amber: "text-amber-600",
+  green: "text-green-400",
+  amber: "text-amber-400",
   red: "text-red-500",
   muted: "text-gray-400",
 };

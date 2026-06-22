@@ -93,19 +93,19 @@ export default function WaiversPage() {
       <h1 className="text-3xl font-semibold">Waiver Wire</h1>
 
       {!leagueId && (
-        <div className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-xl p-4">
+        <div className="text-sm text-amber-300 bg-amber-50 border border-amber-500/30 rounded-xl p-4">
           Select a league from the nav to load waiver recommendations.
         </div>
       )}
 
       {leagueId && !myTeamId && (
-        <div className="text-sm text-gray-500 bg-white border rounded-2xl p-6 shadow-sm">
+        <div className="text-sm text-gray-500 bg-gray-50 border rounded-2xl p-6 shadow-sm">
           No team found for this league. Sync your league in Settings first.
         </div>
       )}
 
       {leagueId && myTeamId && (
-        <div className="bg-white border rounded-2xl p-6 shadow-sm space-y-4">
+        <div className="bg-gray-50 border rounded-2xl p-6 shadow-sm space-y-4">
           {/* Header */}
           <div className="flex items-center justify-between">
             <h2 className="text-lg font-semibold">Recommendations</h2>
@@ -140,7 +140,7 @@ export default function WaiversPage() {
 
           {/* Error */}
           {error && (
-            <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-xl p-3">
+            <div className="text-sm text-red-300 bg-red-50 border border-red-500/30 rounded-xl p-3">
               {error}{" "}
               <button onClick={() => fetchData()} className="underline">
                 Retry

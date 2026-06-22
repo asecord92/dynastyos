@@ -122,13 +122,13 @@ export default function DashboardPage() {
       <h1 className="text-3xl font-semibold">Dashboard</h1>
 
       {!leagueId && (
-        <div className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-xl p-4">
+        <div className="text-sm text-amber-300 bg-amber-50 border border-amber-500/30 rounded-xl p-4">
           Select a league from the nav to load your dashboard.
         </div>
       )}
 
       {leagueId && !myTeamId && (
-        <div className="text-sm text-gray-500 bg-white border rounded-2xl p-6 shadow-sm">
+        <div className="text-sm text-gray-500 bg-gray-50 border rounded-2xl p-6 shadow-sm">
           No team found for this league. Sync your league in Settings first.
         </div>
       )}
@@ -165,7 +165,7 @@ export default function DashboardPage() {
               loading={!rosterSummary}
             />
             {/* 4th card — reserved for matchup data */}
-            <div className="bg-white border border-dashed border-gray-200 rounded-2xl p-5" />
+            <div className="bg-gray-50 border border-dashed border-gray-200 rounded-2xl p-5" />
           </div>
 
           {/* Main content: start/sit + category ranks */}
