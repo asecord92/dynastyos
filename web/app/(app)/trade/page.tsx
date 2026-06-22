@@ -114,7 +114,7 @@ function PlayerSearch({
             key={p.id}
             onClick={() => onToggle(p.id)}
             className={`w-full flex items-center justify-between px-4 py-2.5 text-sm border-b border-gray-100 last:border-0 transition hover:bg-gray-50 ${
-              selected.includes(p.id) ? "bg-indigo-600 text-white hover:bg-indigo-700" : ""
+              selected.includes(p.id) ? "bg-violet-600 text-white hover:bg-violet-700" : ""
             }`}
           >
             <div className="flex items-center gap-3 text-left">
@@ -509,7 +509,7 @@ export default function TradePage() {
   const modeClass = (active: boolean) =>
     `px-3 py-1.5 rounded-xl text-sm border transition ${
       active
-        ? "bg-indigo-600 text-white border-indigo-600"
+        ? "bg-violet-600 text-white border-violet-600"
         : "bg-gray-50 text-gray-700 border-gray-200 hover:border-gray-300"
     }`;
 
@@ -586,7 +586,7 @@ export default function TradePage() {
             <button
               onClick={analyze}
               disabled={!canAnalyze}
-              className="w-full px-4 py-3 rounded-xl bg-indigo-600 text-white text-sm font-medium disabled:opacity-30 disabled:cursor-not-allowed transition hover:bg-indigo-700"
+              className="w-full px-4 py-3 rounded-xl bg-violet-600 text-white text-sm font-medium disabled:opacity-30 disabled:cursor-not-allowed transition hover:bg-violet-700"
             >
               {loading ? "Analyzing..." : "Analyze Trade"}
             </button>
@@ -635,7 +635,7 @@ export default function TradePage() {
                       disabled={finderLoading || !myTeamId}
                       className={`px-3 py-1.5 rounded-xl text-sm border transition disabled:opacity-40 ${
                         finder?.target_category === cat
-                          ? "bg-indigo-600 text-white border-indigo-600"
+                          ? "bg-violet-600 text-white border-violet-600"
                           : "bg-gray-50 text-gray-700 border-gray-200 hover:border-gray-300"
                       }`}
                     >
@@ -646,7 +646,7 @@ export default function TradePage() {
                 <button
                   onClick={() => runFinder()}
                   disabled={finderLoading || !myTeamId}
-                  className="w-full px-4 py-3 rounded-xl bg-indigo-600 text-white text-sm font-medium disabled:opacity-30 disabled:cursor-not-allowed transition hover:bg-indigo-700"
+                  className="w-full px-4 py-3 rounded-xl bg-violet-600 text-white text-sm font-medium disabled:opacity-30 disabled:cursor-not-allowed transition hover:bg-violet-700"
                 >
                   {finderLoading
                     ? "Finding..."
@@ -737,7 +737,7 @@ export default function TradePage() {
                               </div>
                               <button
                                 onClick={() => loadPackage(pkg)}
-                                className="text-xs font-medium text-indigo-600 hover:text-indigo-300"
+                                className="text-xs font-medium text-violet-600 hover:text-violet-300"
                               >
                                 Load into Build Trade →
                               </button>

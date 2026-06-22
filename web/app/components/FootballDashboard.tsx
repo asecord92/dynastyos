@@ -27,9 +27,9 @@ type NFLDash = {
 };
 
 function posColor(rank: number, total: number): string {
-  if (rank <= Math.ceil(total / 3)) return "bg-green-500";
-  if (rank <= Math.ceil((2 * total) / 3)) return "bg-amber-400";
-  return "bg-red-500";
+  if (rank <= Math.ceil(total / 3)) return "bg-emerald-400/80";
+  if (rank <= Math.ceil((2 * total) / 3)) return "bg-amber-400/70";
+  return "bg-rose-400/70";
 }
 
 export function FootballDashboard({ leagueId, myTeamId }: { leagueId: string; myTeamId: string }) {

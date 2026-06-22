@@ -59,7 +59,7 @@ export default function CheckEmailPage() {
 
           <button
             onClick={() => router.push("/login")}
-            className="mt-3 w-full rounded-md bg-indigo-600 text-white hover:bg-indigo-700
+            className="mt-3 w-full rounded-md bg-violet-600 text-white hover:bg-violet-700
                        text-sm font-medium py-2 transition active:scale-[0.98] active:translate-y-[1px]"
           >
             Back to login
