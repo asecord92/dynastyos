@@ -422,6 +422,23 @@ def _build_standings(fantrax_league_id: str, my_team_id: str) -> dict:
     }
 
 
+def require_league_owner(sb, user: dict, league_id: str) -> None:
+    """Ensure the authenticated user owns this league. The backend uses the
+    service key (bypassing RLS), so league ownership must be checked explicitly,
+    or any logged-in user could read/modify any league by id. Rows with no owner
+    set (legacy) are allowed; a row owned by someone else is blocked (403)."""
+    sub = (user or {}).get("sub")
+    try:
+        row = sb.table("leagues").select("owner_user_id").eq("id", league_id).single().execute()
+    except Exception:
+        return  # lookup failed (e.g. not found) — let the endpoint's logic handle it
+    owner = (row.data or {}).get("owner_user_id")
+    # Block only when we have both a known owner and a known requester that differ —
+    # never lock out on a missing owner (legacy rows) or indeterminate identity.
+    if owner and sub and owner != sub:
+        raise HTTPException(status_code=403, detail="You don't have access to this league.")
+
+
 @app.get("/league/standings")
 async def league_standings(
     league_id: str = Query(...),
@@ -430,6 +447,7 @@ async def league_standings(
 ):
     try:
         sb = get_supabase()
+        require_league_owner(sb, user, league_id)
         league_row = (
             sb.table("leagues")
             .select("fantrax_league_id")
@@ -457,6 +475,7 @@ async def nfl_dashboard(
     """Football dashboard data: record, standings + points-for, positional
     strength, and players currently out."""
     try:
+        require_league_owner(get_supabase(), user, league_id)
         return await build_nfl_dashboard(league_id, my_team_id)
     except Exception as e:
         traceback.print_exc()
@@ -470,6 +489,7 @@ async def get_category_ranks(
 ):
     try:
         sb = get_supabase()
+        require_league_owner(sb, user, league_id)
         result = (
             sb.table("dashboard_cache")
             .select("content,updated_at")
@@ -501,6 +521,7 @@ async def dashboard_summary(
     by /cron/refresh-widgets), so the page fetches once instead of three times."""
     try:
         sb = get_supabase()
+        require_league_owner(sb, user, league_id)
         league_row = (
             sb.table("leagues").select("fantrax_league_id").eq("id", league_id).single().execute()
         )
@@ -543,6 +564,7 @@ async def upsert_category_ranks(
 ):
     try:
         sb = get_supabase()
+        require_league_owner(sb, user, body.league_id)
         content = _json.dumps(body.ranks)
         now = datetime.now(timezone.utc).isoformat()
         sb.table("dashboard_cache").upsert(
@@ -591,6 +613,7 @@ async def compute_category_ranks_endpoint(
     """Kick off an approximate category-rank calculation from current rosters + stats.
     Runs in the background (fetching stats for the whole league is slow on a cold
     cache); the client polls GET /league/category-ranks for the updated result."""
+    require_league_owner(get_supabase(), user, body.league_id)
     background_tasks.add_task(
         _run_category_ranks_compute, body.league_id, body.my_team_id
     )
@@ -659,6 +682,7 @@ async def sleeper_sync(body: SleeperSyncRequest, user: dict = Depends(get_curren
     rules. Requires the leagues row to already carry sleeper_user_id."""
     try:
         sb = get_supabase()
+        require_league_owner(sb, user, body.league_id)
         league_row = (
             sb.table("leagues").select("id, sleeper_user_id").eq("id", body.league_id).single().execute()
         )
@@ -865,6 +889,7 @@ async def trade_analyze(
     user: dict = Depends(get_current_user),
 ):
     try:
+        require_league_owner(get_supabase(), user, body.league_id)
         offering = [x.strip() for x in body.offering_ids.split(",") if x.strip()]
         receiving = [x.strip() for x in body.receiving_ids.split(",") if x.strip()]
 
@@ -916,6 +941,7 @@ async def trade_finder(
     # Build context up front so input errors surface as a normal HTTP status
     # (not mid-stream). This is also where the candidate ranking is computed.
     # The finder's `target_category` field carries an NFL position for football.
+    require_league_owner(get_supabase(), user, body.league_id)
     sport = _league_sport(get_supabase(), body.league_id)
     try:
         if sport == "NFL":
@@ -1096,6 +1122,7 @@ async def dashboard_news(
 ):
     try:
         sb = get_supabase()
+        require_league_owner(sb, user, body.league_id)
 
         cached = _check_cache(sb, body.league_id, "news", body.force)
         if cached:
@@ -1173,6 +1200,7 @@ async def dashboard_start_sit(
 ):
     try:
         sb = get_supabase()
+        require_league_owner(sb, user, body.league_id)
 
         cached = _check_cache(sb, body.league_id, "start_sit", body.force)
         if cached:
@@ -1398,6 +1426,7 @@ async def dashboard_waiver(
 ):
     try:
         sb = get_supabase()
+        require_league_owner(sb, user, body.league_id)
 
         cached = _check_cache(sb, body.league_id, "waiver", body.force)
         if cached:
@@ -1553,6 +1582,7 @@ async def dashboard_minors(
     for each rostered prospect. Data-only (no AI). Cached under the 'minors' widget."""
     try:
         sb = get_supabase()
+        require_league_owner(sb, user, body.league_id)
 
         cached = _check_cache(sb, body.league_id, "minors", body.force)
         if cached:
