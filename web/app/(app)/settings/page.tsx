@@ -115,6 +115,13 @@ export default function SettingsPage() {
   const [leagues, setLeagues] = useState<{ id: string; name: string }[]>([]);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
+  // Anthropic API key (BYOK) — stored per user, encrypted by the backend.
+  const [keySet, setKeySet] = useState<boolean | null>(null);
+  const [keyLast4, setKeyLast4] = useState<string | null>(null);
+  const [keyInput, setKeyInput] = useState("");
+  const [keyBusy, setKeyBusy] = useState(false);
+  const [keyError, setKeyError] = useState<string | null>(null);
+
   // Load league row
   useEffect(() => {
     if (!leagueId) return;
@@ -262,6 +269,71 @@ export default function SettingsPage() {
     window.addEventListener("dynastyos:leagues-updated", loadLeagues);
     return () => window.removeEventListener("dynastyos:leagues-updated", loadLeagues);
   }, []);
+
+  async function readDetail(res: Response): Promise<string> {
+    try {
+      const j = await res.json();
+      return typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail);
+    } catch {
+      return "Something went wrong.";
+    }
+  }
+
+  const loadKeyStatus = useCallback(async () => {
+    try {
+      const res = await authedFetch("/api/settings/api-key");
+      if (res.ok) {
+        const j = await res.json();
+        setKeySet(!!j.set);
+        setKeyLast4(j.last4 ?? null);
+      }
+    } catch {
+      /* leave status unknown */
+    }
+  }, []);
+
+  useEffect(() => {
+    loadKeyStatus();
+  }, [loadKeyStatus]);
+
+  async function saveKey() {
+    const key = keyInput.trim();
+    if (!key) return;
+    setKeyBusy(true);
+    setKeyError(null);
+    try {
+      const res = await authedFetch("/api/settings/api-key", {
+        method: "PUT",
+        body: JSON.stringify({ key }),
+      });
+      if (!res.ok) throw new Error(await readDetail(res));
+      const j = await res.json();
+      setKeySet(true);
+      setKeyLast4(j.last4 ?? null);
+      setKeyInput("");
+      showToast();
+    } catch (e: any) {
+      setKeyError(e?.message ?? "Couldn't save your key.");
+    } finally {
+      setKeyBusy(false);
+    }
+  }
+
+  async function removeKey() {
+    setKeyBusy(true);
+    setKeyError(null);
+    try {
+      const res = await authedFetch("/api/settings/api-key", { method: "DELETE" });
+      if (!res.ok) throw new Error(await readDetail(res));
+      setKeySet(false);
+      setKeyLast4(null);
+      showToast();
+    } catch (e: any) {
+      setKeyError(e?.message ?? "Couldn't remove your key.");
+    } finally {
+      setKeyBusy(false);
+    }
+  }
 
   async function fetchFantraxLeagues() {
     if (!secretId) return;
@@ -498,6 +570,75 @@ export default function SettingsPage() {
           onCancel={handleModalCancel}
         />
       )}
+
+      {/* AI Key (BYOK) */}
+      <div className="grid grid-cols-1 md:grid-cols-[200px_1fr] gap-4 md:gap-8 py-8 border-t border-gray-200">
+        <div>
+          <div className="text-xs font-semibold uppercase tracking-widest text-gray-400">AI Key</div>
+          <p className="text-sm text-gray-400 mt-2 leading-relaxed">
+            Your own Anthropic key powers the AI tools (news, start/sit, waivers, trades),
+            so you&apos;re only billed for your own usage. Stored encrypted; never shared.
+          </p>
+        </div>
+        <div className="bg-gray-50 border rounded-2xl p-6 shadow-sm space-y-4">
+          <div className="flex items-center justify-between gap-3">
+            <h3 className="text-lg font-semibold">Anthropic API Key</h3>
+            {keySet === true && (
+              <span className="text-xs bg-green-100 text-green-700 px-2.5 py-0.5 rounded-full font-medium">
+                Connected ••••{keyLast4}
+              </span>
+            )}
+            {keySet === false && (
+              <span className="text-xs bg-amber-100 text-amber-700 px-2.5 py-0.5 rounded-full font-medium">
+                Not set
+              </span>
+            )}
+          </div>
+          <p className="text-sm text-gray-500">
+            Create one at{" "}
+            <a
+              href="https://console.anthropic.com/settings/keys"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-violet-600 underline"
+            >
+              console.anthropic.com
+            </a>
+            . It should start with <code className="text-gray-600">sk-ant-</code>.
+          </p>
+          <input
+            type="password"
+            value={keyInput}
+            onChange={(e) => setKeyInput(e.target.value)}
+            placeholder={keySet ? "Enter a new key to replace the current one" : "sk-ant-..."}
+            autoComplete="off"
+            className="w-full px-3 py-2 rounded-xl border border-gray-200 bg-gray-50 text-sm font-mono outline-none focus:border-gray-400"
+          />
+          <div className="flex gap-2">
+            <button
+              onClick={saveKey}
+              disabled={keyBusy || !keyInput.trim()}
+              className="px-4 py-2 rounded-xl bg-violet-600 text-white disabled:opacity-40 text-sm"
+            >
+              {keyBusy ? "Verifying…" : keySet ? "Update Key" : "Save Key"}
+            </button>
+            {keySet && (
+              <button
+                onClick={removeKey}
+                disabled={keyBusy}
+                className="px-4 py-2 rounded-xl border border-gray-200 text-gray-600 hover:border-red-300 hover:text-red-500 disabled:opacity-40 text-sm transition"
+              >
+                Remove
+              </button>
+            )}
+          </div>
+          {keyError && (
+            <div className="text-sm text-red-500 bg-red-50 border border-red-500/30 rounded-xl p-3">
+              {keyError}
+            </div>
+          )}
+        </div>
+      </div>
 
       {/* Team Philosophy */}
       {leagueId && (

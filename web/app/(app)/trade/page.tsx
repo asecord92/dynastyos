@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import { supabase } from "../../lib/supabaseClient";
 import { useLeague } from "../../lib/useLeague";
 import { authedFetch } from "../../lib/useDashboardWidget";
+import { NeedsApiKey } from "../../components/ui/NeedsApiKey";
 
 const CATEGORIES = ["R", "HR", "RBI", "SB", "OBP", "QS", "SV", "K", "ERA", "WHIP"];
 const NFL_POSITIONS = ["QB", "RB", "WR", "TE"];
@@ -244,6 +245,8 @@ export default function TradePage() {
   const [loading, setLoading] = useState(false);
   const [streamText, setStreamText] = useState("");
   const [error, setError] = useState<string | null>(null);
+  // 402 from the backend = no Anthropic key on file (BYOK). Shared across both flows.
+  const [needsApiKey, setNeedsApiKey] = useState(false);
 
   const [mode, setMode] = useState<"build" | "find">("build");
   const [finderLoading, setFinderLoading] = useState(false);
@@ -330,6 +333,7 @@ export default function TradePage() {
     if (!leagueId || !myTeamId) return;
     setFinderLoading(true);
     setFinderError(null);
+    setNeedsApiKey(false);
     setFinder(null);
     try {
       const res = await authedFetch("/api/trade/finder", {
@@ -340,6 +344,7 @@ export default function TradePage() {
           target_category: category ?? null,
         }),
       });
+      if (res.status === 402) { setNeedsApiKey(true); return; }
       if (!res.ok || !res.body) throw new Error(await res.text());
 
       let analysisText = "";
@@ -466,6 +471,7 @@ export default function TradePage() {
     setLoading(true);
     setStreamText("");
     setError(null);
+    setNeedsApiKey(false);
 
     try {
       const { data: sessionData } = await supabase.auth.getSession();
@@ -486,6 +492,7 @@ export default function TradePage() {
         }),
       });
 
+      if (res.status === 402) { setNeedsApiKey(true); return; }
       if (!res.ok) throw new Error(await res.text());
       if (!res.body) throw new Error("No response body");
 
@@ -600,7 +607,9 @@ export default function TradePage() {
 
           {/* Right — analysis output */}
           <div className="space-y-4">
-            {!streamText && !loading && (
+            {needsApiKey && <NeedsApiKey feature="Trade analysis" />}
+
+            {!streamText && !loading && !needsApiKey && (
               <div className="bg-gray-50 border rounded-2xl p-6 shadow-sm text-sm text-gray-400">
                 Select an opponent, pick players, and hit Analyze Trade to get a recommendation.
               </div>
@@ -663,7 +672,9 @@ export default function TradePage() {
 
               {/* Right — results */}
               <div className="space-y-4">
-                {!finder && !finderLoading && (
+                {needsApiKey && <NeedsApiKey feature="Trade Finder" />}
+
+                {!finder && !finderLoading && !needsApiKey && (
                   <div className="bg-gray-50 border rounded-2xl p-6 shadow-sm text-sm text-gray-400">
                     Pick a {isNFL ? "position" : "category"} to see acquisition targets.
                   </div>

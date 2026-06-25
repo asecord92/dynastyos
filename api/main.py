@@ -53,6 +53,7 @@ from engine.trade_analyzer import (
     build_system_prompt,
 )
 from engine.auth import get_current_user
+from engine import crypto
 
 app = FastAPI(title="DynastyOS API")
 
@@ -116,14 +117,137 @@ MODEL_DASHBOARD = "claude-sonnet-4-6"
 
 _WEB_SEARCH = [{"type": "web_search_20250305", "name": "web_search"}]
 
-_ai_client: anthropic.Anthropic | None = None
+# Bring-your-own-key (BYOK): every AI call uses the league OWNER's own Anthropic
+# key, stored encrypted in `user_secrets`. There is no shared fallback — friends
+# sharing the app each bring their own key so they're billed for their own usage.
+_ai_client_cache: dict[str, anthropic.Anthropic] = {}
 
 
-def get_ai_client() -> anthropic.Anthropic:
-    global _ai_client
-    if _ai_client is None:
-        _ai_client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-    return _ai_client
+class NoApiKeyError(HTTPException):
+    """402 raised when a league owner has no Anthropic key set. The frontend keys
+    off the 402 status to show an 'Add your key in Settings' prompt rather than an
+    error. Callers must let this propagate — `except HTTPException: raise`."""
+
+    def __init__(self) -> None:
+        super().__init__(status_code=402, detail="no_api_key")
+
+
+def _league_owner(sb, league_id: str) -> str | None:
+    try:
+        row = sb.table("leagues").select("owner_user_id").eq("id", league_id).single().execute()
+    except Exception:
+        return None
+    return (row.data or {}).get("owner_user_id")
+
+
+def _get_user_api_key(sb, user_id: str | None) -> str | None:
+    """Decrypt and return a user's stored Anthropic key, or None if unset."""
+    if not user_id:
+        return None
+    try:
+        row = (
+            sb.table("user_secrets")
+            .select("anthropic_key_ciphertext")
+            .eq("user_id", user_id)
+            .single()
+            .execute()
+        )
+    except Exception:
+        return None
+    ciphertext = (row.data or {}).get("anthropic_key_ciphertext")
+    if not ciphertext:
+        return None
+    try:
+        return crypto.decrypt(ciphertext)
+    except Exception:
+        return None
+
+
+def get_ai_client_for_league(sb, league_id: str) -> anthropic.Anthropic:
+    """Anthropic client keyed to the league owner's stored key. Raises 402
+    (NoApiKeyError) when the owner hasn't set one — AI features stay off until
+    they bring their own key. Works on the background cron path too: it resolves
+    the owner from the league row, not from a logged-in user."""
+    key = _get_user_api_key(sb, _league_owner(sb, league_id))
+    if not key:
+        raise NoApiKeyError()
+    client = _ai_client_cache.get(key)
+    if client is None:
+        client = anthropic.Anthropic(api_key=key)
+        _ai_client_cache[key] = client
+    return client
+
+
+class ApiKeyRequest(BaseModel):
+    key: str
+
+
+@app.get("/settings/api-key")
+async def get_api_key_status(user: dict = Depends(get_current_user)):
+    """Whether the caller has an Anthropic key on file, plus its last 4 chars.
+    Never returns the key itself."""
+    sb = get_supabase()
+    last4 = None
+    try:
+        row = (
+            sb.table("user_secrets")
+            .select("anthropic_key_last4")
+            .eq("user_id", user.get("sub"))
+            .single()
+            .execute()
+        )
+        last4 = (row.data or {}).get("anthropic_key_last4")
+    except Exception:
+        last4 = None
+    return {"set": bool(last4), "last4": last4}
+
+
+@app.put("/settings/api-key")
+async def set_api_key(body: ApiKeyRequest, user: dict = Depends(get_current_user)):
+    """Validate an Anthropic key against the API, then store it encrypted."""
+    uid = user.get("sub")
+    if not uid:
+        raise HTTPException(status_code=401, detail="No user identity in token")
+    key = (body.key or "").strip()
+    if not key.startswith("sk-ant-"):
+        raise HTTPException(
+            status_code=400,
+            detail="That doesn't look like an Anthropic API key (it should start with 'sk-ant-').",
+        )
+    # Cheap, no-token call that confirms the key authenticates before we store it.
+    try:
+        anthropic.Anthropic(api_key=key).models.list(limit=1)
+    except anthropic.AuthenticationError:
+        raise HTTPException(status_code=400, detail="Anthropic rejected that key. Double-check it and try again.")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Couldn't verify the key with Anthropic: {e}")
+    sb = get_supabase()
+    try:
+        sb.table("user_secrets").upsert(
+            {
+                "user_id": uid,
+                "anthropic_key_ciphertext": crypto.encrypt(key),
+                "anthropic_key_last4": key[-4:],
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            },
+            on_conflict="user_id",
+        ).execute()
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+    _ai_client_cache.clear()  # drop any client built from a previous key
+    return {"set": True, "last4": key[-4:]}
+
+
+@app.delete("/settings/api-key")
+async def delete_api_key(user: dict = Depends(get_current_user)):
+    sb = get_supabase()
+    try:
+        sb.table("user_secrets").delete().eq("user_id", user.get("sub")).execute()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    _ai_client_cache.clear()
+    return {"set": False, "last4": None}
 
 
 class RosterSyncRequest(BaseModel):
@@ -910,7 +1034,7 @@ async def trade_analyze(
             prompt = build_trade_prompt(context)
             system_prompt = build_system_prompt(context["rules"], context["sport"])
 
-        ai = get_ai_client()
+        ai = get_ai_client_for_league(get_supabase(), body.league_id)
 
         def stream():
             with ai.messages.stream(
@@ -924,6 +1048,8 @@ async def trade_analyze(
 
         return StreamingResponse(stream(), media_type="text/plain")
 
+    except HTTPException:
+        raise
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
@@ -1000,7 +1126,7 @@ async def trade_finder(
         parse_assets = context.get("my_assets", [])
         prompt = build_finder_prompt(context)
         system_prompt = build_system_prompt(context["rules"], context["sport"])
-    ai = get_ai_client()
+    ai = get_ai_client_for_league(get_supabase(), body.league_id)
 
     def event(obj: dict) -> str:
         return _json.dumps(obj) + "\n"
@@ -1063,7 +1189,7 @@ async def _nfl_start_sit(sb, body) -> dict:
         {"name": it.get("name"), "status": it.get("injury_status"), "detail": f"Listed {it.get('injury_status')}"}
         for it in items if it.get("injury_status")
     ]
-    ai = get_ai_client()
+    ai = get_ai_client_for_league(sb, body.league_id)
     response = ai.messages.create(
         model=MODEL_DASHBOARD, max_tokens=4000, tools=_WEB_SEARCH,
         messages=[{"role": "user", "content": nfl_start_sit_prompt(team_name, items)}],
@@ -1088,7 +1214,7 @@ async def _nfl_news(sb, body) -> dict:
     team_name, items = nfl_my_roster(sb, body.league_id, body.my_team_id)
     if not items:
         return {"content": "Sync your league to see news.", "updated_at": _now_iso()}
-    ai = get_ai_client()
+    ai = get_ai_client_for_league(sb, body.league_id)
     response = ai.messages.create(
         model=MODEL_DASHBOARD, max_tokens=2000, tools=_WEB_SEARCH,
         messages=[{"role": "user", "content": nfl_news_prompt(team_name, items)}],
@@ -1104,7 +1230,7 @@ async def _nfl_waiver(sb, body) -> dict:
     fmt_key = f"pts_{((league.get('rules') or {}).get('scoring_format') or 'half_ppr')}"
     team_name, _items = nfl_my_roster(sb, body.league_id, body.my_team_id)
     fas = nfl_waiver_pool(sb, body.league_id, fmt_key)
-    ai = get_ai_client()
+    ai = get_ai_client_for_league(sb, body.league_id)
     response = ai.messages.create(
         model=MODEL_DASHBOARD, max_tokens=2000, tools=_WEB_SEARCH,
         messages=[{"role": "user", "content": nfl_waiver_prompt(team_name or "Your Team", fas)}],
@@ -1174,7 +1300,7 @@ Search for and summarize recent news (last 2 weeks) for each player. Focus on: I
 
 Do not include any preamble, introduction, or horizontal rules (---). Do not say "Based on my research" or similar. Start directly with the first player bullet point."""
 
-        ai = get_ai_client()
+        ai = get_ai_client_for_league(sb, body.league_id)
         response = ai.messages.create(
             model=MODEL_DASHBOARD,
             max_tokens=2000,
@@ -1351,7 +1477,7 @@ Rules:
 - alerts: include DTD players and the IL players you researched above (status = IL type, detail = injury + expected return you found). Do not re-list MiLB players.
 - Include every player from the Active/Reserve roster above in the players array"""
 
-        ai = get_ai_client()
+        ai = get_ai_client_for_league(sb, body.league_id)
         response = ai.messages.create(
             model=MODEL_DASHBOARD,
             max_tokens=4000,
@@ -1554,7 +1680,7 @@ Prioritize players who address the team's weakest categories (high rank numbers)
 
 Do not include any preamble or introduction. Start directly with the first player recommendation."""
 
-        ai = get_ai_client()
+        ai = get_ai_client_for_league(sb, body.league_id)
         response = ai.messages.create(
             model=MODEL_DASHBOARD,
             max_tokens=4000,
