@@ -111,9 +111,15 @@ def _cache_age(sb, league_id: str, widget: str) -> timedelta | None:
         return None
 
 # Model selection: Opus for deep trade reasoning, Sonnet for the high-frequency
-# dashboard widgets (news / start_sit / waiver) — faster and ~40% cheaper.
+# dashboard widgets (news / start_sit / waiver) — faster and cheaper.
 MODEL_TRADE = "claude-opus-4-8"
-MODEL_DASHBOARD = "claude-sonnet-4-6"
+MODEL_DASHBOARD = "claude-sonnet-5"
+
+# Sonnet 5 turns adaptive thinking ON by default. These widgets are simple,
+# 4h-cached generations and every call bills the league owner's own key (BYOK),
+# so we keep them lean by disabling thinking — matches the no-thinking behavior
+# these prompts were tuned for on Sonnet 4.6.
+_NO_THINKING = {"type": "disabled"}
 
 _WEB_SEARCH = [{"type": "web_search_20250305", "name": "web_search"}]
 
@@ -1191,7 +1197,7 @@ async def _nfl_start_sit(sb, body) -> dict:
     ]
     ai = get_ai_client_for_league(sb, body.league_id)
     response = ai.messages.create(
-        model=MODEL_DASHBOARD, max_tokens=4000, tools=_WEB_SEARCH,
+        model=MODEL_DASHBOARD, max_tokens=5000, thinking=_NO_THINKING, tools=_WEB_SEARCH,
         messages=[{"role": "user", "content": nfl_start_sit_prompt(team_name, items)}],
     )
     raw = _extract_text(response)
@@ -1216,7 +1222,7 @@ async def _nfl_news(sb, body) -> dict:
         return {"content": "Sync your league to see news.", "updated_at": _now_iso()}
     ai = get_ai_client_for_league(sb, body.league_id)
     response = ai.messages.create(
-        model=MODEL_DASHBOARD, max_tokens=2000, tools=_WEB_SEARCH,
+        model=MODEL_DASHBOARD, max_tokens=3000, thinking=_NO_THINKING, tools=_WEB_SEARCH,
         messages=[{"role": "user", "content": nfl_news_prompt(team_name, items)}],
     )
     content = _extract_text(response)
@@ -1232,7 +1238,7 @@ async def _nfl_waiver(sb, body) -> dict:
     fas = nfl_waiver_pool(sb, body.league_id, fmt_key)
     ai = get_ai_client_for_league(sb, body.league_id)
     response = ai.messages.create(
-        model=MODEL_DASHBOARD, max_tokens=2000, tools=_WEB_SEARCH,
+        model=MODEL_DASHBOARD, max_tokens=3000, thinking=_NO_THINKING, tools=_WEB_SEARCH,
         messages=[{"role": "user", "content": nfl_waiver_prompt(team_name or "Your Team", fas)}],
     )
     content = _extract_text(response)
@@ -1303,7 +1309,8 @@ Do not include any preamble, introduction, or horizontal rules (---). Do not say
         ai = get_ai_client_for_league(sb, body.league_id)
         response = ai.messages.create(
             model=MODEL_DASHBOARD,
-            max_tokens=2000,
+            max_tokens=3000,
+            thinking=_NO_THINKING,
             tools=[{"type": "web_search_20250305", "name": "web_search"}],
             messages=[{"role": "user", "content": prompt}],
         )
@@ -1480,7 +1487,8 @@ Rules:
         ai = get_ai_client_for_league(sb, body.league_id)
         response = ai.messages.create(
             model=MODEL_DASHBOARD,
-            max_tokens=4000,
+            max_tokens=5000,
+            thinking=_NO_THINKING,
             tools=[{"type": "web_search_20250305", "name": "web_search"}],
             messages=[{"role": "user", "content": prompt}],
         )
@@ -1683,7 +1691,8 @@ Do not include any preamble or introduction. Start directly with the first playe
         ai = get_ai_client_for_league(sb, body.league_id)
         response = ai.messages.create(
             model=MODEL_DASHBOARD,
-            max_tokens=4000,
+            max_tokens=5000,
+            thinking=_NO_THINKING,
             tools=[{"type": "web_search_20250305", "name": "web_search"}],
             messages=[{"role": "user", "content": prompt}],
         )
