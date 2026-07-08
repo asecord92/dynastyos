@@ -256,6 +256,121 @@ async def delete_api_key(user: dict = Depends(get_current_user)):
     return {"set": False, "last4": None}
 
 
+# ── Admin dashboard (usage + troubleshooting) ─────────────────────────────────
+# Gated to an allowlist of admin emails (env ADMIN_EMAILS, comma-separated;
+# defaults to the app owner). Read-only snapshot derived from existing tables —
+# no usage-event logging table yet — so it doubles as a health/troubleshooting
+# view: spot users with no key or no sync at a glance.
+ADMIN_EMAILS = {
+    e.strip().lower()
+    for e in os.getenv("ADMIN_EMAILS", "asecord92@gmail.com").split(",")
+    if e.strip()
+}
+
+
+def require_admin(user: dict = Depends(get_current_user)) -> dict:
+    if (user.get("email") or "").lower() not in ADMIN_EMAILS:
+        raise HTTPException(status_code=403, detail="Admins only.")
+    return user
+
+
+@app.get("/admin/overview")
+async def admin_overview(_user: dict = Depends(require_admin)):
+    """Per-user usage + health snapshot for the app owner."""
+    sb = get_supabase()
+    now = datetime.now(timezone.utc)
+
+    def _iso(ts) -> str | None:
+        if ts is None:
+            return None
+        return ts if isinstance(ts, str) else ts.isoformat()
+
+    def _age_days(ts: str | None) -> float:
+        if not ts:
+            return 1e9
+        try:
+            dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            return (now - dt).total_seconds() / 86400
+        except Exception:
+            return 1e9
+
+    try:
+        raw_users = sb.auth.admin.list_users()
+        users = getattr(raw_users, "users", raw_users) or []
+    except Exception:
+        traceback.print_exc()
+        users = []
+
+    leagues = sb.table("leagues").select(
+        "id,owner_user_id,name,sport,platform,created_at"
+    ).execute().data or []
+    secrets = sb.table("user_secrets").select(
+        "user_id,anthropic_key_last4"
+    ).execute().data or []
+    snaps = sb.table("snapshots").select(
+        "league_id,created_at"
+    ).order("created_at", desc=True).execute().data or []
+    cache = sb.table("dashboard_cache").select(
+        "league_id,widget,updated_at"
+    ).execute().data or []
+
+    keys_by_user = {s["user_id"]: s for s in secrets}
+    leagues_by_user: dict[str, list] = {}
+    for lg in leagues:
+        leagues_by_user.setdefault(lg["owner_user_id"], []).append(lg)
+
+    last_sync_by_league: dict[str, str] = {}  # snaps already newest-first
+    for s in snaps:
+        last_sync_by_league.setdefault(s["league_id"], s["created_at"])
+
+    widgets_by_league: dict[str, list] = {}
+    for c in cache:
+        widgets_by_league.setdefault(c["league_id"], []).append(c)
+
+    rows = []
+    for u in users:
+        uid = getattr(u, "id", None)
+        u_leagues = leagues_by_user.get(uid, [])
+        syncs = [last_sync_by_league.get(lg["id"]) for lg in u_leagues]
+        syncs = [s for s in syncs if s]
+        widget_times = [
+            c["updated_at"]
+            for lg in u_leagues
+            for c in widgets_by_league.get(lg["id"], [])
+        ]
+        key = keys_by_user.get(uid)
+        rows.append({
+            "user_id": uid,
+            "email": getattr(u, "email", None),
+            "created_at": _iso(getattr(u, "created_at", None)),
+            "last_sign_in_at": _iso(getattr(u, "last_sign_in_at", None)),
+            "league_count": len(u_leagues),
+            "leagues": [
+                {"name": lg.get("name"), "sport": lg.get("sport")}
+                for lg in u_leagues
+            ],
+            "has_key": bool(key),
+            "key_last4": (key or {}).get("anthropic_key_last4"),
+            "last_sync_at": max(syncs) if syncs else None,
+            "last_widget_at": max(widget_times) if widget_times else None,
+        })
+
+    rows.sort(key=lambda r: r.get("last_sign_in_at") or "", reverse=True)
+
+    return {
+        "generated_at": now.isoformat(),
+        "totals": {
+            "users": len(rows),
+            "leagues": len(leagues),
+            "keys_set": sum(1 for r in rows if r["has_key"]),
+            "active_7d": sum(1 for r in rows if _age_days(r["last_sign_in_at"]) <= 7),
+            "synced_7d": sum(1 for r in rows if _age_days(r["last_sync_at"]) <= 7),
+            "widgets_refreshed_7d": sum(1 for c in cache if _age_days(c["updated_at"]) <= 7),
+        },
+        "users": rows,
+    }
+
+
 class RosterSyncRequest(BaseModel):
     user_secret_id: str
     fantrax_league_id: str
