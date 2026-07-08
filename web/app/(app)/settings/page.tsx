@@ -871,7 +871,7 @@ export default function SettingsPage() {
                   </summary>
                   <div className="mt-2 leading-relaxed space-y-1">
                     <p>
-                      Log in to{" "}
+                      In{" "}
                       <a
                         href="https://www.fantrax.com"
                         target="_blank"
@@ -880,8 +880,9 @@ export default function SettingsPage() {
                       >
                         Fantrax
                       </a>
-                      , open your account / API settings, and copy your Secret ID. It&apos;s
-                      the same ID for all of your leagues, so you only need to do this once.
+                      , click your user card (top right) and hit <span className="font-medium text-gray-600">Profile</span> —
+                      your Secret ID is in the box next to your username. It&apos;s the same ID
+                      for all of your leagues, so you only need it once.
                     </p>
                   </div>
                 </details>
