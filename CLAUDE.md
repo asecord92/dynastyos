@@ -12,7 +12,7 @@ Branch → PR → CI green → **squash-merge to main** → **Vercel** (frontend
 
 ## Backend shape (`api/main.py` + `engine/`)
 - Singletons: `get_supabase()` (`engine/supabase_client.py`), `get_ai_client()`.
-- **Models:** `MODEL_TRADE = "claude-opus-4-8"` (trade), `MODEL_DASHBOARD = "claude-sonnet-4-6"` (news/start_sit/waiver). All AI prompts are date-anchored via `_today_line()`.
+- **Models:** `MODEL_TRADE = "claude-opus-4-8"` (trade), `MODEL_DASHBOARD = "claude-sonnet-5"` (news/start_sit/waiver — thinking explicitly disabled via `_NO_THINKING` since Sonnet 5 defaults it on). All AI prompts are date-anchored via `_today_line()`.
 - **`dashboard_cache`** table: per-`(league_id, widget)` cache, 4h TTL via `_check_cache`/`_upsert_cache`; widgets: `news`, `start_sit`, `waiver`, `category_ranks`, `minors`. `force: true` bypasses.
 - **`player_id_map`** table: `fantrax_id → mlb_id, full_name, mlb_team, player_type, roster_status, il_type`. `roster_status` **and** `mlb_team` are refreshed every sync (`refresh_roster_statuses`).
 - Key endpoints: `/roster/sync` (kicks off a background resolve + status refresh of the whole league), `/dashboard/{news,start_sit,waiver,minors}`, `/trade/{analyze,finder}`, `/league/{standings,category-ranks,category-ranks/compute}`.
