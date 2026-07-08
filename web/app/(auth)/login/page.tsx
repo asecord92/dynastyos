@@ -128,7 +128,7 @@ export default function LoginPage() {
             onClick={sendMagicLink}
             disabled={!email || disabled}
             className="mt-4 w-full rounded-md py-2 text-sm font-semibold text-white
-                       bg-emerald-600 hover:bg-emerald-700
+                       bg-violet-600 hover:bg-violet-700
                        transition active:scale-[0.98] active:translate-y-[1px]
                        disabled:opacity-50 disabled:cursor-not-allowed"
           >

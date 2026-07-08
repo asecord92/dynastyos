@@ -104,6 +104,7 @@ export default function SettingsPage() {
   const [selectedFantraxLeagueId, setSelectedFantraxLeagueId] = useState("");
   const [connectLoading, setConnectLoading] = useState(false);
   const [connectMsg, setConnectMsg] = useState<string | null>(null);
+  const [connectMsgTone, setConnectMsgTone] = useState<"error" | "warn">("error");
   const [connectStep, setConnectStep] = useState<"idle" | "pick" | "done">("idle");
 
   // Data state
@@ -339,12 +340,14 @@ export default function SettingsPage() {
     if (!secretId) return;
     setConnectLoading(true);
     setConnectMsg(null);
+    setConnectMsgTone("error");
     try {
       const res = await fetch(`/api/fantrax/leagues?user_secret_id=${secretId}`);
       if (!res.ok) throw new Error(await res.text());
       const json = await res.json();
       const fetched: FantraxLeague[] = json.leagues ?? [];
       if (fetched.length === 0) {
+        setConnectMsgTone("warn");
         setConnectMsg("No leagues found for this Secret ID.");
         return;
       }
@@ -366,6 +369,7 @@ export default function SettingsPage() {
     if (!sleeperUsername) return;
     setConnectLoading(true);
     setConnectMsg(null);
+    setConnectMsgTone("error");
     try {
       const res = await fetch(`/api/sleeper/leagues?username=${encodeURIComponent(sleeperUsername)}`);
       if (!res.ok) throw new Error(await res.text());
@@ -381,6 +385,7 @@ export default function SettingsPage() {
         })
       );
       if (fetched.length === 0) {
+        setConnectMsgTone("warn");
         setConnectMsg("No NFL leagues found for that username.");
         return;
       }
@@ -446,6 +451,7 @@ export default function SettingsPage() {
         body: JSON.stringify({ league_id: leagueRowId, sleeper_league_id: picked.leagueId }),
       });
       if (!syncRes.ok) {
+        setConnectMsgTone("warn");
         setConnectMsg("Connected, but the roster sync failed: " + (await syncRes.text()));
       }
     } catch (e: any) {
@@ -552,6 +558,16 @@ export default function SettingsPage() {
   return (
     <main className="space-y-0">
       <h1 className="text-3xl font-semibold mb-10">Settings</h1>
+
+      {/* First-run hint: point brand-new users at the real starting point. */}
+      {leagues.length === 0 && (
+        <div className="-mt-6 mb-10 text-sm text-gray-500 bg-violet-50 border border-violet-100 rounded-xl p-4 leading-relaxed">
+          <span className="font-medium text-gray-700">New here?</span> Start by connecting
+          a league in the <span className="font-medium text-gray-700">Fantrax</span> or{" "}
+          <span className="font-medium text-gray-700">Sleeper</span> section below, then add
+          your Anthropic key to turn on the AI tools.
+        </div>
+      )}
 
       {/* Toast */}
       <div
@@ -846,9 +862,30 @@ export default function SettingsPage() {
                     setConnectStep("idle");
                     setFantraxLeagues([]);
                   }}
-                  placeholder="Found on your Fantrax profile page"
+                  placeholder="e.g. abc123def456…"
                   className="w-full px-3 py-2 rounded-xl border border-gray-200 bg-gray-50 text-sm outline-none focus:border-gray-400"
                 />
+                <details className="text-xs text-gray-500">
+                  <summary className="cursor-pointer text-violet-600 hover:text-violet-500 select-none">
+                    Where do I find my Secret ID?
+                  </summary>
+                  <div className="mt-2 leading-relaxed space-y-1">
+                    <p>
+                      In{" "}
+                      <a
+                        href="https://www.fantrax.com"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-violet-600 underline"
+                      >
+                        Fantrax
+                      </a>
+                      , click your user card (top right) and hit <span className="font-medium text-gray-600">Profile</span> —
+                      your Secret ID is in the box next to your username. It&apos;s the same ID
+                      for all of your leagues, so you only need it once.
+                    </p>
+                  </div>
+                </details>
               </div>
             ) : (
               <div className="space-y-2">
@@ -909,7 +946,13 @@ export default function SettingsPage() {
             </div>
 
             {connectMsg && (
-              <div className="text-sm text-red-300 bg-red-50 border border-red-500/30 rounded-xl p-3">
+              <div
+                className={`text-sm border rounded-xl p-3 ${
+                  connectMsgTone === "warn"
+                    ? "text-amber-300 bg-amber-50 border-amber-500/30"
+                    : "text-red-300 bg-red-50 border-red-500/30"
+                }`}
+              >
                 {connectMsg}
               </div>
             )}
