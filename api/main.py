@@ -4,9 +4,10 @@ import os
 import re
 import json as _json
 import tempfile
-from fastapi import FastAPI, UploadFile, File, Query, HTTPException, BackgroundTasks, Depends, Header
+from fastapi import FastAPI, UploadFile, File, Query, HTTPException, BackgroundTasks, Depends, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel
 import anthropic
 from datetime import datetime, timedelta, timezone
@@ -68,6 +69,75 @@ app.add_middleware(
 )
 
 rules = LeagueRules()
+
+
+# ── App-event logging (powers the admin error/support view) ───────────────────
+def _log_event(*, kind, level="error", status=None, message=None,
+               user_id=None, league_id=None, meta=None) -> None:
+    """Best-effort insert into app_events. Never raises — logging must not break
+    the request it's observing."""
+    try:
+        get_supabase().table("app_events").insert({
+            "kind": kind,
+            "level": level,
+            "status": status,
+            "message": (message or "")[:2000] or None,
+            "user_id": user_id,
+            "league_id": league_id,
+            "meta": meta,
+        }).execute()
+    except Exception:
+        traceback.print_exc()
+
+
+def _user_id_from_request(request: Request) -> str | None:
+    """Best-effort user id from the bearer token, for attributing errors to a
+    user in the admin view. Never raises."""
+    try:
+        auth = request.headers.get("authorization") or ""
+        if not auth.lower().startswith("bearer "):
+            return None
+        from engine.auth import _get_jwks
+        from jose import jwt
+        payload = jwt.decode(
+            auth.split(" ", 1)[1],
+            _get_jwks(),
+            algorithms=["ES256"],
+            options={"verify_aud": False},
+        )
+        return payload.get("sub")
+    except Exception:
+        return None
+
+
+@app.exception_handler(StarletteHTTPException)
+async def _http_exception_handler(request: Request, exc: StarletteHTTPException):
+    # Log genuine failures (5xx); leave expected 4xx (incl. 402 no_api_key) alone.
+    if exc.status_code >= 500:
+        _log_event(
+            kind=request.url.path,
+            status=exc.status_code,
+            message=str(exc.detail),
+            user_id=_user_id_from_request(request),
+        )
+    return JSONResponse(
+        {"detail": exc.detail},
+        status_code=exc.status_code,
+        headers=getattr(exc, "headers", None),
+    )
+
+
+@app.exception_handler(Exception)
+async def _unhandled_exception_handler(request: Request, exc: Exception):
+    traceback.print_exc()
+    _log_event(
+        kind=request.url.path,
+        status=500,
+        message=f"{type(exc).__name__}: {exc}",
+        user_id=_user_id_from_request(request),
+    )
+    return JSONResponse({"detail": "Internal Server Error"}, status_code=500)
+
 
 DASHBOARD_CACHE_TTL = timedelta(hours=4)
 
@@ -313,6 +383,12 @@ async def admin_overview(_user: dict = Depends(require_admin)):
     cache = sb.table("dashboard_cache").select(
         "league_id,widget,updated_at"
     ).execute().data or []
+    try:  # tolerate the app_events migration not being applied yet
+        events = sb.table("app_events").select(
+            "created_at,user_id,league_id,kind,level,status,message"
+        ).order("created_at", desc=True).limit(200).execute().data or []
+    except Exception:
+        events = []
 
     keys_by_user = {s["user_id"]: s for s in secrets}
     leagues_by_user: dict[str, list] = {}
@@ -326,6 +402,11 @@ async def admin_overview(_user: dict = Depends(require_admin)):
     widgets_by_league: dict[str, list] = {}
     for c in cache:
         widgets_by_league.setdefault(c["league_id"], []).append(c)
+
+    errors_by_user: dict[str, int] = {}  # error count in the last 7 days
+    for e in events:
+        if e.get("level") == "error" and e.get("user_id") and _age_days(e.get("created_at")) <= 7:
+            errors_by_user[e["user_id"]] = errors_by_user.get(e["user_id"], 0) + 1
 
     rows = []
     for u in users:
@@ -353,9 +434,24 @@ async def admin_overview(_user: dict = Depends(require_admin)):
             "key_last4": (key or {}).get("anthropic_key_last4"),
             "last_sync_at": max(syncs) if syncs else None,
             "last_widget_at": max(widget_times) if widget_times else None,
+            "errors_7d": errors_by_user.get(uid, 0),
         })
 
     rows.sort(key=lambda r: r.get("last_sign_in_at") or "", reverse=True)
+
+    # Recent error feed (most recent first), with the user's email attached.
+    email_by_id = {r["user_id"]: r["email"] for r in rows}
+    recent_errors = [
+        {
+            "created_at": e.get("created_at"),
+            "email": email_by_id.get(e.get("user_id")),
+            "kind": e.get("kind"),
+            "status": e.get("status"),
+            "message": e.get("message"),
+        }
+        for e in events
+        if e.get("level") == "error"
+    ][:40]
 
     return {
         "generated_at": now.isoformat(),
@@ -366,8 +462,10 @@ async def admin_overview(_user: dict = Depends(require_admin)):
             "active_7d": sum(1 for r in rows if _age_days(r["last_sign_in_at"]) <= 7),
             "synced_7d": sum(1 for r in rows if _age_days(r["last_sync_at"]) <= 7),
             "widgets_refreshed_7d": sum(1 for c in cache if _age_days(c["updated_at"]) <= 7),
+            "errors_7d": sum(errors_by_user.values()),
         },
         "users": rows,
+        "recent_errors": recent_errors,
     }
 
 

@@ -14,6 +14,15 @@ type UserRow = {
   key_last4: string | null;
   last_sync_at: string | null;
   last_widget_at: string | null;
+  errors_7d: number;
+};
+
+type ErrorRow = {
+  created_at: string | null;
+  email: string | null;
+  kind: string | null;
+  status: number | null;
+  message: string | null;
 };
 
 type Overview = {
@@ -25,8 +34,10 @@ type Overview = {
     active_7d: number;
     synced_7d: number;
     widgets_refreshed_7d: number;
+    errors_7d: number;
   };
   users: UserRow[];
+  recent_errors: ErrorRow[];
 };
 
 function ago(ts: string | null): string {
@@ -120,6 +131,7 @@ export default function AdminPage() {
         />
         <Stat label="Synced (7d)" value={t.synced_7d} />
         <Stat label="Widgets refreshed (7d)" value={t.widgets_refreshed_7d} />
+        <Stat label="Issues (7d)" value={t.errors_7d} sub={t.errors_7d ? "needs a look" : "all clear"} />
       </div>
 
       <div className="bg-gray-50 border border-gray-200 rounded-2xl shadow-sm overflow-hidden">
@@ -139,7 +151,14 @@ export default function AdminPage() {
               {data.users.map((u) => (
                 <tr key={u.user_id} className="border-b border-gray-100 last:border-0">
                   <td className="px-4 py-3">
-                    <div className="text-gray-900">{u.email ?? "—"}</div>
+                    <div className="text-gray-900">
+                      {u.email ?? "—"}
+                      {u.errors_7d > 0 && (
+                        <span className="ml-2 text-xs text-red-400">
+                          {u.errors_7d} issue{u.errors_7d === 1 ? "" : "s"}
+                        </span>
+                      )}
+                    </div>
                     <div className="text-xs text-gray-400">joined {ago(u.created_at)}</div>
                   </td>
                   <td className="px-4 py-3">
@@ -171,9 +190,44 @@ export default function AdminPage() {
         </div>
       </div>
 
+      {data.recent_errors.length > 0 && (
+        <section className="space-y-3">
+          <h2 className="text-lg font-semibold">Recent issues</h2>
+          <div className="bg-gray-50 border border-gray-200 rounded-2xl shadow-sm overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-xs uppercase tracking-wide text-gray-400 border-b border-gray-200">
+                    <th className="px-4 py-3 font-medium">When</th>
+                    <th className="px-4 py-3 font-medium">User</th>
+                    <th className="px-4 py-3 font-medium">Where</th>
+                    <th className="px-4 py-3 font-medium">Detail</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.recent_errors.map((e, i) => (
+                    <tr key={i} className="border-b border-gray-100 last:border-0 align-top">
+                      <td className="px-4 py-3 text-gray-600 whitespace-nowrap">{ago(e.created_at)}</td>
+                      <td className="px-4 py-3 text-gray-700">{e.email ?? "—"}</td>
+                      <td className="px-4 py-3 text-gray-500 font-mono text-xs whitespace-nowrap">
+                        {e.kind ?? "—"}
+                        {e.status ? ` · ${e.status}` : ""}
+                      </td>
+                      <td className="px-4 py-3 text-gray-500 max-w-md truncate" title={e.message ?? ""}>
+                        {e.message ?? "—"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+      )}
+
       <p className="text-xs text-gray-400">
-        Derived live from existing data (no event logging yet). &ldquo;Last AI&rdquo; = most
-        recent widget generation.
+        Usage is derived live from existing data; issues are captured by a global error
+        handler. &ldquo;Last AI&rdquo; = most recent widget generation.
       </p>
     </main>
   );
