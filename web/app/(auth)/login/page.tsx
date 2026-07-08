@@ -83,23 +83,39 @@ export default function LoginPage() {
   const disabled = loadingMagic || loadingGoogle;
 
   return (
-    <main className="min-h-screen flex items-center justify-center bg-gray-100 px-4">
-      <div className="w-full max-w-[420px]">
-        {/* Logo */}
-        <div className="flex justify-center mb-6">
-          <div className="h-12 w-12 rounded-full bg-violet-600 text-white flex items-center justify-center font-semibold text-lg">
-            D
+    <main className="relative min-h-screen flex items-center justify-center bg-canvas px-4 overflow-hidden">
+      {/* Ambient glow */}
+      <div className="pointer-events-none absolute -top-32 left-1/2 -translate-x-1/2 h-[28rem] w-[28rem] rounded-full bg-violet-600/20 blur-[100px]" />
+      <div className="pointer-events-none absolute -bottom-24 -right-24 h-72 w-72 rounded-full bg-indigo-600/10 blur-[100px]" />
+
+      <div className="relative z-10 w-full max-w-[420px]">
+        {/* Brand */}
+        <div className="flex flex-col items-center mb-8">
+          <div className="relative mb-5">
+            <div className="absolute inset-0 rounded-2xl bg-violet-500/40 blur-xl" />
+            <div className="relative h-16 w-16 rounded-2xl bg-gradient-to-br from-violet-500 to-indigo-600 flex items-center justify-center shadow-lg ring-1 ring-white/10">
+              <svg
+                width="32"
+                height="32"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="white"
+                strokeWidth="1.75"
+                strokeLinejoin="round"
+                strokeLinecap="round"
+                aria-hidden="true"
+              >
+                <path d="M12 2.5 20.5 12 12 21.5 3.5 12 Z" />
+                <circle cx="12" cy="12" r="1.6" fill="white" stroke="none" />
+              </svg>
+            </div>
           </div>
+          <h1 className="text-3xl font-semibold tracking-tight text-gray-900">DynastyOS</h1>
+          <p className="text-sm text-gray-500 mt-1.5">Your dynasty team&apos;s AI command center</p>
         </div>
 
-        {/* Title */}
-        <h1 className="text-3xl font-semibold text-center text-gray-900">
-          Sign in to DynastyOS
-        </h1>
-        <p className="text-center text-gray-500 mt-1">Secord Labs</p>
-
         {/* Card */}
-        <div className="mt-8 bg-gray-50 border border-gray-200 rounded-xl shadow-sm p-6">
+        <div className="bg-gray-50 border border-gray-200 rounded-2xl shadow-lg p-6">
           {errorMsg && (
             <div className="mb-4 rounded-lg border border-red-500/30 bg-red-50 px-3 py-2 text-sm text-red-300">
               {errorMsg}
@@ -188,6 +204,8 @@ export default function LoginPage() {
             Built for dynasty degenerates
           </p>
         </div>
+
+        <p className="text-center text-xs text-gray-500 mt-6">Secord Labs</p>
       </div>
     </main>
   );
