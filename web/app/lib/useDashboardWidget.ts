@@ -47,6 +47,9 @@ export function useDashboardWidget<T>(
   );
   const [validating, setValidating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // 402 from the backend = the league owner hasn't set an Anthropic key (BYOK).
+  // Surfaced separately so widgets can show an "add your key" prompt, not an error.
+  const [needsApiKey, setNeedsApiKey] = useState(false);
 
   const onSuccessRef = useRef(options?.onSuccess);
   useEffect(() => {
@@ -72,6 +75,11 @@ export function useDashboardWidget<T>(
             force,
           }),
         });
+        if (res.status === 402) {
+          setNeedsApiKey(true);
+          return;
+        }
+        setNeedsApiKey(false);
         if (!res.ok) throw new Error(await res.text());
         const json = (await res.json()) as T;
         setData(json);
@@ -92,5 +100,5 @@ export function useDashboardWidget<T>(
 
   // Only surface a blocking spinner when there's nothing cached to show yet;
   // a background revalidation over existing data stays silent.
-  return { data, loading: validating && data === null, validating, error, refresh };
+  return { data, loading: validating && data === null, validating, error, needsApiKey, refresh };
 }

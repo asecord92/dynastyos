@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useDashboardWidget } from "../lib/useDashboardWidget";
 import { MinorsPanel } from "./MinorsPanel";
 import { Spinner } from "./ui/Spinner";
+import { NeedsApiKey } from "./ui/NeedsApiKey";
 
 type PlayerRec = {
   name: string;
@@ -58,7 +59,7 @@ export function StartSitPanel({
 }) {
   const [showAll, setShowAll] = useState(false);
   const [tab, setTab] = useState<"startsit" | "minors">("startsit");
-  const { data, loading, validating, error, refresh } = useDashboardWidget<WidgetResponse>(
+  const { data, loading, validating, error, needsApiKey, refresh } = useDashboardWidget<WidgetResponse>(
     "start_sit",
     leagueId,
     myTeamId,
@@ -125,8 +126,11 @@ export function StartSitPanel({
         </div>
       )}
 
+      {/* No API key (BYOK) */}
+      {tab === "startsit" && needsApiKey && <NeedsApiKey feature="Start / Sit" />}
+
       {/* Error */}
-      {tab === "startsit" && error && (
+      {tab === "startsit" && error && !needsApiKey && (
         <div className="text-sm text-red-300 bg-red-50 border border-red-500/30 rounded-xl p-3">
           {error}{" "}
           <button onClick={() => refresh()} className="underline">

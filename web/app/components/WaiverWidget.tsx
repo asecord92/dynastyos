@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useDashboardWidget } from "../lib/useDashboardWidget";
 import { Spinner } from "./ui/Spinner";
+import { NeedsApiKey } from "./ui/NeedsApiKey";
 
 type WidgetData = { content: string; updated_at: string };
 
@@ -51,7 +52,7 @@ export function WaiverWidget({
   myTeamId: string;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const { data, loading, validating, error, refresh } = useDashboardWidget<WidgetData>(
+  const { data, loading, validating, error, needsApiKey, refresh } = useDashboardWidget<WidgetData>(
     "waiver",
     leagueId,
     myTeamId,
@@ -87,7 +88,9 @@ export function WaiverWidget({
         </div>
       )}
 
-      {error && (
+      {needsApiKey && <NeedsApiKey feature="Waiver Spotlight" />}
+
+      {error && !needsApiKey && (
         <div className="text-sm text-red-300 bg-red-50 border border-red-500/30 rounded-xl p-3">
           {error}{" "}
           <button onClick={() => refresh()} className="underline">
