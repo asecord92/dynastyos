@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { supabase } from "../lib/supabaseClient";
 import { useLeague } from "../lib/useLeague";
 import { readCache, writeCache } from "../lib/clientCache";
@@ -21,10 +22,23 @@ export default function DashboardPage() {
   const { leagueId, sport } = useLeague();
   const isNFL = sport === "NFL";
   const [myTeamId, setMyTeamId] = useState("");
+  // null = still loading; [] = signed in but no leagues connected yet (new user)
+  const [leagues, setLeagues] = useState<{ id: string }[] | null>(null);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [recordLoading, setRecordLoading] = useState(false);
   const [rosterSummary, setRosterSummary] = useState<RosterSummary | null>(null);
   const [alerts, setAlerts] = useState<Alert[]>([]);
+
+  // Load whether this user has ANY leagues connected (drives the new-user welcome)
+  useEffect(() => {
+    async function load() {
+      const { data } = await supabase.from("leagues").select("id");
+      setLeagues(data ?? []);
+    }
+    load();
+    window.addEventListener("dynastyos:leagues-updated", load);
+    return () => window.removeEventListener("dynastyos:leagues-updated", load);
+  }, []);
 
   // Load team ID
   useEffect(() => {
@@ -121,7 +135,27 @@ export default function DashboardPage() {
     <main className="space-y-6">
       <h1 className="text-3xl font-semibold">Dashboard</h1>
 
-      {!leagueId && (
+      {/* New user, no leagues connected yet — give them a real first step. */}
+      {!leagueId && leagues !== null && leagues.length === 0 && (
+        <div className="bg-gray-50 border border-gray-200 rounded-2xl p-8 shadow-sm text-center space-y-4">
+          <div>
+            <h2 className="text-xl font-semibold">Welcome to DynastyOS 👋</h2>
+            <p className="text-sm text-gray-500 mt-2 max-w-md mx-auto leading-relaxed">
+              Connect your first league to load your dashboard — rosters, standings,
+              start/sit, waivers, and the AI trade tools.
+            </p>
+          </div>
+          <Link
+            href="/settings"
+            className="inline-block px-5 py-2.5 rounded-xl bg-violet-600 text-white text-sm font-semibold hover:bg-violet-700 transition"
+          >
+            Connect a league →
+          </Link>
+        </div>
+      )}
+
+      {/* Has leagues but none selected — point them at the nav switcher. */}
+      {!leagueId && leagues !== null && leagues.length > 0 && (
         <div className="text-sm text-amber-300 bg-amber-50 border border-amber-500/30 rounded-xl p-4">
           Select a league from the nav to load your dashboard.
         </div>
