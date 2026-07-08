@@ -30,6 +30,21 @@ your real roster from Fantrax or Sleeper, computes analytics from live MLB/NFL s
 It was built for a single contract-dynasty baseball league and grew into a tool a whole group can
 share — each friend brings their own Claude API key, so nobody foots the bill for anyone else.
 
+## Screenshots
+
+### Dashboard
+![DynastyOS dashboard](docs/screenshots/Dashboard.png)
+
+### Trade tools
+| Trade Builder | Trade Finder |
+| :---: | :---: |
+| ![Trade Builder](docs/screenshots/builder.png) | ![Trade Finder](docs/screenshots/finder.png) |
+
+### Settings &amp; Admin
+| Settings — connect a league + bring your own key | Admin dashboard |
+| :---: | :---: |
+| ![Settings](docs/screenshots/settings.png) | ![Admin dashboard](docs/screenshots/admin.png) |
+
 ## Features
 
 ### 📊 Dashboard
