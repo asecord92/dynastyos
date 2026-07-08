@@ -8,6 +8,12 @@ import { useLeague } from "../lib/useLeague";
 
 type League = { id: string; name: string };
 
+// Client-side gate for showing the Admin link (backend enforces the real check).
+const ADMIN_EMAILS = (process.env.NEXT_PUBLIC_ADMIN_EMAILS ?? "asecord92@gmail.com")
+  .split(",")
+  .map((e) => e.trim().toLowerCase())
+  .filter(Boolean);
+
 // Bottom nav tabs (mobile only). Icons are inline 24x24 stroke SVGs.
 const MOBILE_TABS: { href: string; label: string; icon: React.ReactNode }[] = [
   {
@@ -84,6 +90,7 @@ export function AppNav() {
   const pathname = usePathname();
 
   const badge = useMemo(() => (email ? initials(email) : "?"), [email]);
+  const isAdmin = !!email && ADMIN_EMAILS.includes(email.toLowerCase());
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -365,6 +372,16 @@ export function AppNav() {
                     >
                       Settings
                     </Link>
+                    {/* Admin (owner only) */}
+                    {isAdmin && (
+                      <Link
+                        href="/admin"
+                        onClick={() => setDropdownOpen(false)}
+                        className="flex items-center px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 transition"
+                      >
+                        Admin
+                      </Link>
+                    )}
                     {/* Log out */}
                     <button
                       onClick={logout}
