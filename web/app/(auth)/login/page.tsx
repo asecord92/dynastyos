@@ -98,15 +98,11 @@ export default function LoginPage() {
                 width="32"
                 height="32"
                 viewBox="0 0 24 24"
-                fill="none"
-                stroke="white"
-                strokeWidth="1.75"
+                fill="white"
                 strokeLinejoin="round"
-                strokeLinecap="round"
                 aria-hidden="true"
               >
-                <path d="M12 2.5 20.5 12 12 21.5 3.5 12 Z" />
-                <circle cx="12" cy="12" r="1.6" fill="white" stroke="none" />
+                <path d="M4 7 L8.5 11 L12 5 L15.5 11 L20 7 L18.5 18 L5.5 18 Z" />
               </svg>
             </div>
           </div>
