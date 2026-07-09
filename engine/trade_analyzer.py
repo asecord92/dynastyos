@@ -453,15 +453,27 @@ def _stat_to_float(v) -> float | None:
         return None
 
 
-def _type_specs(categories: list[str]) -> list[tuple[str, bool]]:
-    """Translate a league's category codes into (season_stat_key, higher_is_better)
-    specs for valuation, skipping any code without a known stat mapping."""
+# Opportunity denominator for rate stats — a player below the floor (see
+# player_value._MIN_OPPORTUNITY) is dropped from that category's percentile, so a
+# tiny-sample fluke (a .600 OBP on 8 PA) can't inflate their talent score.
+RATE_STAT_WEIGHT = {
+    "obp": "plate_appearances",
+    "era": "innings_pitched",
+    "whip": "innings_pitched",
+}
+
+
+def _type_specs(categories: list[str]) -> list[tuple[str, bool, str | None]]:
+    """Translate a league's category codes into
+    (season_stat_key, higher_is_better, weight_key) specs for valuation, skipping
+    any code without a known stat mapping. ``weight_key`` is the opportunity
+    denominator for a rate stat, else ``None``."""
     specs = []
     for cat in categories:
         mapping = CATEGORY_STAT.get(cat)
         if mapping:
             _, stat_key, higher_is_better = mapping
-            specs.append((stat_key, higher_is_better))
+            specs.append((stat_key, higher_is_better, RATE_STAT_WEIGHT.get(stat_key)))
     return specs
 
 
@@ -636,8 +648,7 @@ async def build_finder_context(
     }
 
 
-def _fmt_value(p: dict) -> str:
-    v = p.get("value")
+def _fmt_num(v) -> str:
     return str(v) if v is not None else "?"
 
 
@@ -655,30 +666,35 @@ def build_finder_prompt(context: dict[str, Any]) -> str:
         "",
         f"The manager needs help in {category}. Below are the best targets across the "
         f"league for that category, ranked by their {stat_key.replace('_', ' ')} this season. "
-        "Each player carries a dynasty value score (higher = more valuable; a ~0-100 production "
-        "percentile adjusted up/down for salary and contract year) so you can build a balanced "
-        "package.",
+        "Each player carries two scores: talent (0-100 production percentile, cost-blind) and "
+        "value (talent adjusted up/down for salary and contract year — i.e. asset worth). Use "
+        "value to balance packages; use talent when you want to compare pure production apart "
+        "from cost.",
         "",
         f"Manager's team: {league.get('name', 'Unknown')} | "
         f"Window: {league.get('competitive_window') or 'Not set'} | "
         f"Cap philosophy: {league.get('cap_philosophy') or 'Not set'}{cap_line}",
         "",
         "Acquisition targets (id | player | owner | pos | $salary | contract yr | "
-        f"{category} | value):",
+        f"{category} | talent | value):",
     ]
     for c in candidates:
         lines.append(
             f"  {c['fantrax_id']} | {c['name']} | {c['owner_team_name']} | {c['position']} | "
             f"${c['salary']} | {c['contract']} yr | {category}={c['stat_value']} | "
-            f"value={_fmt_value(c)}"
+            f"talent={_fmt_num(c.get('talent'))} | value={_fmt_num(c.get('value'))}"
         )
 
-    lines += ["", "Your tradeable assets (id | player | pos | $salary | contract yr | value):"]
+    lines += [
+        "",
+        "Your tradeable assets (id | player | pos | $salary | contract yr | talent | value):",
+    ]
     if my_assets:
         for p in sorted(my_assets, key=lambda x: (x.get("value") or 0), reverse=True):
             lines.append(
                 f"  {p['fantrax_id']} | {p['name']} | {p['position']} | "
-                f"${p['salary']} | {p['contract']} yr | value={_fmt_value(p)}"
+                f"${p['salary']} | {p['contract']} yr | "
+                f"talent={_fmt_num(p.get('talent'))} | value={_fmt_num(p.get('value'))}"
             )
     else:
         lines.append("  (none resolved)")
