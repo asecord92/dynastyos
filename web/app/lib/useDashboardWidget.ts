@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { supabase } from "./supabaseClient";
 import { readCache, writeCache } from "./clientCache";
+import { aiIssueFromDetail, useAiStatus } from "./aiStatus";
 
 /**
  * fetch() wrapper that attaches the Supabase access token and JSON headers.
@@ -47,9 +48,11 @@ export function useDashboardWidget<T>(
   );
   const [validating, setValidating] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // 402 from the backend = the league owner hasn't set an Anthropic key (BYOK).
+  // 402 no_api_key = the league owner hasn't set an Anthropic key (BYOK).
   // Surfaced separately so widgets can show an "add your key" prompt, not an error.
   const [needsApiKey, setNeedsApiKey] = useState(false);
+  // Key-level failures (out of credits / rejected key) go to the app-wide banner.
+  const { reportIssue, clearIssue } = useAiStatus();
 
   const onSuccessRef = useRef(options?.onSuccess);
   useEffect(() => {
@@ -75,11 +78,24 @@ export function useDashboardWidget<T>(
             force,
           }),
         });
-        if (res.status === 402) {
-          setNeedsApiKey(true);
+        if (res.status === 402 || res.status === 429) {
+          const detail = await res
+            .json()
+            .then((j) => j?.detail as string | undefined)
+            .catch(() => undefined);
+          const issue = aiIssueFromDetail(detail);
+          if (issue) {
+            reportIssue(issue);
+          } else if (res.status === 429) {
+            setError("Anthropic is rate-limiting your key — try again in a moment.");
+          } else {
+            setNeedsApiKey(true);
+          }
           return;
         }
+        // A healthy response means the owner's key works — clear any stale banner.
         setNeedsApiKey(false);
+        clearIssue();
         if (!res.ok) throw new Error(await res.text());
         const json = (await res.json()) as T;
         setData(json);
@@ -91,7 +107,7 @@ export function useDashboardWidget<T>(
         setValidating(false);
       }
     },
-    [widget, leagueId, myTeamId, cacheKey]
+    [widget, leagueId, myTeamId, cacheKey, reportIssue, clearIssue]
   );
 
   useEffect(() => {

@@ -8,6 +8,7 @@ from fastapi import FastAPI, UploadFile, File, Query, HTTPException, BackgroundT
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel
 import anthropic
 from datetime import datetime, timedelta, timezone
@@ -239,11 +240,77 @@ def _get_user_api_key(sb, user_id: str | None) -> str | None:
         return None
 
 
+# The owner's key can *exist* but still fail the call — out of credits, revoked,
+# or rate-limited. We translate those Anthropic errors into stable codes the
+# frontend keys off (a global banner for the first two, an inline retry for the
+# last), the same way `no_api_key` drives the "add your key" prompt. Anything we
+# don't recognize stays a 500 so real bugs still surface as errors.
+_AI_ERROR_STATUS = {"out_of_credits": 402, "invalid_api_key": 402, "rate_limited": 429}
+
+
+def _ai_error_code(exc: BaseException) -> str | None:
+    """Map an Anthropic SDK error to one of our AI error codes, or None if it
+    isn't a recognized key/billing problem."""
+    if isinstance(exc, (anthropic.AuthenticationError, anthropic.PermissionDeniedError)):
+        return "invalid_api_key"
+    if isinstance(exc, anthropic.RateLimitError):
+        return "rate_limited"
+    if isinstance(exc, anthropic.APIStatusError):
+        msg = str(getattr(exc, "message", "") or exc).lower()
+        if "credit balance" in msg or "billing" in msg:
+            return "out_of_credits"
+    return None
+
+
+def _ai_http_error(exc: BaseException) -> HTTPException | None:
+    """HTTPException for a recognized AI key/billing error, else None (caller 500s)."""
+    code = _ai_error_code(exc)
+    if not code:
+        return None
+    return HTTPException(status_code=_AI_ERROR_STATUS[code], detail=code)
+
+
+class _MessagesProxy:
+    """Wraps `client.messages` so non-streaming `.create()` calls translate
+    Anthropic key/billing errors into our HTTPExceptions (caught by each
+    endpoint's `except HTTPException: raise`). `.stream()` passes through — the
+    streaming trade endpoints handle their own errors, since a mid-stream failure
+    can't change an already-committed HTTP status."""
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    def create(self, *args, **kwargs):
+        try:
+            return self._inner.create(*args, **kwargs)
+        except anthropic.APIStatusError as e:
+            raise (_ai_http_error(e) or e)
+
+    def stream(self, *args, **kwargs):
+        return self._inner.stream(*args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+class _AIClientProxy:
+    def __init__(self, inner):
+        self._inner = inner
+
+    @property
+    def messages(self):
+        return _MessagesProxy(self._inner.messages)
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
 def get_ai_client_for_league(sb, league_id: str) -> anthropic.Anthropic:
     """Anthropic client keyed to the league owner's stored key. Raises 402
     (NoApiKeyError) when the owner hasn't set one — AI features stay off until
     they bring their own key. Works on the background cron path too: it resolves
-    the owner from the league row, not from a logged-in user."""
+    the owner from the league row, not from a logged-in user. The returned client
+    translates key/billing errors (see `_MessagesProxy`)."""
     key = _get_user_api_key(sb, _league_owner(sb, league_id))
     if not key:
         raise NoApiKeyError()
@@ -251,7 +318,7 @@ def get_ai_client_for_league(sb, league_id: str) -> anthropic.Anthropic:
     if client is None:
         client = anthropic.Anthropic(api_key=key)
         _ai_client_cache[key] = client
-    return client
+    return _AIClientProxy(client)
 
 
 class ApiKeyRequest(BaseModel):
@@ -1284,7 +1351,30 @@ async def trade_analyze(
                 for text in s.text_stream:
                     yield text
 
-        return StreamingResponse(stream(), media_type="text/plain")
+        # Pull the first chunk eagerly so an out-of-credits / bad-key error raises
+        # here as a real HTTP status, instead of dying mid-stream after the 200 has
+        # already been committed. `_ai_http_error` maps it to 402/429; unknown 500s.
+        # Run in a threadpool so waiting on the first token doesn't block the loop.
+        gen = stream()
+
+        def _pull_first():
+            try:
+                return next(gen), None
+            except StopIteration:
+                return "", None
+            except anthropic.APIStatusError as e:
+                return None, e
+
+        first, ai_err = await run_in_threadpool(_pull_first)
+        if ai_err is not None:
+            raise _ai_http_error(ai_err) or HTTPException(status_code=500, detail=str(ai_err))
+
+        def stream_from_first():
+            if first:
+                yield first
+            yield from gen
+
+        return StreamingResponse(stream_from_first(), media_type="text/plain")
 
     except HTTPException:
         raise
@@ -1407,6 +1497,11 @@ async def trade_finder(
             raw = "".join(full)
             analysis, packages = parse_finder_response(raw, parse_candidates, parse_assets)
             yield event({"type": "packages", "packages": packages, "analysis": analysis})
+        except anthropic.APIStatusError as e:
+            # Emit a stable code (out_of_credits / invalid_api_key / rate_limited)
+            # the frontend routes to the global banner; else the raw message.
+            traceback.print_exc()
+            yield event({"type": "error", "detail": _ai_error_code(e) or str(e)})
         except Exception as e:
             traceback.print_exc()
             yield event({"type": "error", "detail": str(e)})
