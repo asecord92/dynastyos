@@ -782,3 +782,214 @@ def parse_finder_response(
     clean = re.sub(r"```json\s*.+?\s*```", "", text, flags=re.DOTALL)
     clean = re.sub(r"```\s*\[.+?\]\s*```", "", clean, flags=re.DOTALL).strip()
     return clean, packages
+
+
+# --- Add/Drop analyzer --------------------------------------------------------
+# "I'm adding these players (IL activation / trade arrival / waiver pickup) and
+# already dropping these — who else do I cut to make room?" Reuses the finder's
+# roster-resolve + valuation, then asks the model to rank the manager's most
+# expendable players, weighing talent, positional redundancy relative to who's
+# coming in, category impact, and contract cost.
+
+
+async def build_add_drop_context(
+    league_id: str,
+    my_team_id: str,
+    incoming: list[dict],       # [{"id": <fantrax_id> | None, "name": <str>}]
+    outgoing_ids: list[str],    # fantrax ids already being dropped / traded away
+) -> dict[str, Any]:
+    sb = get_supabase()
+
+    league_row = sb.table("leagues").select(
+        "name, competitive_window, cap_philosophy, team_weaknesses, goals, sport"
+    ).eq("id", league_id).single().execute()
+    league = league_row.data or {}
+    rules = _load_league_rules(sb, league_id, league)
+
+    # Load every roster: mine is the drop pool; the full set lets us resolve an
+    # incoming player who is already rostered (IL activation or trade arrival).
+    roster_rows = sb.table("rosters").select(
+        "fantrax_team_id, team_name, roster_items, salary_cap"
+    ).eq("league_id", league_id).execute()
+    rosters = roster_rows.data or []
+    my_row = next((r for r in rosters if r["fantrax_team_id"] == my_team_id), None)
+    if not my_row:
+        raise ValueError("Could not load your roster. Sync your league first.")
+    my_items = my_row.get("roster_items") or []
+
+    item_by_id = {
+        item["id"]: item
+        for r in rosters for item in r.get("roster_items", [])
+        if item.get("id")
+    }
+
+    incoming_ids = [inc["id"] for inc in incoming if inc.get("id")]
+
+    # Drop candidates: my roster minus what's already leaving, minus any incoming
+    # player already on my roster (activating them is the whole point).
+    exclude = set(outgoing_ids) | set(incoming_ids)
+    drop_items = [item for item in my_items if item.get("id") not in exclude]
+
+    # Resolve my roster + incoming rostered players in one batched pass.
+    resolve_ids = [item["id"] for item in my_items] + incoming_ids
+    id_map: dict[str, dict] = {}
+    for i in range(0, len(resolve_ids), 100):
+        chunk = resolve_ids[i:i + 100]
+        rows = sb.table("player_id_map").select(
+            "fantrax_id, full_name, player_type, mlb_id, mlb_team, roster_status, il_type"
+        ).in_("fantrax_id", chunk).execute()
+        for row in (rows.data or []):
+            id_map[row["fantrax_id"]] = row
+
+    sem = asyncio.Semaphore(12)
+
+    async def build_asset(item):
+        mapped = id_map.get(item["id"], {})
+        mlb_id = mapped.get("mlb_id")
+        ptype = mapped.get("player_type") or "hitter"
+        season = {}
+        if mlb_id:
+            async with sem:
+                stats = await get_player_stats(mlb_id, ptype)
+            season = (stats or {}).get("season_stats", {})
+        return {
+            "fantrax_id": item["id"],
+            "name": mapped.get("full_name") or item.get("name") or f"Unknown ({item['id']})",
+            "player_type": ptype,
+            "position": item.get("position", "?"),
+            "salary": item.get("salary", 0),
+            "contract": (item.get("contract") or {}).get("name", "?"),
+            "status": item.get("status", ""),
+            "roster_status": mapped.get("roster_status") or "",
+            "il_type": mapped.get("il_type") or "",
+            "season": season,
+        }
+
+    drop_assets = list(await asyncio.gather(*[build_asset(it) for it in drop_items]))
+
+    # Value candidates on the shared talent/value scale (per type).
+    type_specs = {
+        "hitter": _type_specs(rules.scoring.hitting),
+        "pitcher": _type_specs(rules.scoring.pitching),
+    }
+    for ptype, specs in type_specs.items():
+        group = [p for p in drop_assets if p.get("player_type") == ptype]
+        production_ratings(group, specs)
+        assign_values(group)
+
+    # Resolve incoming (position/type from rosters+id_map; name-only for free text).
+    incoming_resolved = []
+    for inc in incoming:
+        fid = inc.get("id")
+        if fid:
+            mapped = id_map.get(fid, {})
+            item = item_by_id.get(fid, {})
+            incoming_resolved.append({
+                "name": mapped.get("full_name") or inc.get("name") or f"Unknown ({fid})",
+                "position": item.get("position", "?"),
+                "player_type": mapped.get("player_type") or "?",
+            })
+        else:
+            incoming_resolved.append({
+                "name": (inc.get("name") or "Unknown").strip(),
+                "position": "?",
+                "player_type": "?",
+            })
+
+    outgoing_named = [
+        (id_map.get(oid, {}).get("full_name")
+         or item_by_id.get(oid, {}).get("name")
+         or f"Unknown ({oid})")
+        for oid in outgoing_ids
+    ]
+
+    category_ranks: dict = {}
+    try:
+        ranks_result = sb.table("dashboard_cache").select("content").eq(
+            "league_id", league_id).eq("widget", "category_ranks").limit(1).execute()
+        if ranks_result.data:
+            category_ranks = json.loads(ranks_result.data[0]["content"])
+    except Exception:
+        pass
+
+    return {
+        "league": league,
+        "rules": rules,
+        "sport": league.get("sport") or "MLB",
+        "team_name": my_row.get("team_name") or "Your Team",
+        "salary_cap": my_row.get("salary_cap"),
+        "drop_assets": drop_assets,
+        "incoming": incoming_resolved,
+        "outgoing": outgoing_named,
+        "spots_needed": max(0, len(incoming) - len(outgoing_ids)),
+        "category_ranks": category_ranks,
+    }
+
+
+def build_add_drop_prompt(context: dict[str, Any]) -> str:
+    drops = context["drop_assets"]
+    incoming = context["incoming"]
+    outgoing = context["outgoing"]
+    spots = context["spots_needed"]
+    cat_ranks = context.get("category_ranks", {})
+    cap = context.get("salary_cap")
+
+    weak = [c for c, r in cat_ranks.items() if isinstance(r, int) and r >= 7]
+    ranks_str = ", ".join(f"{c}:{r}" for c, r in cat_ranks.items()) if cat_ranks else "not set"
+
+    incoming_lines = "\n".join(f"  {p['name']} | {p['position']}" for p in incoming) or "  (none)"
+
+    drop_lines = []
+    for p in drops:
+        status = p["status"] or p["roster_status"] or "active"
+        il = f" ({p['il_type']})" if p["il_type"] else ""
+        drop_lines.append(
+            f"  {p['fantrax_id']} | {p['name']} | {p['position']} | ${p['salary']} | "
+            f"{p['contract']} yr | {status}{il} | "
+            f"talent={_fmt_num(p.get('talent'))} | value={_fmt_num(p.get('value'))}"
+        )
+    roster_block = "\n".join(drop_lines) or "  (none)"
+
+    if spots > 0:
+        ask = f"Recommend exactly which {spots} player(s) to drop"
+        spots_line = f"You need to clear {spots} roster spot(s) to make this work."
+    else:
+        ask = "Recommend who is most expendable"
+        spots_line = (
+            "No drop is strictly required (the players already leaving cover the additions), "
+            "but identify who is most expendable if the manager wants to open a spot."
+        )
+
+    parts = [
+        _today_line(),
+        "",
+        f"The manager is making room on their roster ({context['team_name']}).",
+        f"Adding:\n{incoming_lines}",
+        f"Already dropping/trading away: {', '.join(outgoing) or 'none'}",
+        spots_line,
+        "",
+        f"Category ranks (1=best, 10=worst): {ranks_str}"
+        + (f"\nWeakest categories: {', '.join(weak)}" if weak else ""),
+    ]
+    if cap:
+        parts.append(f"Salary cap: ${cap}")
+    parts += [
+        "",
+        "Each drop candidate carries talent (0-100 production percentile, cost-blind) and value "
+        "(talent adjusted for salary/contract). Lower = more expendable, all else equal.",
+        "",
+        "Drop candidates (id | player | pos | $salary | contract yr | status | talent | value):",
+        roster_block,
+        "",
+        f"{ask} to make this work. Rank them from most to least droppable. For EACH, give a "
+        "one-line rationale weighing: talent/production, positional redundancy RELATIVE TO who's "
+        "coming in (never drop the manager's only player at a position the incoming players don't "
+        "cover), impact on weak categories (don't gut a category they're already thin in), and "
+        "salary/contract (prefer shedding overpriced or expiring players; protect cheap, "
+        "cost-controlled young talent). Prefer dropping IL/bench stashes and redundant depth first.",
+        "",
+        "Format: one short summary sentence, then a numbered list — "
+        "'1. **Player Name** (pos, $salary, contract yr) — rationale'. Recommend ONLY players "
+        "from the drop candidates list above; never invent players or stats.",
+    ]
+    return "\n".join(parts)

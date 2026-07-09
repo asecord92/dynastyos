@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { supabase } from "../../lib/supabaseClient";
 import { useLeague } from "../../lib/useLeague";
+import { AddDropPanel } from "../../components/AddDropPanel";
 
 type WaiverData = { content: string; updated_at: string };
 
@@ -44,7 +45,7 @@ function ContentRenderer({ text }: { text: string }) {
 }
 
 export default function WaiversPage() {
-  const { leagueId } = useLeague();
+  const { leagueId, sport } = useLeague();
   const [myTeamId, setMyTeamId] = useState("");
   const [data, setData] = useState<WaiverData | null>(null);
   const [loading, setLoading] = useState(false);
@@ -158,6 +159,11 @@ export default function WaiversPage() {
           {/* Content */}
           {data && !loading && <ContentRenderer text={data.content} />}
         </div>
+      )}
+
+      {/* Add/Drop analyzer — MLB only for now (NFL support to follow). */}
+      {leagueId && myTeamId && sport !== "NFL" && (
+        <AddDropPanel leagueId={leagueId} myTeamId={myTeamId} />
       )}
     </main>
   );
