@@ -53,6 +53,8 @@ from engine.trade_analyzer import (
     build_finder_prompt,
     parse_finder_response,
     build_system_prompt,
+    build_add_drop_context,
+    build_add_drop_prompt,
 )
 from engine.auth import get_current_user
 from engine import crypto
@@ -558,6 +560,18 @@ class TradeFinderRequest(BaseModel):
     league_id: str
     my_team_id: str
     target_category: str | None = None  # omit to auto-pick the weakest category
+
+
+class AddDropPlayer(BaseModel):
+    id: str | None = None  # fantrax id when the player is rostered; None for free text
+    name: str = ""
+
+
+class AddDropRequest(BaseModel):
+    league_id: str
+    my_team_id: str
+    incoming: list[AddDropPlayer] = []   # who you're adding (IL activation / trade / waiver)
+    outgoing_ids: list[str] = []         # players already being dropped / traded away
 
 
 class DashboardRequest(BaseModel):
@@ -1378,6 +1392,74 @@ async def trade_analyze(
 
     except HTTPException:
         raise
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/waivers/add-drop")
+async def waivers_add_drop(
+    body: AddDropRequest,
+    user: dict = Depends(get_current_user),
+):
+    """Given who the manager is adding (and anyone already leaving), rank the most
+    droppable players on their roster. Streams the recommendation as plain text,
+    same as /trade/analyze."""
+    try:
+        sb = get_supabase()
+        require_league_owner(sb, user, body.league_id)
+        if _league_sport(sb, body.league_id) == "NFL":
+            raise HTTPException(status_code=400, detail="add_drop_mlb_only")
+        if not body.incoming and not body.outgoing_ids:
+            raise HTTPException(status_code=400, detail="Add at least one incoming player.")
+
+        context = await build_add_drop_context(
+            league_id=body.league_id,
+            my_team_id=body.my_team_id,
+            incoming=[inc.model_dump() for inc in body.incoming],
+            outgoing_ids=body.outgoing_ids,
+        )
+        prompt = build_add_drop_prompt(context)
+        system_prompt = build_system_prompt(context["rules"], context["sport"])
+        ai = get_ai_client_for_league(sb, body.league_id)
+
+        def stream():
+            with ai.messages.stream(
+                model=MODEL_TRADE,
+                max_tokens=1500,
+                system=system_prompt,
+                messages=[{"role": "user", "content": prompt}],
+            ) as s:
+                for text in s.text_stream:
+                    yield text
+
+        # Eager first chunk (in a threadpool) so key/billing errors surface as a
+        # real status instead of dying mid-stream — same pattern as /trade/analyze.
+        gen = stream()
+
+        def _pull_first():
+            try:
+                return next(gen), None
+            except StopIteration:
+                return "", None
+            except anthropic.APIStatusError as e:
+                return None, e
+
+        first, ai_err = await run_in_threadpool(_pull_first)
+        if ai_err is not None:
+            raise _ai_http_error(ai_err) or HTTPException(status_code=500, detail=str(ai_err))
+
+        def stream_from_first():
+            if first:
+                yield first
+            yield from gen
+
+        return StreamingResponse(stream_from_first(), media_type="text/plain")
+
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
