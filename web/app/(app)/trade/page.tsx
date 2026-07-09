@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import { supabase } from "../../lib/supabaseClient";
 import { useLeague } from "../../lib/useLeague";
 import { authedFetch } from "../../lib/useDashboardWidget";
+import { aiIssueFromDetail, useAiStatus } from "../../lib/aiStatus";
 import { NeedsApiKey } from "../../components/ui/NeedsApiKey";
 
 const CATEGORIES = ["R", "HR", "RBI", "SB", "OBP", "QS", "SV", "K", "ERA", "WHIP"];
@@ -248,6 +249,9 @@ export default function TradePage() {
   // 402 from the backend = no Anthropic key on file (BYOK). Shared across both flows.
   const [needsApiKey, setNeedsApiKey] = useState(false);
 
+  // Key-level failures (out of credits / rejected key) go to the app-wide banner.
+  const { reportIssue, clearIssue } = useAiStatus();
+
   const [mode, setMode] = useState<"build" | "find">("build");
   const [finderLoading, setFinderLoading] = useState(false);
   const [finderError, setFinderError] = useState<string | null>(null);
@@ -344,8 +348,16 @@ export default function TradePage() {
           target_category: category ?? null,
         }),
       });
-      if (res.status === 402) { setNeedsApiKey(true); return; }
+      if (res.status === 402 || res.status === 429) {
+        const detail = await res.json().then((j) => j?.detail as string | undefined).catch(() => undefined);
+        const issue = aiIssueFromDetail(detail);
+        if (issue) reportIssue(issue);
+        else if (res.status === 429) setFinderError("Anthropic is rate-limiting your key — try again in a moment.");
+        else setNeedsApiKey(true);
+        return;
+      }
       if (!res.ok || !res.body) throw new Error(await res.text());
+      clearIssue();
 
       let analysisText = "";
       const apply = (evt: FinderEvent) => {
@@ -368,7 +380,12 @@ export default function TradePage() {
               : prev
           );
         } else if (evt.type === "error") {
-          setFinderError(evt.detail ?? "Something went wrong.");
+          // Key/billing errors surface mid-stream (after the 200) as an event.
+          const issue = aiIssueFromDetail(evt.detail);
+          if (issue) reportIssue(issue);
+          else if (evt.detail === "rate_limited")
+            setFinderError("Anthropic is rate-limiting your key — try again in a moment.");
+          else setFinderError(evt.detail ?? "Something went wrong.");
         }
       };
 
@@ -492,9 +509,17 @@ export default function TradePage() {
         }),
       });
 
-      if (res.status === 402) { setNeedsApiKey(true); return; }
+      if (res.status === 402 || res.status === 429) {
+        const detail = await res.json().then((j) => j?.detail as string | undefined).catch(() => undefined);
+        const issue = aiIssueFromDetail(detail);
+        if (issue) reportIssue(issue);
+        else if (res.status === 429) setError("Anthropic is rate-limiting your key — try again in a moment.");
+        else setNeedsApiKey(true);
+        return;
+      }
       if (!res.ok) throw new Error(await res.text());
       if (!res.body) throw new Error("No response body");
+      clearIssue();
 
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
