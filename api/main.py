@@ -1057,7 +1057,8 @@ async def sleeper_sync(body: SleeperSyncRequest, user: dict = Depends(get_curren
         for r in rosters:
             rid = r["roster_id"]
             owner = r.get("owner_id")
-            if owner and owner == sleeper_user_id:
+            co_owners = r.get("co_owners") or []
+            if sleeper_user_id and (owner == sleeper_user_id or sleeper_user_id in co_owners):
                 my_roster_id = rid
             roster_upserts.append({
                 "league_id": body.league_id,
@@ -1124,13 +1125,36 @@ async def roster_sync(
                 detail="Could not find your team in the league roster data.",
             )
 
+        # Step 2.4: Resolve THIS owner's league row. Two people can connect the
+        # SAME Fantrax league — each gets their own row — so we must never key
+        # writes on the shared fantrax_league_id (that cross-writes both rows and
+        # makes .single() throw). Everything below is scoped to league_uuid.
+        # Set which team is theirs up front so the dashboard works even if the
+        # enrichment steps hiccup.
+        sb = get_supabase()
+        owner_id = user.get("sub")
+        league_row = (
+            sb.table("leagues")
+            .select("id")
+            .eq("owner_user_id", owner_id)
+            .eq("fantrax_league_id", fantrax_league_id)
+            .limit(1)
+            .execute()
+        )
+        league_uuid = league_row.data[0]["id"] if league_row.data else None
+        if not league_uuid:
+            raise HTTPException(
+                status_code=404,
+                detail="This league isn't connected to your account. Reconnect it in Settings.",
+            )
+        sb.table("leagues").update({"fantrax_team_id": team_id}).eq("id", league_uuid).execute()
+
         # Step 2.5: Fetch league info and persist structural profile fields
         league_info = {}
         try:
             league_info = get_league_info(fantrax_league_id)
             profile = extract_league_profile(league_info, team_id)
-            sb = get_supabase()
-            sb.table("leagues").update(profile).eq("fantrax_league_id", fantrax_league_id).execute()
+            sb.table("leagues").update(profile).eq("id", league_uuid).execute()
         except Exception as e:
             print(f"[sync] League profile update failed (non-fatal): {e}")
 
@@ -1138,11 +1162,10 @@ async def roster_sync(
         # preserving any user-set scoring/contract. Isolated update so a missing
         # rules column (migration not yet applied) can't break the profile write.
         try:
-            sb = get_supabase()
             existing = (
                 sb.table("leagues")
                 .select("rules")
-                .eq("fantrax_league_id", fantrax_league_id)
+                .eq("id", league_uuid)
                 .single()
                 .execute()
             )
@@ -1150,17 +1173,13 @@ async def roster_sync(
                 league_info, team_roster, rosters, (existing.data or {}).get("rules"), sport
             )
             sb.table("leagues").update({"rules": merged_rules}).eq(
-                "fantrax_league_id", fantrax_league_id
+                "id", league_uuid
             ).execute()
         except Exception as e:
             print(f"[sync] Rules auto-detect skipped (non-fatal): {e}")
 
-        # Step 2.6: Persist all team rosters to Supabase
+        # Step 2.6: Persist all team rosters to Supabase (under THIS owner's row)
         try:
-            sb = get_supabase()
-            league_row = sb.table("leagues").select("id").eq("fantrax_league_id", fantrax_league_id).single().execute()
-            league_uuid = league_row.data["id"]
-
             roster_upserts = [
                 {
                     "league_id": league_uuid,
