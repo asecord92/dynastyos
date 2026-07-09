@@ -41,7 +41,10 @@ def _format_key(rules: dict) -> str:
 
 
 def _percentiles(values: list) -> list:
-    """0-100 percentile rank (100 = most points) within the non-None values."""
+    """0-100 percentile rank (100 = most points) within the non-None values.
+    Tied values share the mean position of their tie block, so equal points
+    score equally instead of by arbitrary sort order (0-point non-players would
+    otherwise spread 0/50/100)."""
     present = [(i, v) for i, v in enumerate(values) if v is not None]
     out: list = [None] * len(values)
     n = len(present)
@@ -50,8 +53,17 @@ def _percentiles(values: list) -> list:
     if n == 1:
         out[present[0][0]] = 50.0
         return out
-    for rank, (idx, _) in enumerate(sorted(present, key=lambda iv: iv[1])):
-        out[idx] = round(100.0 * rank / (n - 1), 1)
+    ordered = sorted(present, key=lambda iv: iv[1])  # worst -> best
+    i = 0
+    while i < n:
+        j = i
+        while j < n and ordered[j][1] == ordered[i][1]:
+            j += 1
+        avg_pos = (i + j - 1) / 2.0  # shared position for the whole tie block
+        pct = round(100.0 * avg_pos / (n - 1), 1)
+        for k in range(i, j):
+            out[ordered[k][0]] = pct
+        i = j
     return out
 
 
@@ -63,13 +75,19 @@ def pick_value(season: int, rnd: int, next_season: int) -> float:
 
 def _value_players(players: list, stats: dict, fmt_key: str) -> None:
     """Attach `points` (season fantasy points) and `value` (percentile of points
-    across this pool) to each player dict. Mutates in place."""
+    *within the player's position*) to each player dict. Within-position so a WR
+    is compared to WRs, not to higher-scoring QBs — otherwise raw points rank
+    every QB above every WR/TE regardless of quality. Mutates in place."""
     for p in players:
         s = stats.get(p["id"]) or {}
         pts = s.get(fmt_key)
         p["points"] = round(float(pts), 1) if isinstance(pts, (int, float)) else None
-    for p, v in zip(players, _percentiles([p["points"] for p in players])):
-        p["value"] = v
+    by_pos: dict[str, list] = {}
+    for p in players:
+        by_pos.setdefault(p.get("position") or "?", []).append(p)
+    for group in by_pos.values():
+        for p, v in zip(group, _percentiles([p["points"] for p in group])):
+            p["value"] = v
 
 
 def _pick_assets(draft_picks: list, next_season: int) -> list:
@@ -359,3 +377,132 @@ def build_nfl_finder_prompt(context: dict[str, Any]) -> str:
         "Only include offers you actually recommend.",
     ]
     return "\n".join(lines)
+
+
+# --- Add/Drop analyzer (football) --------------------------------------------
+# "I'm adding these players and already dropping these — who else do I cut?"
+# Ranks the manager's most expendable players. No salary/contract in this NFL
+# setup, so expendability is production (within-position value) + positional
+# depth relative to who's coming in.
+
+
+async def build_nfl_add_drop_context(
+    league_id: str,
+    my_team_id: str,
+    incoming: list[dict],       # [{"id": <sleeper id> | None, "name": <str>}]
+    outgoing_ids: list[str],
+) -> dict[str, Any]:
+    sb = get_supabase()
+    league = _load_league(sb, league_id)
+    rules = league.get("rules") or {}
+    fmt_key = _format_key(rules)
+    stats = get_season_stats(stats_season())
+
+    rosters = _load_rosters(sb, league_id)
+    my = next((r for r in rosters if r["fantrax_team_id"] == my_team_id), None)
+    if not my:
+        raise ValueError("Could not load your roster. Sync your league first.")
+    my_items = [dict(it) for it in (my.get("roster_items") or [])]
+
+    item_by_id = {
+        it["id"]: it
+        for r in rosters for it in (r.get("roster_items") or [])
+        if it.get("id")
+    }
+
+    incoming_ids = [inc["id"] for inc in incoming if inc.get("id")]
+    exclude = set(outgoing_ids) | set(incoming_ids)
+    drop_items = [it for it in my_items if it.get("id") not in exclude]
+
+    # Value the drop candidates within position (points percentile per position).
+    _value_players(drop_items, stats, fmt_key)
+
+    incoming_resolved = []
+    for inc in incoming:
+        fid = inc.get("id")
+        if fid:
+            it = item_by_id.get(fid, {})
+            incoming_resolved.append({
+                "name": it.get("name") or inc.get("name") or f"Unknown ({fid})",
+                "position": it.get("position", "?"),
+                "team": it.get("team", ""),
+            })
+        else:
+            incoming_resolved.append({
+                "name": (inc.get("name") or "Unknown").strip(),
+                "position": "?",
+                "team": "",
+            })
+
+    outgoing_named = [
+        (item_by_id.get(oid, {}).get("name") or f"Unknown ({oid})")
+        for oid in outgoing_ids
+    ]
+
+    return {
+        "league": league,
+        "rules": rules,
+        "sport": "NFL",
+        "team_name": my.get("team_name") or "Your Team",
+        "drop_assets": drop_items,
+        "incoming": incoming_resolved,
+        "outgoing": outgoing_named,
+        "spots_needed": max(0, len(incoming) - len(outgoing_ids)),
+    }
+
+
+def build_nfl_add_drop_prompt(context: dict[str, Any]) -> str:
+    drops = context["drop_assets"]
+    incoming = context["incoming"]
+    outgoing = context["outgoing"]
+    spots = context["spots_needed"]
+
+    incoming_lines = "\n".join(
+        f"  {p['name']} | {p['position']} {p.get('team', '')}".rstrip() for p in incoming
+    ) or "  (none)"
+
+    drop_lines = []
+    for p in sorted(drops, key=lambda x: (x.get("value") is not None, x.get("value") or 0)):
+        inj = f" | {p['injury_status']}" if p.get("injury_status") else ""
+        drop_lines.append(
+            f"  {p['id']} | {p['name']} | {p.get('position', '?')} {p.get('team', '')} | "
+            f"{p.get('status', '')}{inj} | {p.get('points', '?')} pts | value {p.get('value', '?')}"
+        )
+    roster_block = "\n".join(drop_lines) or "  (none)"
+
+    if spots > 0:
+        ask = f"Recommend exactly which {spots} player(s) to drop"
+        spots_line = f"You need to clear {spots} roster spot(s) to make this work."
+    else:
+        ask = "Recommend who is most expendable"
+        spots_line = (
+            "No drop is strictly required (the players already leaving cover the additions), "
+            "but identify who is most expendable if the manager wants to open a spot."
+        )
+
+    return "\n".join([
+        _nfl_today_line(),
+        "",
+        f"The manager is making room on their roster ({context['team_name']}).",
+        f"Adding:\n{incoming_lines}",
+        f"Already dropping/trading away: {', '.join(outgoing) or 'none'}",
+        spots_line,
+        "",
+        "Each drop candidate carries last season's fantasy points and a 0-100 value (points "
+        "percentile WITHIN their position, so compare like-for-like). Lower value = more "
+        "expendable at that position, all else equal.",
+        "",
+        "Drop candidates (id | player | pos team | status | points | value):",
+        roster_block,
+        "",
+        f"{ask} to make this work. Rank them from most to least droppable. For EACH, give a "
+        "one-line rationale weighing: production/value, positional depth RELATIVE TO who's coming "
+        "in (never drop your only startable player at a position the incoming players don't "
+        "cover), positional scarcity (QB in superflex, premium RB/WR), and dynasty age/upside. "
+        "Prefer dropping injured/bench depth and redundant players first. There's no salary or "
+        "contracts in this league — value is rest-of-career production plus positional scarcity.",
+        "",
+        "Format: one short summary sentence, then a numbered list — "
+        "'1. **Player Name** (pos, team) — rationale'. Recommend ONLY players from the drop "
+        "candidates list above; never invent players or stats.",
+    ])

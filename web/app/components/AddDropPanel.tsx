@@ -14,6 +14,7 @@ type RosterItem = {
   status: string;
   contract?: { name: string };
   name?: string;
+  team?: string;
 };
 
 type PlayerOption = {
@@ -21,7 +22,7 @@ type PlayerOption = {
   name: string;
   position: string;
   salary: number;
-  contract: string;
+  team: string;
   owner: string;
 };
 
@@ -49,11 +50,14 @@ function DropRenderer({ text }: { text: string }) {
 export function AddDropPanel({
   leagueId,
   myTeamId,
+  sport,
 }: {
   leagueId: string;
   myTeamId: string;
+  sport: string;
 }) {
   const { reportIssue, clearIssue } = useAiStatus();
+  const isNFL = sport === "NFL";
 
   const [myPlayers, setMyPlayers] = useState<PlayerOption[]>([]);
   const [allPlayers, setAllPlayers] = useState<PlayerOption[]>([]);
@@ -102,7 +106,7 @@ export function AddDropPanel({
         name: map[it.id] || it.name || `Unknown (${it.id})`,
         position: it.position,
         salary: it.salary ?? 0,
-        contract: it.contract?.name ?? "?",
+        team: it.team ?? "",
         owner,
       });
 
@@ -116,14 +120,19 @@ export function AddDropPanel({
         if (r.fantrax_team_id === myTeamId) mine = opts;
       });
       setAllPlayers(all.sort((a, b) => a.name.localeCompare(b.name)));
-      setMyPlayers(mine.sort((a, b) => b.salary - a.salary));
+      // Most expendable first is roughly most-expensive (MLB) / by name (NFL).
+      setMyPlayers(
+        isNFL
+          ? mine.sort((a, b) => a.name.localeCompare(b.name))
+          : mine.sort((a, b) => b.salary - a.salary)
+      );
     }
 
     load();
     return () => {
       cancelled = true;
     };
-  }, [leagueId, myTeamId]);
+  }, [leagueId, myTeamId, isNFL]);
 
   const incomingIds = useMemo(
     () => new Set(incoming.map((i) => i.id).filter(Boolean)),
@@ -296,7 +305,7 @@ export function AddDropPanel({
                 <span className="font-medium">{p.name}</span>
                 <span className="text-xs text-gray-400">{p.position}</span>
               </span>
-              <span className="text-xs text-gray-400">${p.salary}</span>
+              <span className="text-xs text-gray-400">{isNFL ? p.team : `$${p.salary}`}</span>
             </button>
           ))}
           {myPlayers.length === 0 && (
