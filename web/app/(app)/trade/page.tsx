@@ -10,6 +10,40 @@ import { NeedsApiKey } from "../../components/ui/NeedsApiKey";
 const CATEGORIES = ["R", "HR", "RBI", "SB", "OBP", "QS", "SV", "K", "ERA", "WHIP"];
 const NFL_POSITIONS = ["QB", "RB", "WR", "TE"];
 
+/** First line of the VERDICT section (both MLB and NFL prompts emit one). */
+function extractVerdict(text: string): string {
+  const m = text.match(/VERDICT\s*([\s\S]*?)(?=ANALYSIS|$)/i);
+  return m ? m[1].trim().split("\n")[0].trim() : "";
+}
+
+function timeAgo(iso: string): string {
+  const s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+  if (s < 60) return "just now";
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
+
+/** Tailwind classes for a verdict pill, by its leading word. */
+function verdictColor(verdict: string): string {
+  const word = verdict.split(/[\s—–-]/)[0].toUpperCase();
+  if (word === "ACCEPT") return "bg-green-50 border-green-500/30 text-green-900";
+  if (word === "DECLINE") return "bg-red-50 border-red-500/30 text-red-900";
+  return "bg-amber-50 border-amber-500/30 text-amber-900";
+}
+
+type TradeHistoryPlayer = { id: string; name: string };
+type TradeHistoryRow = {
+  id: string;
+  created_at: string;
+  offering: TradeHistoryPlayer[];
+  receiving: TradeHistoryPlayer[];
+  verdict: string | null;
+  analysis: string;
+};
+
 type Candidate = {
   fantrax_id: string;
   name: string;
@@ -252,7 +286,10 @@ export default function TradePage() {
   // Key-level failures (out of credits / rejected key) go to the app-wide banner.
   const { reportIssue, clearIssue } = useAiStatus();
 
-  const [mode, setMode] = useState<"build" | "find">("build");
+  const [mode, setMode] = useState<"build" | "find" | "history">("build");
+  const [historyItems, setHistoryItems] = useState<TradeHistoryRow[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [expandedHistoryId, setExpandedHistoryId] = useState<string | null>(null);
   const [finderLoading, setFinderLoading] = useState(false);
   const [finderError, setFinderError] = useState<string | null>(null);
   const [finder, setFinder] = useState<FinderResult | null>(null);
@@ -332,6 +369,46 @@ export default function TradePage() {
       setReceiving([]);
     }
   }, [opponentTeamId, teams, playerNameMap]);
+
+  // Load the user's saved analyses when the History tab is opened.
+  useEffect(() => {
+    if (mode !== "history" || !leagueId) return;
+    let cancelled = false;
+    (async () => {
+      setHistoryLoading(true);
+      try {
+        const res = await authedFetch(`/api/trade/history?league_id=${leagueId}`);
+        const json = await res.json();
+        if (!cancelled) setHistoryItems(json.items ?? []);
+      } catch {
+        if (!cancelled) setHistoryItems([]);
+      } finally {
+        if (!cancelled) setHistoryLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [mode, leagueId]);
+
+  // Persist a completed analysis to the user's private history (best-effort).
+  async function saveHistory(analysis: string) {
+    if (!leagueId || !analysis.trim()) return;
+    try {
+      await authedFetch("/api/trade/history", {
+        method: "POST",
+        body: JSON.stringify({
+          league_id: leagueId,
+          offering: offering.map((id) => ({ id, name: playerNameMap[id] || id })),
+          receiving: receiving.map((id) => ({ id, name: playerNameMap[id] || id })),
+          verdict: extractVerdict(analysis),
+          analysis,
+        }),
+      });
+    } catch {
+      /* best-effort — never disrupt the analysis the user just saw */
+    }
+  }
 
   async function runFinder(category?: string) {
     if (!leagueId || !myTeamId) return;
@@ -524,11 +601,15 @@ export default function TradePage() {
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
 
+      let full = "";
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        setStreamText((prev) => prev + decoder.decode(value));
+        const chunk = decoder.decode(value);
+        full += chunk;
+        setStreamText((prev) => prev + chunk);
       }
+      saveHistory(full);
     } catch (e: any) {
       setError(e?.message ?? "Something went wrong.");
     } finally {
@@ -569,6 +650,9 @@ export default function TradePage() {
             </button>
             <button onClick={() => setMode("find")} className={modeClass(mode === "find")}>
               Find Targets
+            </button>
+            <button onClick={() => setMode("history")} className={modeClass(mode === "history")}>
+              History
             </button>
           </div>
 
@@ -803,6 +887,59 @@ export default function TradePage() {
                   </>
                 )}
               </div>
+            </div>
+          )}
+
+          {mode === "history" && (
+            <div className="space-y-4">
+              {historyLoading && (
+                <div className="bg-gray-50 border rounded-2xl p-6 shadow-sm text-sm text-gray-400 animate-pulse">
+                  Loading your recent analyses…
+                </div>
+              )}
+              {!historyLoading && historyItems.length === 0 && (
+                <div className="bg-gray-50 border rounded-2xl p-6 shadow-sm text-sm text-gray-400">
+                  No analyzed trades yet. Build a trade and hit Analyze — it&apos;ll show up here.
+                </div>
+              )}
+              {!historyLoading &&
+                historyItems.map((h) => {
+                  const expanded = expandedHistoryId === h.id;
+                  return (
+                    <div key={h.id} className="bg-gray-50 border rounded-2xl p-5 shadow-sm space-y-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="text-sm text-gray-900">
+                          <span className="font-medium">Gave</span>{" "}
+                          {h.offering.map((p) => p.name).join(", ") || "—"}{" "}
+                          <span className="text-gray-400">→</span>{" "}
+                          <span className="font-medium">Got</span>{" "}
+                          {h.receiving.map((p) => p.name).join(", ") || "—"}
+                        </div>
+                        <span className="shrink-0 text-xs text-gray-400">
+                          {timeAgo(h.created_at)}
+                        </span>
+                      </div>
+                      {h.verdict && (
+                        <span
+                          className={`inline-block px-3 py-1.5 rounded-xl border text-sm font-medium ${verdictColor(
+                            h.verdict
+                          )}`}
+                        >
+                          {h.verdict}
+                        </span>
+                      )}
+                      <div>
+                        <button
+                          onClick={() => setExpandedHistoryId(expanded ? null : h.id)}
+                          className="text-xs font-medium text-violet-600 hover:text-violet-300"
+                        >
+                          {expanded ? "Hide analysis" : "Show analysis"}
+                        </button>
+                      </div>
+                      {expanded && <AnalysisRenderer text={h.analysis} />}
+                    </div>
+                  );
+                })}
             </div>
           )}
         </div>

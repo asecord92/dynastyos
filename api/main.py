@@ -564,6 +564,14 @@ class TradeFinderRequest(BaseModel):
     target_category: str | None = None  # omit to auto-pick the weakest category
 
 
+class TradeHistoryItem(BaseModel):
+    league_id: str
+    offering: list[dict] = []   # players given up: [{id, name}]
+    receiving: list[dict] = []  # players received:  [{id, name}]
+    verdict: str = ""           # short parsed verdict line
+    analysis: str = ""          # full streamed recommendation
+
+
 class AddDropPlayer(BaseModel):
     id: str | None = None  # fantrax id when the player is rostered; None for free text
     name: str = ""
@@ -1397,6 +1405,60 @@ async def trade_analyze(
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/trade/history")
+async def save_trade_history(
+    body: TradeHistoryItem,
+    user: dict = Depends(get_current_user),
+):
+    """Record one analyzed trade for the user's private history (best-effort — a
+    failure here must never disrupt the analysis the user already saw)."""
+    sb = get_supabase()
+    require_league_owner(sb, user, body.league_id)
+    uid = user.get("sub")
+    if not uid or not body.analysis.strip():
+        return {"ok": False}
+    try:
+        sb.table("trade_history").insert({
+            "user_id": uid,
+            "league_id": body.league_id,
+            "offering": body.offering,
+            "receiving": body.receiving,
+            "verdict": ((body.verdict or "").strip()[:500]) or None,
+            "analysis": body.analysis,
+        }).execute()
+    except Exception:
+        traceback.print_exc()
+        return {"ok": False}
+    return {"ok": True}
+
+
+@app.get("/trade/history")
+async def list_trade_history(
+    league_id: str = Query(...),
+    user: dict = Depends(get_current_user),
+):
+    """The user's last 20 analyzed trades for this league, newest first."""
+    sb = get_supabase()
+    require_league_owner(sb, user, league_id)
+    uid = user.get("sub")
+    if not uid:
+        return {"items": []}
+    try:
+        rows = (
+            sb.table("trade_history")
+            .select("id, created_at, offering, receiving, verdict, analysis")
+            .eq("league_id", league_id)
+            .eq("user_id", uid)
+            .order("created_at", desc=True)
+            .limit(20)
+            .execute()
+        )
+        return {"items": rows.data or []}
+    except Exception:
+        traceback.print_exc()
+        return {"items": []}
 
 
 @app.post("/waivers/add-drop")
