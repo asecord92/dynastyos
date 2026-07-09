@@ -32,6 +32,8 @@ from engine.nfl_trade import (
     build_nfl_finder_context,
     build_nfl_finder_prompt,
     build_nfl_system_prompt,
+    build_nfl_add_drop_context,
+    build_nfl_add_drop_prompt,
 )
 from engine.nfl_dashboard import build_nfl_dashboard
 from engine.nfl_widgets import (
@@ -1408,19 +1410,28 @@ async def waivers_add_drop(
     try:
         sb = get_supabase()
         require_league_owner(sb, user, body.league_id)
-        if _league_sport(sb, body.league_id) == "NFL":
-            raise HTTPException(status_code=400, detail="add_drop_mlb_only")
         if not body.incoming and not body.outgoing_ids:
             raise HTTPException(status_code=400, detail="Add at least one incoming player.")
 
-        context = await build_add_drop_context(
-            league_id=body.league_id,
-            my_team_id=body.my_team_id,
-            incoming=[inc.model_dump() for inc in body.incoming],
-            outgoing_ids=body.outgoing_ids,
-        )
-        prompt = build_add_drop_prompt(context)
-        system_prompt = build_system_prompt(context["rules"], context["sport"])
+        incoming = [inc.model_dump() for inc in body.incoming]
+        if _league_sport(sb, body.league_id) == "NFL":
+            context = await build_nfl_add_drop_context(
+                league_id=body.league_id,
+                my_team_id=body.my_team_id,
+                incoming=incoming,
+                outgoing_ids=body.outgoing_ids,
+            )
+            prompt = build_nfl_add_drop_prompt(context)
+            system_prompt = build_nfl_system_prompt(context["rules"])
+        else:
+            context = await build_add_drop_context(
+                league_id=body.league_id,
+                my_team_id=body.my_team_id,
+                incoming=incoming,
+                outgoing_ids=body.outgoing_ids,
+            )
+            prompt = build_add_drop_prompt(context)
+            system_prompt = build_system_prompt(context["rules"], context["sport"])
         ai = get_ai_client_for_league(sb, body.league_id)
 
         def stream():

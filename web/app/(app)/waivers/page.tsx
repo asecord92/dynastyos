@@ -161,9 +161,9 @@ export default function WaiversPage() {
         </div>
       )}
 
-      {/* Add/Drop analyzer — MLB only for now (NFL support to follow). */}
-      {leagueId && myTeamId && sport !== "NFL" && (
-        <AddDropPanel leagueId={leagueId} myTeamId={myTeamId} />
+      {/* Add/Drop analyzer — MLB and football. */}
+      {leagueId && myTeamId && (
+        <AddDropPanel leagueId={leagueId} myTeamId={myTeamId} sport={sport} />
       )}
     </main>
   );
