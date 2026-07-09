@@ -50,6 +50,7 @@ export default function WaiversPage() {
   const [data, setData] = useState<WaiverData | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [mode, setMode] = useState<"recs" | "adddrop">("recs");
 
   useEffect(() => {
     if (!leagueId) { setMyTeamId(""); return; }
@@ -89,6 +90,13 @@ export default function WaiversPage() {
     if (leagueId && myTeamId) fetchData();
   }, [leagueId, myTeamId]);
 
+  const modeClass = (active: boolean) =>
+    `px-3 py-1.5 rounded-xl text-sm border transition ${
+      active
+        ? "bg-violet-600 text-white border-violet-600"
+        : "bg-gray-50 text-gray-700 border-gray-200 hover:border-gray-300"
+    }`;
+
   return (
     <main className="space-y-6">
       <h1 className="text-3xl font-semibold">Waiver Wire</h1>
@@ -106,64 +114,77 @@ export default function WaiversPage() {
       )}
 
       {leagueId && myTeamId && (
-        <div className="bg-gray-50 border rounded-2xl p-6 shadow-sm space-y-4">
-          {/* Header */}
-          <div className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold">Recommendations</h2>
-            <div className="flex items-center gap-3">
-              {data?.updated_at && (
-                <span className="text-xs text-gray-400">
-                  Updated {timeAgo(data.updated_at)}
-                </span>
-              )}
-              <button
-                onClick={() => fetchData(true)}
-                disabled={loading}
-                className="px-3 py-1.5 rounded-xl text-xs border border-gray-200 hover:border-gray-300 disabled:opacity-40 transition"
-              >
-                {loading ? "Loading..." : "Refresh"}
-              </button>
-            </div>
+        <div className="space-y-6">
+          {/* Tool toggle — mirrors the Trade page's two-tool layout */}
+          <div className="flex gap-2">
+            <button onClick={() => setMode("recs")} className={modeClass(mode === "recs")}>
+              Recommendations
+            </button>
+            <button onClick={() => setMode("adddrop")} className={modeClass(mode === "adddrop")}>
+              Add / Drop
+            </button>
           </div>
 
-          {/* Loading skeleton */}
-          {loading && !data && (
-            <div className="space-y-2 animate-pulse">
-              {[...Array(8)].map((_, i) => (
-                <div
-                  key={i}
-                  className="h-4 bg-gray-100 rounded"
-                  style={{ width: `${65 + (i % 3) * 10}%` }}
-                />
-              ))}
+          {mode === "recs" && (
+            <div className="bg-gray-50 border rounded-2xl p-6 shadow-sm space-y-4">
+              {/* Header */}
+              <div className="flex items-center justify-between">
+                <h2 className="text-lg font-semibold">Recommendations</h2>
+                <div className="flex items-center gap-3">
+                  {data?.updated_at && (
+                    <span className="text-xs text-gray-400">
+                      Updated {timeAgo(data.updated_at)}
+                    </span>
+                  )}
+                  <button
+                    onClick={() => fetchData(true)}
+                    disabled={loading}
+                    className="px-3 py-1.5 rounded-xl text-xs border border-gray-200 hover:border-gray-300 disabled:opacity-40 transition"
+                  >
+                    {loading ? "Loading..." : "Refresh"}
+                  </button>
+                </div>
+              </div>
+
+              {/* Loading skeleton */}
+              {loading && !data && (
+                <div className="space-y-2 animate-pulse">
+                  {[...Array(8)].map((_, i) => (
+                    <div
+                      key={i}
+                      className="h-4 bg-gray-100 rounded"
+                      style={{ width: `${65 + (i % 3) * 10}%` }}
+                    />
+                  ))}
+                </div>
+              )}
+
+              {/* Error */}
+              {error && (
+                <div className="text-sm text-red-300 bg-red-50 border border-red-500/30 rounded-xl p-3">
+                  {error}{" "}
+                  <button onClick={() => fetchData()} className="underline">
+                    Retry
+                  </button>
+                </div>
+              )}
+
+              {/* Empty state */}
+              {!loading && !error && !data && (
+                <p className="text-sm text-gray-400">
+                  No waiver data yet — click Refresh to generate recommendations.
+                </p>
+              )}
+
+              {/* Content */}
+              {data && !loading && <ContentRenderer text={data.content} />}
             </div>
           )}
 
-          {/* Error */}
-          {error && (
-            <div className="text-sm text-red-300 bg-red-50 border border-red-500/30 rounded-xl p-3">
-              {error}{" "}
-              <button onClick={() => fetchData()} className="underline">
-                Retry
-              </button>
-            </div>
+          {mode === "adddrop" && (
+            <AddDropPanel leagueId={leagueId} myTeamId={myTeamId} sport={sport} />
           )}
-
-          {/* Empty state */}
-          {!loading && !error && !data && (
-            <p className="text-sm text-gray-400">
-              No waiver data yet — click Refresh to generate recommendations.
-            </p>
-          )}
-
-          {/* Content */}
-          {data && !loading && <ContentRenderer text={data.content} />}
         </div>
-      )}
-
-      {/* Add/Drop analyzer — MLB and football. */}
-      {leagueId && myTeamId && (
-        <AddDropPanel leagueId={leagueId} myTeamId={myTeamId} sport={sport} />
       )}
     </main>
   );
