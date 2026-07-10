@@ -191,24 +191,6 @@ def format_stats_for_prompt(player_stats: dict, name: str, player_type: str, mlb
     return f"  {name} (2026 season): {season_line} | Last 30 days: {recent_line}"
 
 
-def _pick_assets(draft_picks: list | None) -> list[dict]:
-    """Turn stored draft picks into tradeable assets whose id matches what the
-    trade builder sends (`pick:<season>:<round>:<original_owner>`)."""
-    assets = []
-    for pk in draft_picks or []:
-        try:
-            season, rnd = int(pk["season"]), int(pk["round"])
-        except (KeyError, TypeError, ValueError):
-            continue
-        orig = pk.get("original_roster_id", "?")
-        assets.append({
-            "id": f"pick:{season}:{rnd}:{orig}",
-            "name": pk.get("label") or f"{season} Round {rnd}",
-            "is_pick": True,
-        })
-    return assets
-
-
 async def build_trade_context(
     league_id: str,
     my_team_id: str,
@@ -227,7 +209,7 @@ async def build_trade_context(
 
     # Load both rosters
     roster_rows = sb.table("rosters").select(
-        "fantrax_team_id, team_name, roster_items, draft_picks, salary_cap"
+        "fantrax_team_id, team_name, roster_items, salary_cap"
     ).eq("league_id", league_id).in_(
         "fantrax_team_id", [my_team_id, opponent_team_id]
     ).execute()
@@ -237,11 +219,6 @@ async def build_trade_context(
 
     if not my_roster_row or not opp_roster_row:
         raise ValueError("Could not load one or both rosters from Supabase.")
-
-    # Draft picks are tradeable assets; the builder sends them with `pick:` ids.
-    my_picks = _pick_assets(my_roster_row.get("draft_picks"))
-    opp_picks = _pick_assets(opp_roster_row.get("draft_picks"))
-    pick_by_id = {a["id"]: a for a in my_picks + opp_picks}
 
     # Collect all fantrax IDs across both rosters
     all_fantrax_ids = (
@@ -284,8 +261,8 @@ async def build_trade_context(
                     "player_type": "hitter",  # default, no position data available
                 }
 
-    # Fetch stats for all trade participants concurrently (skip draft picks).
-    trade_ids = [fid for fid in offering_ids + receiving_ids if not fid.startswith("pick:")]
+    # Fetch stats for all trade participants concurrently
+    trade_ids = offering_ids + receiving_ids
 
     async def fetch_stat(fid):
         mlb_id = fantrax_to_mlb.get(fid)
@@ -327,9 +304,6 @@ async def build_trade_context(
         "offering_ids": offering_ids,
         "receiving_ids": receiving_ids,
         "category_ranks": category_ranks,
-        "my_picks": my_picks,
-        "opp_picks": opp_picks,
-        "pick_by_id": pick_by_id,
     }
 
 
@@ -347,16 +321,6 @@ def build_trade_prompt(context: dict[str, Any]) -> str:
 
     my_items = my_roster["roster_items"]
     opp_items = opp_roster["roster_items"]
-
-    # Draft picks are assets too; resolve a traded id to a player OR pick name.
-    pick_by_id = context.get("pick_by_id", {})
-    my_picks = context.get("my_picks", [])
-    opp_picks = context.get("opp_picks", [])
-
-    def name_of(fid: str) -> str:
-        if fid in pick_by_id:
-            return pick_by_id[fid]["name"]
-        return get_player_name(fid, player_id_map)
 
     # Team philosophy block
     category_ranks = context.get("category_ranks", {})
@@ -381,19 +345,21 @@ Manager's team philosophy:
   Current salary cap: ${my_roster.get('salary_cap', 450)}"""
 
     # Proposed trade block
-    offering_names = [name_of(fid) for fid in offering_ids]
-    receiving_names = [name_of(fid) for fid in receiving_ids]
+    offering_names = [
+        get_player_name(fid, player_id_map) for fid in offering_ids
+    ]
+    receiving_names = [
+        get_player_name(fid, player_id_map) for fid in receiving_ids
+    ]
 
     trade_block = f"""
 Proposed trade:
   Manager gives up: {', '.join(offering_names)}
   Manager receives: {', '.join(receiving_names)}"""
 
-    # Stats block for trade participants (players only — picks have no stats).
+    # Stats block for trade participants
     stats_lines = ["\nStats for players in this trade:"]
     for fid in offering_ids + receiving_ids:
-        if fid in pick_by_id:
-            continue
         name = get_player_name(fid, player_id_map)
         player_type = player_id_map.get(fid, {}).get("player_type", "hitter")
         stats = trade_stats.get(fid)
@@ -402,20 +368,17 @@ Proposed trade:
 
     stats_block = "\n".join(stats_lines)
 
-    # Full rosters, each followed by that team's tradeable draft picks.
-    def picks_line(picks: list) -> str:
-        return "\n  Draft picks: " + ", ".join(p["name"] for p in picks) if picks else ""
-
+    # Full rosters
     my_roster_block = format_roster_for_prompt(
         my_items, player_id_map,
         f"Manager's roster ({my_roster['team_name']})",
         highlight_ids=offering_ids,
-    ) + picks_line(my_picks)
+    )
     opp_roster_block = format_roster_for_prompt(
         opp_items, player_id_map,
         f"Opponent's roster ({opp_roster['team_name']})",
         highlight_ids=receiving_ids,
-    ) + picks_line(opp_picks)
+    )
 
     # Cap impact
     giving_salary = sum(
@@ -439,8 +402,6 @@ ANALYSIS
 Cover: player value relative to salary and contract year, cap impact, positional balance,
 category impact (especially the manager's weak categories), and fit with their competitive window.
 Consider whether any player involved could be cut and re-signed cheaper at auction.
-If draft picks are involved, weigh them as dynasty prospect capital — earlier rounds and nearer
-years are worth more, and a rebuilder should value picks higher than a win-now contender.
 Do not summarize both sides neutrally. Make the case.
 
 COUNTER OFFER
