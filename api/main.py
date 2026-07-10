@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 
 from engine.rules import LeagueRules
 from engine.roster_analyzer import analyze_roster_from_csv
-from engine.fantrax_client import get_leagues, get_team_rosters, get_player_ids, get_league_info, get_standings
+from engine.fantrax_client import get_leagues, get_team_rosters, get_player_ids, get_league_info, get_standings, get_draft_picks
 from engine.sleeper_client import (
     get_user as sleeper_get_user,
     get_user_leagues as sleeper_get_user_leagues,
@@ -1269,6 +1269,33 @@ async def roster_sync(
         except Exception as e:
             print(f"[sync] Rules auto-detect skipped (non-fatal): {e}")
 
+        # Step 2.55: Future draft picks (tradeable assets), grouped by current
+        # owner. Stored in the NFL-compatible {season, round, label,
+        # original_roster_id} shape so the trade builder renders them the same way.
+        # Best-effort — a picks failure must not block the roster sync.
+        picks_by_team: dict[str, list] = {}
+        try:
+            team_names = {tid: tdata.get("teamName", "") for tid, tdata in rosters.items()}
+            for p in get_draft_picks(fantrax_league_id):
+                cur, orig = p.get("currentOwnerTeamId"), p.get("originalOwnerTeamId")
+                year, rnd = p.get("year"), p.get("round")
+                if not cur or year is None or rnd is None:
+                    continue
+                label = f"{year} Round {rnd}"
+                if orig and orig != cur:
+                    via = team_names.get(orig)
+                    label += f" (via {via})" if via else " (acquired)"
+                picks_by_team.setdefault(cur, []).append({
+                    "season": int(year),
+                    "round": int(rnd),
+                    "label": label,
+                    "original_roster_id": orig,
+                })
+            for lst in picks_by_team.values():
+                lst.sort(key=lambda x: (x["season"], x["round"]))
+        except Exception as e:
+            print(f"[sync] Draft picks fetch failed (non-fatal): {e}")
+
         # Step 2.6: Persist all team rosters to Supabase (under THIS owner's row)
         try:
             roster_upserts = [
@@ -1277,6 +1304,7 @@ async def roster_sync(
                     "fantrax_team_id": tid,
                     "team_name": tdata.get("teamName", ""),
                     "roster_items": tdata.get("rosterItems", []),
+                    "draft_picks": picks_by_team.get(tid, []),
                     "salary_cap": int(tdata.get("salaryCap", 0)) if tdata.get("salaryCap") else None,
                     "synced_at": datetime.now(timezone.utc).isoformat(),
                 }

@@ -82,7 +82,8 @@ type FinderEvent =
   | { type: "packages"; packages: TradePackage[]; analysis: string }
   | { type: "error"; detail: string };
 
-type DraftPick = { season: number; round: number; label: string; original_roster_id: number };
+// original_roster_id is a Sleeper roster id (number) for NFL, a Fantrax team id (string) for MLB.
+type DraftPick = { season: number; round: number; label: string; original_roster_id: number | string };
 
 type TeamRoster = {
   fantrax_team_id: string;
@@ -394,13 +395,20 @@ export default function TradePage() {
   // Persist a completed analysis to the user's private history (best-effort).
   async function saveHistory(analysis: string) {
     if (!leagueId || !analysis.trim()) return;
+    // Resolve names from the builder options (which include draft picks), so a
+    // traded pick is stored as its label, not the raw `pick:` id.
+    const nameOf = (id: string) =>
+      myPlayers.find((p) => p.id === id)?.name ||
+      oppPlayers.find((p) => p.id === id)?.name ||
+      playerNameMap[id] ||
+      id;
     try {
       await authedFetch("/api/trade/history", {
         method: "POST",
         body: JSON.stringify({
           league_id: leagueId,
-          offering: offering.map((id) => ({ id, name: playerNameMap[id] || id })),
-          receiving: receiving.map((id) => ({ id, name: playerNameMap[id] || id })),
+          offering: offering.map((id) => ({ id, name: nameOf(id) })),
+          receiving: receiving.map((id) => ({ id, name: nameOf(id) })),
           verdict: extractVerdict(analysis),
           analysis,
         }),
@@ -531,9 +539,7 @@ export default function TradePage() {
       status: item.status,
       detail: isNFL ? (item.team || "FA") : undefined,
     }));
-    if (!isNFL) return players.sort((a, b) => b.salary - a.salary);
-    // NFL: players A-Z, then draft picks as tradeable assets.
-    players.sort((a, b) => a.name.localeCompare(b.name));
+    // Draft picks are tradeable assets in both sports (Fantrax + Sleeper).
     const pickOptions: PlayerOption[] = (picks ?? []).map((pk) => ({
       id: `pick:${pk.season}:${pk.round}:${pk.original_roster_id}`,
       name: pk.label,
@@ -544,6 +550,8 @@ export default function TradePage() {
       detail: "draft pick",
       isPick: true,
     }));
+    // MLB: players by salary (high → low), then picks. NFL: players A-Z, then picks.
+    players.sort((a, b) => (isNFL ? a.name.localeCompare(b.name) : b.salary - a.salary));
     return [...players, ...pickOptions];
   }
 

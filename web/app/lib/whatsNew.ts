@@ -15,6 +15,10 @@ export const WHATS_NEW: WhatsNewEntry = {
   date: "July 9, 2026",
   items: [
     {
+      title: "Draft picks in trades",
+      body: "Fantrax future draft picks now show up as tradeable assets in the Trade builder — pick-for-player deals are valued and analyzed like any other trade.",
+    },
+    {
       title: "Add / Drop Analyzer",
       body: "New on the Waivers page (baseball & football). Tell it who you're adding — off IL, from waivers, or in a lopsided trade — and it ranks who to drop to make room.",
     },
