@@ -122,3 +122,15 @@ def get_league_info(league_id: str) -> dict:
     resp = httpx.get(url, params={"leagueId": league_id}, timeout=15)
     resp.raise_for_status()
     return resp.json()
+
+
+def get_draft_picks(league_id: str) -> list[dict]:
+    """
+    Returns the league's future draft picks. Each item:
+    {year, round, currentOwnerTeamId, originalOwnerTeamId}. A pick whose
+    currentOwner differs from originalOwner has been traded.
+    """
+    url = f"{FANTRAX_BASE}/getDraftPicks"
+    resp = httpx.get(url, params={"leagueId": league_id}, timeout=15)
+    resp.raise_for_status()
+    return resp.json().get("futureDraftPicks", [])
