@@ -216,6 +216,10 @@ export function AppNav() {
               owner_user_id: user.id,
               source: "fantrax",
               data: json,
+              // Refresh created_at so "Last synced" reflects THIS sync. The row is
+              // upserted per (league_id, source), so without this the timestamp
+              // stays frozen at the first-ever sync (the "22d ago" bug).
+              created_at: new Date().toISOString(),
             }, { onConflict: "league_id,source" });
           if (snapError) throw new Error(snapError.message);
         }
