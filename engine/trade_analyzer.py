@@ -1,10 +1,11 @@
 import asyncio
 import json
+import math
 import re
 from datetime import datetime, timezone
 from typing import Any
 from .supabase_client import get_supabase
-from .mlb_stats_client import get_player_stats
+from .mlb_stats_client import get_player_stats, get_milb_player_summary
 from .rules import LeagueRules, ContractRules, load_rules
 from .player_value import production_ratings, assign_values
 
@@ -30,7 +31,12 @@ journalist presenting both sides — you are a trusted advisor telling the manag
 
 IMPORTANT: Only reference player facts explicitly provided in this prompt — current team, stats,
 contract, and salary. Do not use your training knowledge to fill in details about any player.
-Player situations change frequently and your training data may be wrong."""
+Player situations change frequently and your training data may be wrong.
+
+Data grounding: the stats and roster statuses in this prompt come from live data sources and may lag
+reality by up to ~24 hours. If a fact you need is not provided (and not confirmed by a web search
+result when search is available), treat it as unknown — say so explicitly and tell the manager what
+to verify before pulling the trigger, rather than guessing."""
 
 
 def _money(v: float) -> str:
@@ -134,6 +140,56 @@ def _load_league_rules(sb, league_id: str, league: dict) -> LeagueRules:
     return load_rules({"sport": league.get("sport"), "rules": raw})
 
 
+# Caches whether the player_id_map.age column exists yet (the migration is
+# applied manually in Supabase). A failed select retries without the column so
+# every trade flow works pre-migration.
+_id_map_age_available: bool | None = None
+
+_ID_MAP_COLUMNS = "fantrax_id, full_name, player_type, mlb_id, mlb_team, roster_status, il_type, age"
+
+
+def _strip_age(columns: str) -> str:
+    return ", ".join(c for c in (s.strip() for s in columns.split(",")) if c != "age")
+
+
+def _select_id_map(sb, fantrax_ids: list[str], columns: str = _ID_MAP_COLUMNS) -> list[dict]:
+    """Batched player_id_map select (PostgREST query-length safe) that tolerates
+    the ``age`` column not existing yet."""
+    global _id_map_age_available
+    cols = _strip_age(columns) if _id_map_age_available is False else columns
+    rows: list[dict] = []
+    for i in range(0, len(fantrax_ids), 100):
+        chunk = fantrax_ids[i:i + 100]
+        try:
+            res = sb.table("player_id_map").select(cols).in_("fantrax_id", chunk).execute()
+        except Exception:
+            if "age" not in cols:
+                raise
+            cols = _strip_age(cols)
+            _id_map_age_available = False
+            res = sb.table("player_id_map").select(cols).in_("fantrax_id", chunk).execute()
+        else:
+            if "age" in cols:
+                _id_map_age_available = True
+        rows.extend(res.data or [])
+    return rows
+
+
+def _age_str(age) -> str:
+    return f"{age}yo" if isinstance(age, (int, float)) else "age ?"
+
+
+def _il_flag(info: dict) -> str:
+    """Short injury/assignment flag from resolved player info, '' when active."""
+    il = info.get("il_type")
+    status = info.get("roster_status")
+    if il:
+        return f" [{il}]"
+    if status and status not in ("Active", ""):
+        return f" [{status}]"
+    return ""
+
+
 def get_player_name(fantrax_id: str, player_id_map: dict) -> str:
     return player_id_map.get(fantrax_id, {}).get("name", f"Unknown ({fantrax_id})")
 
@@ -147,48 +203,98 @@ def format_roster_for_prompt(
     lines = [f"\n{label}:"]
     for item in roster_items:
         fid = item.get("id", "")
+        info = player_id_map.get(fid, {})
         name = get_player_name(fid, player_id_map)
         salary = item.get("salary", 0)
         contract = item.get("contract", {}).get("name", "?")
         position = item.get("position", "?")
         status = item.get("status", "")
+        flag = _il_flag(info)
+        if flag.strip(" []") == status:
+            flag = ""  # don't render "Minors [Minors]"
         highlight = " ◄ IN THIS TRADE" if highlight_ids and fid in highlight_ids else ""
-        lines.append(f"  {name} | {position} | ${salary} | {contract} year | {status}{highlight}")
+        lines.append(
+            f"  {name} | {position} | {_age_str(info.get('age'))} | ${salary} | "
+            f"{contract} year | {status}{flag}{highlight}"
+        )
     return "\n".join(lines)
 
 
-def format_stats_for_prompt(player_stats: dict, name: str, player_type: str, mlb_team: str = "") -> str:
-    if not player_stats:
-        team_str = f" ({mlb_team})" if mlb_team else ""
-        return f"  {name}{team_str}: No 2026 stats yet (prospect or no MLB appearances)"
+def _stat_pairs(prefix: str, pairs: list[tuple[str, Any]]) -> str:
+    """'K%:0.24 BB%:0.08' from (label, value) pairs, skipping missing values.
+    Returns '' when nothing is present so empty groups add no noise."""
+    present = [f"{label}:{v}" for label, v in pairs if v not in (None, "")]
+    return f"{prefix}{' '.join(present)}" if present else ""
 
-    season = player_stats.get("season_stats", {})
-    recent = player_stats.get("recent_stats", {})
+
+def format_stats_for_prompt(
+    player_stats: dict | None,
+    name: str,
+    player_type: str,
+    mlb_team: str = "",
+    milb: dict | None = None,
+    info: dict | None = None,
+) -> str:
+    """One grounded line per trade participant: season + advanced/expected stats,
+    30-day form, IL flag — or the MiLB line for prospects with no MLB stats."""
+    season = (player_stats or {}).get("season_stats") or {}
+    year = (player_stats or {}).get("season") or datetime.now(timezone.utc).year
+    team_str = f" ({mlb_team})" if mlb_team else ""
+    flag = _il_flag(info or {})
+
+    if not any(v not in (None, "") for v in season.values()):
+        if milb:
+            return (
+                f"  {name}{team_str}{flag}: No {year} MLB stats. "
+                f"MiLB ({milb.get('level', '?')}): {milb.get('stat_line', '?')} | "
+                f"30-day trend: {milb.get('trend', '?')}"
+            )
+        return f"  {name}{team_str}{flag}: No {year} MLB stats yet (prospect or no MLB appearances)"
+
+    recent = (player_stats or {}).get("recent_stats") or {}
 
     if player_type == "hitter":
         season_line = (
             f"R:{season.get('runs','?')} HR:{season.get('home_runs','?')} "
             f"RBI:{season.get('rbi','?')} SB:{season.get('stolen_bases','?')} "
-            f"OBP:{season.get('obp','?')} AVG:{season.get('avg','?')} "
+            f"AVG:{season.get('avg','?')} OBP:{season.get('obp','?')} "
+            f"SLG:{season.get('slg','?')} OPS:{season.get('ops','?')} "
             f"PA:{season.get('plate_appearances','?')}"
         )
+        advanced = _stat_pairs(" | ", [
+            ("K-rate", season.get("k_rate")), ("BB-rate", season.get("bb_rate")),
+            ("ISO", season.get("iso")),
+        ])
+        expected = _stat_pairs(" | Expected: ", [
+            ("xAVG", season.get("xavg")), ("xSLG", season.get("xslg")),
+            ("xwOBA", season.get("xwoba")),
+        ])
         recent_line = (
             f"R:{recent.get('runs','?')} HR:{recent.get('homeRuns','?')} "
             f"RBI:{recent.get('rbi','?')} SB:{recent.get('stolenBases','?')} "
-            f"OBP:{recent.get('obp','?')}"
+            f"AVG:{recent.get('avg','?')} OBP:{recent.get('obp','?')}"
         )
     else:
         season_line = (
             f"ERA:{season.get('era','?')} WHIP:{season.get('whip','?')} "
             f"K:{season.get('strikeouts','?')} QS:{season.get('quality_starts','?')} "
-            f"SV:{season.get('saves','?')} IP:{season.get('innings_pitched','?')}"
+            f"SV:{season.get('saves','?')} IP:{season.get('innings_pitched','?')} "
+            f"GS:{season.get('games_started','?')} W:{season.get('wins','?')}"
         )
+        advanced = _stat_pairs(" | ", [
+            ("K/9", season.get("k_per_9")), ("BB/9", season.get("bb_per_9")),
+            ("Whiff%", season.get("whiff_rate")),
+        ])
+        expected = ""
         recent_line = (
             f"ERA:{recent.get('era','?')} WHIP:{recent.get('whip','?')} "
-            f"K:{recent.get('strikeOuts','?')}"
+            f"K:{recent.get('strikeOuts','?')} IP:{recent.get('inningsPitched','?')}"
         )
 
-    return f"  {name} (2026 season): {season_line} | Last 30 days: {recent_line}"
+    return (
+        f"  {name}{team_str}{flag} ({year} season): {season_line}{advanced}{expected}"
+        f" | Last 30 days: {recent_line}"
+    )
 
 
 async def build_trade_context(
@@ -226,10 +332,8 @@ async def build_trade_context(
         [item["id"] for item in opp_roster_row["roster_items"]]
     )
 
-    # Load resolved mappings from player_id_map table
-    id_map_rows = sb.table("player_id_map").select(
-        "fantrax_id, full_name, player_type, mlb_id, mlb_team"
-    ).in_("fantrax_id", all_fantrax_ids).execute()
+    # Load resolved mappings from player_id_map table (incl. injury status + age)
+    id_map_rows = _select_id_map(sb, all_fantrax_ids)
 
     # Build resolved lookup
     player_id_map = {
@@ -237,12 +341,15 @@ async def build_trade_context(
             "name": row["full_name"],
             "player_type": row["player_type"],
             "mlb_team": row.get("mlb_team") or "",
+            "roster_status": row.get("roster_status") or "",
+            "il_type": row.get("il_type") or "",
+            "age": row.get("age"),
         }
-        for row in id_map_rows.data
+        for row in id_map_rows
     }
     fantrax_to_mlb = {
         row["fantrax_id"]: row["mlb_id"]
-        for row in id_map_rows.data
+        for row in id_map_rows
         if row.get("mlb_id")
     }
 
@@ -261,19 +368,27 @@ async def build_trade_context(
                     "player_type": "hitter",  # default, no position data available
                 }
 
-    # Fetch stats for all trade participants concurrently
+    # Fetch stats for all trade participants concurrently. A participant with no
+    # MLB stats this season (prospect / recent call-up) gets a MiLB summary
+    # instead, so the model has real production to reason from.
     trade_ids = offering_ids + receiving_ids
 
     async def fetch_stat(fid):
         mlb_id = fantrax_to_mlb.get(fid)
         player_info = player_id_map.get(fid, {})
         player_type = player_info.get("player_type", "hitter")
-        if mlb_id:
-            return fid, await get_player_stats(mlb_id, player_type)
-        return fid, None
+        if not mlb_id:
+            return fid, None, None
+        stats = await get_player_stats(mlb_id, player_type)
+        season = (stats or {}).get("season_stats") or {}
+        milb = None
+        if not any(v not in (None, "") for v in season.values()):
+            milb = await get_milb_player_summary(mlb_id, player_type)
+        return fid, stats, milb
 
     results = await asyncio.gather(*[fetch_stat(fid) for fid in trade_ids])
-    trade_stats = dict(results)
+    trade_stats = {fid: stats for fid, stats, _ in results}
+    trade_milb = {fid: milb for fid, _, milb in results if milb}
 
     # Load category ranks from dashboard_cache
     category_ranks = {}
@@ -301,6 +416,7 @@ async def build_trade_context(
         "player_id_map": player_id_map,
         "fantrax_to_mlb": fantrax_to_mlb,
         "trade_stats": trade_stats,
+        "trade_milb": trade_milb,
         "offering_ids": offering_ids,
         "receiving_ids": receiving_ids,
         "category_ranks": category_ranks,
@@ -312,10 +428,12 @@ def build_trade_prompt(context: dict[str, Any]) -> str:
     Format the full context into a prompt string for Claude.
     """
     league = context["league"]
+    rules = context.get("rules") or LeagueRules()
     my_roster = context["my_roster"]
     opp_roster = context["opp_roster"]
     player_id_map = context["player_id_map"]
     trade_stats = context["trade_stats"]
+    trade_milb = context.get("trade_milb", {})
     offering_ids = context["offering_ids"]
     receiving_ids = context["receiving_ids"]
 
@@ -326,8 +444,12 @@ def build_trade_prompt(context: dict[str, Any]) -> str:
     category_ranks = context.get("category_ranks", {})
     if category_ranks:
         ranks_str = ", ".join(f"{cat}:{rank}" for cat, rank in category_ranks.items())
-        num_teams = 10  # standard league size; ranks are absolute positions
-        weak_cats = [cat for cat, rank in category_ranks.items() if isinstance(rank, int) and rank >= 7]
+        num_teams = rules.league_size
+        weak_threshold = max(2, math.ceil(num_teams * 0.7))
+        weak_cats = [
+            cat for cat, rank in category_ranks.items()
+            if isinstance(rank, int) and rank >= weak_threshold
+        ]
         category_context = f"Category ranks (1=best, {num_teams}=worst): {ranks_str}"
         if weak_cats:
             category_context += f"\n  Weakest categories: {', '.join(weak_cats)}"
@@ -358,13 +480,21 @@ Proposed trade:
   Manager receives: {', '.join(receiving_names)}"""
 
     # Stats block for trade participants
-    stats_lines = ["\nStats for players in this trade:"]
+    stats_lines = [
+        "\nStats for players in this trade (a [flag] marks IL or Minors assignment; "
+        "expected stats — xAVG/xSLG/xwOBA — measure quality of contact, so a gap vs "
+        "the actual stat suggests likely positive or negative regression):"
+    ]
     for fid in offering_ids + receiving_ids:
-        name = get_player_name(fid, player_id_map)
-        player_type = player_id_map.get(fid, {}).get("player_type", "hitter")
-        stats = trade_stats.get(fid)
-        mlb_team = player_id_map.get(fid, {}).get("mlb_team", "")
-        stats_lines.append(format_stats_for_prompt(stats, name, player_type, mlb_team))
+        info = player_id_map.get(fid, {})
+        stats_lines.append(format_stats_for_prompt(
+            trade_stats.get(fid),
+            get_player_name(fid, player_id_map),
+            info.get("player_type", "hitter"),
+            info.get("mlb_team", ""),
+            milb=trade_milb.get(fid),
+            info=info,
+        ))
 
     stats_block = "\n".join(stats_lines)
 
@@ -390,6 +520,14 @@ Proposed trade:
     cap_delta = receiving_salary - giving_salary
     cap_impact = f"\nCap impact: {'saves' if cap_delta < 0 else 'costs'} ${abs(cap_delta)} (giving ${giving_salary}, receiving ${receiving_salary})"
 
+    # Grounding via web search (the /trade/analyze call attaches the tool)
+    search_instructions = """
+Before finalizing your verdict, use web search (a few targeted searches at most) to verify the
+current status of the key players in this trade — injuries or IL moves, call-ups/demotions, and
+role changes from roughly the last two weeks. Incorporate only facts you actually confirmed and
+note the date of any news you cite. If search turns up nothing new, proceed confidently with the
+data above. Never let unverified memory of a player override the data provided here."""
+
     # Output format instructions
     format_instructions = """
 Respond in exactly this format:
@@ -399,8 +537,11 @@ ACCEPT, DECLINE, or COUNTER — followed by one punchy sentence explaining why.
 
 ANALYSIS
 3-5 paragraphs. Be specific — name the players, cite the numbers, argue your recommendation.
-Cover: player value relative to salary and contract year, cap impact, positional balance,
-category impact (especially the manager's weak categories), and fit with their competitive window.
+Cover: player value relative to salary and contract year, age vs the manager's competitive window,
+cap impact, positional balance, and category impact (especially the manager's weak categories).
+Weigh the last 30 days against the season line (who is rising or fading), expected stats against
+actuals (a hitter whose xwOBA/xSLG runs well above his actuals is likely underperforming his skill,
+and vice versa), and any IL/Minors flags — an injured or demoted player must be valued as such.
 Consider whether any player involved could be cut and re-signed cheaper at auction.
 Do not summarize both sides neutrally. Make the case.
 
@@ -422,6 +563,7 @@ tilt slightly in the manager's favor. Explain why the adjustment is justified.""
         + stats_block
         + my_roster_block
         + opp_roster_block
+        + "\n" + search_instructions
         + format_instructions
     )
 
@@ -530,17 +672,10 @@ async def build_finder_context(
     ).eq("league_id", league_id).neq("fantrax_team_id", my_team_id).execute()
     opp_rosters = roster_rows.data or []
 
-    # Resolve all opponent players to MLB IDs + player_type. Batch the IN filter —
+    # Resolve all opponent players to MLB IDs + player_type. Batched IN filter —
     # the full opponent pool (~250 IDs) can exceed PostgREST's query-length limit.
     all_ids = [item["id"] for r in opp_rosters for item in r["roster_items"]]
-    id_map = {}
-    for i in range(0, len(all_ids), 100):
-        chunk = all_ids[i:i + 100]
-        rows = sb.table("player_id_map").select(
-            "fantrax_id, full_name, player_type, mlb_id, mlb_team"
-        ).in_("fantrax_id", chunk).execute()
-        for row in (rows.data or []):
-            id_map[row["fantrax_id"]] = row
+    id_map = {row["fantrax_id"]: row for row in _select_id_map(sb, all_ids)}
 
     # Candidate pool: opponent players of the relevant type with a resolved MLB ID.
     candidates = []
@@ -554,6 +689,9 @@ async def build_finder_context(
                 "name": mapped["full_name"],
                 "mlb_id": mapped["mlb_id"],
                 "mlb_team": mapped.get("mlb_team") or "",
+                "age": mapped.get("age"),
+                "roster_status": mapped.get("roster_status") or "",
+                "il_type": mapped.get("il_type") or "",
                 "position": item.get("position", "?"),
                 "salary": item.get("salary", 0),
                 "contract": item.get("contract", {}).get("name", "?"),
@@ -592,14 +730,7 @@ async def build_finder_context(
     salary_cap = my_data.get("salary_cap")
 
     my_ids = [item["id"] for item in my_items]
-    my_id_map = {}
-    for i in range(0, len(my_ids), 100):
-        chunk = my_ids[i:i + 100]
-        rows = sb.table("player_id_map").select(
-            "fantrax_id, full_name, player_type, mlb_id"
-        ).in_("fantrax_id", chunk).execute()
-        for row in (rows.data or []):
-            my_id_map[row["fantrax_id"]] = row
+    my_id_map = {row["fantrax_id"]: row for row in _select_id_map(sb, my_ids)}
 
     my_assets = []
     for item in my_items:
@@ -611,6 +742,9 @@ async def build_finder_context(
             "name": mapped["full_name"],
             "mlb_id": mapped["mlb_id"],
             "player_type": mapped.get("player_type") or "hitter",
+            "age": mapped.get("age"),
+            "roster_status": mapped.get("roster_status") or "",
+            "il_type": mapped.get("il_type") or "",
             "position": item.get("position", "?"),
             "salary": item.get("salary", 0),
             "contract": item.get("contract", {}).get("name", "?"),
@@ -675,25 +809,26 @@ def build_finder_prompt(context: dict[str, Any]) -> str:
         f"Window: {league.get('competitive_window') or 'Not set'} | "
         f"Cap philosophy: {league.get('cap_philosophy') or 'Not set'}{cap_line}",
         "",
-        "Acquisition targets (id | player | owner | pos | $salary | contract yr | "
-        f"{category} | talent | value):",
+        "Acquisition targets (id | player | owner | pos | age | $salary | contract yr | "
+        f"{category} | talent | value; a [flag] marks IL or Minors):",
     ]
     for c in candidates:
         lines.append(
-            f"  {c['fantrax_id']} | {c['name']} | {c['owner_team_name']} | {c['position']} | "
+            f"  {c['fantrax_id']} | {c['name']}{_il_flag(c)} | {c['owner_team_name']} | "
+            f"{c['position']} | {_age_str(c.get('age'))} | "
             f"${c['salary']} | {c['contract']} yr | {category}={c['stat_value']} | "
             f"talent={_fmt_num(c.get('talent'))} | value={_fmt_num(c.get('value'))}"
         )
 
     lines += [
         "",
-        "Your tradeable assets (id | player | pos | $salary | contract yr | talent | value):",
+        "Your tradeable assets (id | player | pos | age | $salary | contract yr | talent | value):",
     ]
     if my_assets:
         for p in sorted(my_assets, key=lambda x: (x.get("value") or 0), reverse=True):
             lines.append(
-                f"  {p['fantrax_id']} | {p['name']} | {p['position']} | "
-                f"${p['salary']} | {p['contract']} yr | "
+                f"  {p['fantrax_id']} | {p['name']}{_il_flag(p)} | {p['position']} | "
+                f"{_age_str(p.get('age'))} | ${p['salary']} | {p['contract']} yr | "
                 f"talent={_fmt_num(p.get('talent'))} | value={_fmt_num(p.get('value'))}"
             )
     else:
@@ -702,7 +837,8 @@ def build_finder_prompt(context: dict[str, Any]) -> str:
     lines += [
         "",
         "Recommend the 2-3 most realistic acquisition targets and why, weighing their "
-        f"{category} production against salary and contract year. For EACH recommended target, "
+        f"{category} production against salary, contract year, and age (relative to the "
+        "manager's competitive window). For EACH recommended target, "
         "construct a specific, fair offer using ONLY players from 'Your tradeable assets' above "
         "— name them explicitly. Aim for the total value sent to land within ~15% of the "
         "target's value (a contender may pay slightly over; a rebuilder should aim slightly "
@@ -716,8 +852,8 @@ def build_finder_prompt(context: dict[str, Any]) -> str:
         "suggested packages should be a multi-player offer.",
         "",
         "Write 2-4 short paragraphs, then end your response with a fenced ```json block (and "
-        "nothing after it) listing the offers you described, using the numeric ids from the "
-        "lists above, in exactly this schema:",
+        "nothing after it) listing the offers you described, using the ids exactly as shown "
+        "in the lists above, in exactly this schema:",
         "```json",
         '[{"target_ids": ["<target id>"], "offer_ids": ["<your asset id>", "..."], '
         '"rationale": "<one sentence>"}]',
@@ -832,14 +968,7 @@ async def build_add_drop_context(
 
     # Resolve my roster + incoming rostered players in one batched pass.
     resolve_ids = [item["id"] for item in my_items] + incoming_ids
-    id_map: dict[str, dict] = {}
-    for i in range(0, len(resolve_ids), 100):
-        chunk = resolve_ids[i:i + 100]
-        rows = sb.table("player_id_map").select(
-            "fantrax_id, full_name, player_type, mlb_id, mlb_team, roster_status, il_type"
-        ).in_("fantrax_id", chunk).execute()
-        for row in (rows.data or []):
-            id_map[row["fantrax_id"]] = row
+    id_map: dict[str, dict] = {row["fantrax_id"]: row for row in _select_id_map(sb, resolve_ids)}
 
     sem = asyncio.Semaphore(12)
 
@@ -856,6 +985,7 @@ async def build_add_drop_context(
             "fantrax_id": item["id"],
             "name": mapped.get("full_name") or item.get("name") or f"Unknown ({item['id']})",
             "player_type": ptype,
+            "age": mapped.get("age"),
             "position": item.get("position", "?"),
             "salary": item.get("salary", 0),
             "contract": (item.get("contract") or {}).get("name", "?"),
@@ -933,8 +1063,11 @@ def build_add_drop_prompt(context: dict[str, Any]) -> str:
     spots = context["spots_needed"]
     cat_ranks = context.get("category_ranks", {})
     cap = context.get("salary_cap")
+    rules = context.get("rules") or LeagueRules()
 
-    weak = [c for c, r in cat_ranks.items() if isinstance(r, int) and r >= 7]
+    num_teams = rules.league_size
+    weak_threshold = max(2, math.ceil(num_teams * 0.7))
+    weak = [c for c, r in cat_ranks.items() if isinstance(r, int) and r >= weak_threshold]
     ranks_str = ", ".join(f"{c}:{r}" for c, r in cat_ranks.items()) if cat_ranks else "not set"
 
     incoming_lines = "\n".join(f"  {p['name']} | {p['position']}" for p in incoming) or "  (none)"
@@ -944,8 +1077,8 @@ def build_add_drop_prompt(context: dict[str, Any]) -> str:
         status = p["status"] or p["roster_status"] or "active"
         il = f" ({p['il_type']})" if p["il_type"] else ""
         drop_lines.append(
-            f"  {p['fantrax_id']} | {p['name']} | {p['position']} | ${p['salary']} | "
-            f"{p['contract']} yr | {status}{il} | "
+            f"  {p['fantrax_id']} | {p['name']} | {p['position']} | {_age_str(p.get('age'))} | "
+            f"${p['salary']} | {p['contract']} yr | {status}{il} | "
             f"talent={_fmt_num(p.get('talent'))} | value={_fmt_num(p.get('value'))}"
         )
     roster_block = "\n".join(drop_lines) or "  (none)"
@@ -968,7 +1101,7 @@ def build_add_drop_prompt(context: dict[str, Any]) -> str:
         f"Already dropping/trading away: {', '.join(outgoing) or 'none'}",
         spots_line,
         "",
-        f"Category ranks (1=best, 10=worst): {ranks_str}"
+        f"Category ranks (1=best, {num_teams}=worst): {ranks_str}"
         + (f"\nWeakest categories: {', '.join(weak)}" if weak else ""),
     ]
     if cap:
@@ -978,7 +1111,7 @@ def build_add_drop_prompt(context: dict[str, Any]) -> str:
         "Each drop candidate carries talent (0-100 production percentile, cost-blind) and value "
         "(talent adjusted for salary/contract). Lower = more expendable, all else equal.",
         "",
-        "Drop candidates (id | player | pos | $salary | contract yr | status | talent | value):",
+        "Drop candidates (id | player | pos | age | $salary | contract yr | status | talent | value):",
         roster_block,
         "",
         f"{ask} to make this work. Rank them from most to least droppable. For EACH, give a "

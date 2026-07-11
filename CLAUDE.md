@@ -12,9 +12,10 @@ Branch → PR → CI green → **squash-merge to main** → **Vercel** (frontend
 
 ## Backend shape (`api/main.py` + `engine/`)
 - Singletons: `get_supabase()` (`engine/supabase_client.py`, service-role). **BYOK:** `get_ai_client_for_league()` resolves the league owner's own Anthropic key (encrypted in `user_secrets`), raising 402 `NoApiKeyError` when unset — there is no shared key.
-- **Models:** `MODEL_TRADE = "claude-opus-4-8"` (trade), `MODEL_DASHBOARD = "claude-sonnet-5"` (news/start_sit/waiver — thinking explicitly disabled via `_NO_THINKING` since Sonnet 5 defaults it on). All AI prompts are date-anchored via `_today_line()`.
+- **Models:** `MODEL_TRADE = "claude-opus-4-8"` (trade — **adaptive thinking ON** via `_ADAPTIVE_THINKING`; Opus runs thinking-off when the param is omitted, so don't drop it), `MODEL_DASHBOARD = "claude-sonnet-5"` (news/start_sit/waiver — thinking explicitly disabled via `_NO_THINKING` since Sonnet 5 defaults it on). Web search tool is `web_search_20260209`; `/trade/analyze` gets a bounded `_TRADE_WEB_SEARCH` (`max_uses: 4`) to verify injuries/roster moves — searches bill the owner's BYOK key. All AI prompts are date-anchored via `_today_line()`.
+- **Trade/AI streaming protocol:** `/trade/analyze`, `/trade/finder`, and `/waivers/add-drop` all stream **ndjson events** (`meta` → `text` deltas → `done`/`packages`, errors as `error` events with stable codes). The immediate `meta` event commits the response before Opus finishes thinking, avoiding the Vercel proxy timeout.
 - **`dashboard_cache`** table: per-`(league_id, widget)` cache, 4h TTL via `_check_cache`/`_upsert_cache`; widgets: `news`, `start_sit`, `waiver`, `category_ranks`, `minors`. `force: true` bypasses.
-- **`player_id_map`** table: `fantrax_id → mlb_id, full_name, mlb_team, player_type, roster_status, il_type`. `roster_status` **and** `mlb_team` are refreshed every sync (`refresh_roster_statuses`).
+- **`player_id_map`** table: `fantrax_id → mlb_id, full_name, mlb_team, player_type, roster_status, il_type, age`. `roster_status`, `mlb_team` **and** `age` are refreshed every sync (`refresh_roster_statuses`). The `age` column ships in `20260711_player_id_map_age.sql`; all reads/writes tolerate it being absent pre-migration (`_select_id_map` / `_update_id_map`).
 - Key endpoints: `/roster/sync` (kicks off a background resolve + status refresh of the whole league), `/dashboard/{news,start_sit,waiver,minors}`, `/trade/{analyze,finder}`, `/league/{standings,category-ranks,category-ranks/compute}`, `/admin/overview` (owner-only via `ADMIN_EMAILS`; usage + error/support view).
 - **`app_events`** table: best-effort error log written by a **global exception handler** (`_log_event`, logs 5xx only — expected 4xx like the 402 no-key are skipped), surfaced in the admin dashboard. `user_secrets` and `app_events` have RLS **on with no client policies** — backend service-role only.
 - `engine/`: `roster_analyzer` (CSV), `fantrax_client` (Fantrax **fxea** API), `player_resolver`, `mlb_stats_client`, `trade_analyzer`, `category_ranks`; also `sleeper_client`/`sleeper_sync`/`nfl_*` for Sleeper football, `crypto` (BYOK Fernet), `auth` (Supabase JWT).
@@ -30,6 +31,7 @@ Branch → PR → CI green → **squash-merge to main** → **Vercel** (frontend
 - **MLB Stats API takes one `sportId` per call** (comma-joined returns nothing). MiLB sport IDs: 11 AAA, 12 AA, 13 A+, 14 A.
 - Heavy stat fetches (trade finder, category compute) must be **bounded/backgrounded** or Vercel times out the proxy (`ROUTER_EXTERNAL_TARGET_ERROR`).
 - **Fantrax `getStandings` gives overall standings only — no category ranks.** Category ranks are *approximated* from rosters + season stats (`engine/category_ranks.py`).
+- NFL roster items embed `age`/`years_exp`/`injury_status` from the Sleeper players dump at sync time — existing leagues only pick these up on their next sync.
 - Settings **reconnect** reuses the existing league row by `fantrax_league_id`; **deleting** a league cascade-wipes its cache/ranks/snapshots/rosters.
 - DB migrations live in `supabase/migrations/` and are **applied manually** in the Supabase SQL editor.
 

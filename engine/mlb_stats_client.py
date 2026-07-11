@@ -193,9 +193,9 @@ async def fetch_recent_stats(mlb_id: int, season: int, player_type: str) -> dict
 
 def fetch_roster_status(mlb_id: int) -> dict:
     """
-    Fetches current MLB roster status + current team for a player.
+    Fetches current MLB roster status + current team + age for a player.
     Returns {"roster_status": "Active"|"IL"|"Minors"|None, "il_type": "10-Day IL"|...|None,
-             "mlb_team": str|None}.
+             "mlb_team": str|None, "age": int|None}.
     Never raises.
     """
     try:
@@ -207,9 +207,10 @@ def fetch_roster_status(mlb_id: int) -> dict:
         resp.raise_for_status()
         people = resp.json().get("people", [])
         if not people:
-            return {"roster_status": None, "il_type": None, "mlb_team": None}
+            return {"roster_status": None, "il_type": None, "mlb_team": None, "age": None}
 
         person = people[0]
+        age = person.get("currentAge")
 
         # Prefer rosterEntries — find the active entry (no endDate)
         entries = person.get("rosterEntries", [])
@@ -248,11 +249,16 @@ def fetch_roster_status(mlb_id: int) -> dict:
         else:
             roster_status, il_type = (description or None), None
 
-        return {"roster_status": roster_status, "il_type": il_type, "mlb_team": team_name}
+        return {
+            "roster_status": roster_status,
+            "il_type": il_type,
+            "mlb_team": team_name,
+            "age": age if isinstance(age, int) else None,
+        }
 
     except Exception as e:
         print(f"[roster_status] Error fetching status for mlb_id {mlb_id}: {e}")
-        return {"roster_status": None, "il_type": None, "mlb_team": None}
+        return {"roster_status": None, "il_type": None, "mlb_team": None, "age": None}
 
 
 # MiLB sport IDs, highest level first.
