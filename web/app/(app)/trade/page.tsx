@@ -598,18 +598,47 @@ export default function TradePage() {
       if (!res.body) throw new Error("No response body");
       clearIssue();
 
+      // ndjson events (same protocol as the finder): `meta` commits the stream
+      // before the model finishes thinking, `text` deltas carry the analysis,
+      // and key/billing errors arrive as `error` events after the 200.
+      let full = "";
+      let failed = false;
+      const apply = (evt: { type?: string; delta?: string; detail?: string }) => {
+        if (evt.type === "text") {
+          full += evt.delta ?? "";
+          setStreamText(full);
+        } else if (evt.type === "error") {
+          failed = true;
+          const issue = aiIssueFromDetail(evt.detail);
+          if (issue) reportIssue(issue);
+          else if (evt.detail === "rate_limited")
+            setError("Anthropic is rate-limiting your key — try again in a moment.");
+          else setError(evt.detail ?? "Something went wrong.");
+        }
+      };
+
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
-
-      let full = "";
+      let buf = "";
+      const flush = (line: string) => {
+        const t = line.trim();
+        if (!t) return;
+        try {
+          apply(JSON.parse(t));
+        } catch {
+          /* ignore a partial/garbled line */
+        }
+      };
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        const chunk = decoder.decode(value);
-        full += chunk;
-        setStreamText((prev) => prev + chunk);
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split("\n");
+        buf = lines.pop() ?? "";
+        for (const line of lines) flush(line);
       }
-      saveHistory(full);
+      flush(buf);
+      if (!failed && full) saveHistory(full);
     } catch (e: any) {
       setError(e?.message ?? "Something went wrong.");
     } finally {

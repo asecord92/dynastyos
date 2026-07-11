@@ -50,6 +50,30 @@ def save_mapping(mapping: dict) -> None:
         print(f"[resolver] Supabase write error for {mapping.get('fantrax_id')}: {e}")
 
 
+# Caches whether the player_id_map.age column exists yet (the migration is
+# applied manually in Supabase). A failed update retries without the column so
+# status refreshes keep working pre-migration.
+_age_column_available: bool | None = None
+
+
+def _update_id_map(supabase, fantrax_id: str, update: dict) -> None:
+    """Update a player_id_map row, dropping the ``age`` key transparently if the
+    column doesn't exist yet."""
+    global _age_column_available
+    if _age_column_available is False:
+        update.pop("age", None)
+    try:
+        supabase.table("player_id_map").update(update).eq("fantrax_id", fantrax_id).execute()
+        if "age" in update:
+            _age_column_available = True
+    except Exception:
+        if "age" not in update:
+            raise
+        update.pop("age")
+        supabase.table("player_id_map").update(update).eq("fantrax_id", fantrax_id).execute()
+        _age_column_available = False
+
+
 def pick_match(people: list, team: str) -> tuple[dict, str] | tuple[None, None]:
     """
     Given a list of MLB API people, try to pick the right one.
@@ -130,11 +154,13 @@ def resolve_player(
     # Enrich with current roster status (separate update so ID mapping is saved even if this fails)
     try:
         status_data = fetch_roster_status(person["id"])
-        supabase = get_supabase()
-        supabase.table("player_id_map").update({
+        update = {
             "roster_status": status_data["roster_status"],
             "il_type": status_data["il_type"],
-        }).eq("fantrax_id", fantrax_id).execute()
+        }
+        if status_data.get("age") is not None:
+            update["age"] = status_data["age"]
+        _update_id_map(get_supabase(), fantrax_id, update)
     except Exception as e:
         print(f"[resolver] Failed to update roster status for {fantrax_id}: {e}")
 
@@ -181,7 +207,9 @@ def refresh_roster_statuses(fantrax_ids: list[str]) -> None:
             # optioned-then-recalled player stays stuck on his old (AAA) team.
             if status_data.get("mlb_team"):
                 update["mlb_team"] = status_data["mlb_team"]
-            supabase.table("player_id_map").update(update).eq("fantrax_id", fantrax_id).execute()
+            if status_data.get("age") is not None:
+                update["age"] = status_data["age"]
+            _update_id_map(supabase, fantrax_id, update)
             updated += 1
         except Exception as e:
             print(f"[refresh_status] Failed for {fantrax_id}: {e}")

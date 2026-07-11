@@ -74,14 +74,24 @@ def pick_value(season: int, rnd: int, next_season: int) -> float:
 
 
 def _value_players(players: list, stats: dict, fmt_key: str) -> None:
-    """Attach `points` (season fantasy points) and `value` (percentile of points
-    *within the player's position*) to each player dict. Within-position so a WR
-    is compared to WRs, not to higher-scoring QBs — otherwise raw points rank
-    every QB above every WR/TE regardless of quality. Mutates in place."""
+    """Attach `points` (season fantasy points), `gp`/`ppg`, `pos_rank` (Sleeper's
+    league-wide positional rank for the scoring format), and `value` (percentile
+    of points *within the player's position*) to each player dict. Within-position
+    so a WR is compared to WRs, not to higher-scoring QBs — otherwise raw points
+    rank every QB above every WR/TE regardless of quality. Mutates in place."""
+    pos_rank_key = fmt_key.replace("pts_", "pos_rank_")
     for p in players:
         s = stats.get(p["id"]) or {}
         pts = s.get(fmt_key)
         p["points"] = round(float(pts), 1) if isinstance(pts, (int, float)) else None
+        gp = s.get("gp")
+        p["gp"] = int(gp) if isinstance(gp, (int, float)) and gp > 0 else None
+        p["ppg"] = (
+            round(p["points"] / p["gp"], 1)
+            if p["points"] is not None and p["gp"] else None
+        )
+        rank = s.get(pos_rank_key)
+        p["pos_rank"] = int(rank) if isinstance(rank, (int, float)) else None
     by_pos: dict[str, list] = {}
     for p in players:
         by_pos.setdefault(p.get("position") or "?", []).append(p)
@@ -142,9 +152,14 @@ def build_nfl_system_prompt(rules: dict) -> str:
 You give direct, defensible recommendations — not balanced summaries. You have a point of view and
 you back it up with specifics. You never hedge without committing to a final answer.
 
-IMPORTANT: Only reference player facts explicitly provided in this prompt — position, team, recent
-fantasy production, and the value figures given. Do not use training knowledge to invent injuries,
-depth-chart roles, or stats not provided; player situations change frequently.
+IMPORTANT: Only reference player facts explicitly provided in this prompt — position, team, age,
+injury status, fantasy production, and the value figures given. Do not use training knowledge to
+invent injuries, depth-chart roles, or stats not provided; player situations change frequently.
+
+Data grounding: rosters, ages, and injury designations below come from live Sleeper data and may
+lag reality by up to ~24 hours. If a fact you need is not provided (and not confirmed by a web
+search result when search is available), treat it as unknown — say so explicitly and tell the
+manager what to verify, rather than guessing.
 
 League format:
 - {size}-team dynasty league, {fmt} scoring, {sf}
@@ -152,17 +167,35 @@ League format:
 - Draft picks are tradeable assets; earlier rounds and nearer years are worth more
 - Weigh roster construction, age / dynasty window, and bye weeks alongside raw production
 
-Each player's `value` is a 0-100 percentile of last season's fantasy points within the trade pool;
-picks carry a comparable estimate. Use these to gauge balance, but adjust for positional scarcity
-(QB in superflex, premium RB/WR) and dynasty age/upside — don't treat value as gospel."""
+Players carry age, injury status when listed, season fantasy points with games played and
+points-per-game, and a positional rank (e.g. WR12 = 12th-best WR league-wide that season in this
+scoring format). Each player's `value` is a 0-100 percentile of season fantasy points within the
+trade pool; picks carry a comparable estimate. Use these to gauge balance, but adjust for
+positional scarcity (QB in superflex, premium RB/WR) and dynasty age/upside — an aging RB's points
+overstate his dynasty worth, a 22-year-old's understate it. Don't treat value as gospel."""
 
 
 def _fmt_asset(a: dict) -> str:
     if a.get("is_pick"):
         return f"{a['name']} (pick) | value {a.get('value', '?')}"
     pts = a.get("points")
-    pts_str = f"{pts} pts" if pts is not None else "no recent pts"
-    return f"{a['name']} | {a.get('position', '?')} {a.get('team', '')} | {pts_str} | value {a.get('value', '?')}"
+    if pts is not None:
+        extras = []
+        if a.get("gp"):
+            extras.append(f"{a['gp']} gp")
+        if a.get("ppg") is not None:
+            extras.append(f"{a['ppg']} ppg")
+        if a.get("pos_rank"):
+            extras.append(f"{a.get('position', '')}{a['pos_rank']}")
+        pts_str = f"{pts} pts" + (f" ({', '.join(extras)})" if extras else "")
+    else:
+        pts_str = "no recent pts"
+    age = f"{a['age']}yo" if a.get("age") else "age ?"
+    inj = f" | INJ: {a['injury_status']}" if a.get("injury_status") else ""
+    return (
+        f"{a['name']} | {a.get('position', '?')} {a.get('team', '')} | {age}{inj} | "
+        f"{pts_str} | value {a.get('value', '?')}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -200,6 +233,7 @@ async def build_nfl_trade_context(
         "sport": "NFL",
         "league": league,
         "rules": rules,
+        "stats_season": season,
         "my_team_name": my.get("team_name", "Your team"),
         "opp_team_name": opp.get("team_name", "Opponent"),
         "my_players": my_players,
@@ -228,12 +262,17 @@ def build_nfl_trade_prompt(context: dict[str, Any]) -> str:
             lines.append("  Picks: " + ", ".join(f"{p['name']} (v{p.get('value')})" for p in picks))
         return "\n".join(lines)
 
+    stats_year = context.get("stats_season") or stats_season()
     return "\n".join([
         _nfl_today_line(),
         "",
         f"Manager's team: {context['my_team_name']} | "
         f"Window: {league.get('competitive_window') or 'Not set'} | "
         f"Goals: {league.get('goals') or 'Not set'}",
+        "",
+        f"Fantasy points below are {stats_year} regular-season totals in this league's scoring "
+        "format (gp = games played, ppg = points per game, and e.g. WR12 = league-wide positional "
+        "rank that season).",
         "",
         "Proposed trade:",
         f"  Manager GIVES: {', '.join(_fmt_asset(a) for a in giving) or '(nothing)'}",
@@ -242,14 +281,24 @@ def build_nfl_trade_prompt(context: dict[str, Any]) -> str:
         roster_block(f"Manager's roster ({context['my_team_name']})", context["my_players"], context["my_picks"]),
         roster_block(f"Opponent's roster ({context['opp_team_name']})", context["opp_players"], context["opp_picks"]),
         "",
-        """Respond in exactly this format:
+        """Before finalizing your verdict, use web search (a few targeted searches at most) to verify
+the current situation of the key players in this trade — injuries, depth-chart or role changes,
+team changes, and holdouts from roughly the last two weeks. Incorporate only facts you actually
+confirmed and note the date of any news you cite. If search turns up nothing new, proceed
+confidently with the data above. Never let unverified memory of a player override the data
+provided here.
+
+Respond in exactly this format:
 
 VERDICT
 ACCEPT, DECLINE, or COUNTER — one punchy sentence on why.
 
 ANALYSIS
-3-5 paragraphs. Name the players and picks, cite the value/points, and argue the call. Cover
-positional scarcity (QB in superflex), dynasty age/window, depth impact, and pick value. Make the case.
+3-5 paragraphs. Name the players and picks, cite the points/ppg/positional ranks and ages, and
+argue the call. Cover positional scarcity (QB in superflex), dynasty age/window (weigh each
+player's age against the manager's competitive window), injury flags, per-game production vs raw
+totals (a high total on 17 games is different from the same total on 12), depth impact, and pick
+value. Make the case.
 
 COUNTER OFFER
 If COUNTER, propose a specific tweak (swap/add/remove a player or pick) that stays within this deal
@@ -328,6 +377,7 @@ async def build_nfl_finder_context(
         "sport": "NFL",
         "league": league,
         "rules": rules,
+        "stats_season": season,
         "target_position": target_position,
         "candidates": candidates,
         "my_assets": my_assets,
@@ -340,23 +390,24 @@ def build_nfl_finder_prompt(context: dict[str, Any]) -> str:
     my_assets = context["my_assets"]
     league = context["league"]
 
+    stats_year = context.get("stats_season") or stats_season()
     lines = [
         _nfl_today_line(),
         "",
         f"The manager needs help at {pos}. Below are the best {pos} targets across the league, "
-        "ranked by last season's fantasy points. Each carries a 0-100 value (points percentile); "
-        "your tradeable assets — players and draft picks — carry comparable values.",
+        f"ranked by {stats_year} regular-season fantasy points in this league's scoring format "
+        "(gp = games played, ppg = points per game, WR12-style = league-wide positional rank). "
+        "Each carries a 0-100 value (points percentile); your tradeable assets — players and "
+        "draft picks — carry comparable values. Weigh age and injury flags against the manager's "
+        "window, and per-game production against raw totals.",
         "",
         f"Manager's team: {league.get('name', 'Unknown')} | "
         f"Window: {league.get('competitive_window') or 'Not set'}",
         "",
-        f"Acquisition targets at {pos} (id | player | team | points | value | owner):",
+        f"Acquisition targets at {pos} (id | player | pos team | age | points | value | owner):",
     ]
     for c in candidates:
-        lines.append(
-            f"  {c['id']} | {c['name']} | {c.get('team','')} | "
-            f"{c.get('points','?')} pts | value {c.get('value','?')} | {c['owner_team_name']}"
-        )
+        lines.append(f"  {c['id']} | {_fmt_asset(c)} | {c['owner_team_name']}")
     lines += ["", "Your tradeable assets (id | asset | value):"]
     for a in sorted(my_assets, key=lambda x: (x.get("value") or 0), reverse=True):
         lines.append(f"  {a['id']} | {_fmt_asset(a)}")
@@ -464,8 +515,9 @@ def build_nfl_add_drop_prompt(context: dict[str, Any]) -> str:
     drop_lines = []
     for p in sorted(drops, key=lambda x: (x.get("value") is not None, x.get("value") or 0)):
         inj = f" | {p['injury_status']}" if p.get("injury_status") else ""
+        age = f"{p['age']}yo" if p.get("age") else "age ?"
         drop_lines.append(
-            f"  {p['id']} | {p['name']} | {p.get('position', '?')} {p.get('team', '')} | "
+            f"  {p['id']} | {p['name']} | {p.get('position', '?')} {p.get('team', '')} | {age} | "
             f"{p.get('status', '')}{inj} | {p.get('points', '?')} pts | value {p.get('value', '?')}"
         )
     roster_block = "\n".join(drop_lines) or "  (none)"
@@ -492,7 +544,7 @@ def build_nfl_add_drop_prompt(context: dict[str, Any]) -> str:
         "percentile WITHIN their position, so compare like-for-like). Lower value = more "
         "expendable at that position, all else equal.",
         "",
-        "Drop candidates (id | player | pos team | status | points | value):",
+        "Drop candidates (id | player | pos team | age | status | points | value):",
         roster_block,
         "",
         f"{ask} to make this work. Rank them from most to least droppable. For EACH, give a "

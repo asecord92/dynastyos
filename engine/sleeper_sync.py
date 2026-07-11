@@ -94,5 +94,8 @@ def build_roster_items(player_ids: list, starters: list, players: dict) -> list:
             "team": meta.get("team") or meta.get("team_abbr") or "",
             "status": "starter" if pid in starter_set else "bench",
             "injury_status": meta.get("injury_status"),
+            # Dynasty-window grounding for the trade prompts.
+            "age": meta.get("age"),
+            "years_exp": meta.get("years_exp"),
         })
     return items

@@ -198,13 +198,43 @@ export function AddDropPanel({
       if (!res.body) throw new Error("No response body");
       clearIssue();
 
+      // ndjson events (same protocol as the trade analyzer): `meta` commits the
+      // stream early, `text` deltas carry the recommendation, and key/billing
+      // errors arrive as `error` events after the 200.
+      let full = "";
+      const apply = (evt: { type?: string; delta?: string; detail?: string }) => {
+        if (evt.type === "text") {
+          full += evt.delta ?? "";
+          setStreamText(full);
+        } else if (evt.type === "error") {
+          const issue = aiIssueFromDetail(evt.detail);
+          if (issue) reportIssue(issue);
+          else if (evt.detail === "rate_limited")
+            setError("Anthropic is rate-limiting your key — try again in a moment.");
+          else setError(evt.detail ?? "Something went wrong.");
+        }
+      };
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
+      let buf = "";
+      const flush = (line: string) => {
+        const t = line.trim();
+        if (!t) return;
+        try {
+          apply(JSON.parse(t));
+        } catch {
+          /* ignore a partial/garbled line */
+        }
+      };
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
-        setStreamText((prev) => prev + decoder.decode(value));
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split("\n");
+        buf = lines.pop() ?? "";
+        for (const line of lines) flush(line);
       }
+      flush(buf);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Something went wrong.");
     } finally {

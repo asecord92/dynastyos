@@ -8,7 +8,6 @@ from fastapi import FastAPI, UploadFile, File, Query, HTTPException, BackgroundT
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
-from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel
 import anthropic
 from datetime import datetime, timedelta, timezone
@@ -196,7 +195,19 @@ MODEL_DASHBOARD = "claude-sonnet-5"
 # these prompts were tuned for on Sonnet 4.6.
 _NO_THINKING = {"type": "disabled"}
 
-_WEB_SEARCH = [{"type": "web_search_20250305", "name": "web_search"}]
+# Opus 4.8 runs WITHOUT thinking when the parameter is omitted — trade analysis
+# is the app's deepest reasoning surface, so it explicitly opts in to adaptive
+# thinking. Thinking tokens count against max_tokens, hence the generous caps
+# on the trade calls below.
+_ADAPTIVE_THINKING = {"type": "adaptive"}
+
+# web_search_20260209 (dynamic filtering built in) — supported by both Sonnet 5
+# (dashboard widgets) and Opus 4.8 (trade analysis).
+_WEB_SEARCH = [{"type": "web_search_20260209", "name": "web_search"}]
+
+# Trade analysis gets a bounded search allowance to verify injuries / roster
+# moves newer than the 24h stats cache. Searches bill the owner's BYOK key.
+_TRADE_WEB_SEARCH = [{"type": "web_search_20260209", "name": "web_search", "max_uses": 4}]
 
 # Bring-your-own-key (BYOK): every AI call uses the league OWNER's own Anthropic
 # key, stored encrypted in `user_secrets`. There is no shared fallback — friends
@@ -1365,40 +1376,36 @@ async def trade_analyze(
 
         ai = get_ai_client_for_league(get_supabase(), body.league_id)
 
+        # ndjson protocol (same as /trade/finder): an immediate `meta` event
+        # commits the response before Opus starts thinking — adaptive thinking
+        # can take tens of seconds before the first text token, which would
+        # otherwise trip the Vercel proxy timeout. AI/key errors stream as
+        # stable-code `error` events the frontend routes to the global banner.
+        def event(obj: dict) -> str:
+            return _json.dumps(obj) + "\n"
+
         def stream():
-            with ai.messages.stream(
-                model=MODEL_TRADE,
-                max_tokens=2000,
-                system=system_prompt,
-                messages=[{"role": "user", "content": prompt}],
-            ) as s:
-                for text in s.text_stream:
-                    yield text
-
-        # Pull the first chunk eagerly so an out-of-credits / bad-key error raises
-        # here as a real HTTP status, instead of dying mid-stream after the 200 has
-        # already been committed. `_ai_http_error` maps it to 402/429; unknown 500s.
-        # Run in a threadpool so waiting on the first token doesn't block the loop.
-        gen = stream()
-
-        def _pull_first():
+            yield event({"type": "meta"})
             try:
-                return next(gen), None
-            except StopIteration:
-                return "", None
+                with ai.messages.stream(
+                    model=MODEL_TRADE,
+                    max_tokens=8000,
+                    thinking=_ADAPTIVE_THINKING,
+                    tools=_TRADE_WEB_SEARCH,
+                    system=system_prompt,
+                    messages=[{"role": "user", "content": prompt}],
+                ) as s:
+                    for text in s.text_stream:
+                        yield event({"type": "text", "delta": text})
+                yield event({"type": "done"})
             except anthropic.APIStatusError as e:
-                return None, e
+                traceback.print_exc()
+                yield event({"type": "error", "detail": _ai_error_code(e) or str(e)})
+            except Exception as e:
+                traceback.print_exc()
+                yield event({"type": "error", "detail": str(e)})
 
-        first, ai_err = await run_in_threadpool(_pull_first)
-        if ai_err is not None:
-            raise _ai_http_error(ai_err) or HTTPException(status_code=500, detail=str(ai_err))
-
-        def stream_from_first():
-            if first:
-                yield first
-            yield from gen
-
-        return StreamingResponse(stream_from_first(), media_type="text/plain")
+        return StreamingResponse(stream(), media_type="application/x-ndjson")
 
     except HTTPException:
         raise
@@ -1496,38 +1503,32 @@ async def waivers_add_drop(
             system_prompt = build_system_prompt(context["rules"], context["sport"])
         ai = get_ai_client_for_league(sb, body.league_id)
 
+        # ndjson protocol — same as /trade/analyze: immediate `meta` event so the
+        # proxy sees bytes before Opus finishes thinking; errors stream as events.
+        def event(obj: dict) -> str:
+            return _json.dumps(obj) + "\n"
+
         def stream():
-            with ai.messages.stream(
-                model=MODEL_TRADE,
-                max_tokens=1500,
-                system=system_prompt,
-                messages=[{"role": "user", "content": prompt}],
-            ) as s:
-                for text in s.text_stream:
-                    yield text
-
-        # Eager first chunk (in a threadpool) so key/billing errors surface as a
-        # real status instead of dying mid-stream — same pattern as /trade/analyze.
-        gen = stream()
-
-        def _pull_first():
+            yield event({"type": "meta"})
             try:
-                return next(gen), None
-            except StopIteration:
-                return "", None
+                with ai.messages.stream(
+                    model=MODEL_TRADE,
+                    max_tokens=6000,
+                    thinking=_ADAPTIVE_THINKING,
+                    system=system_prompt,
+                    messages=[{"role": "user", "content": prompt}],
+                ) as s:
+                    for text in s.text_stream:
+                        yield event({"type": "text", "delta": text})
+                yield event({"type": "done"})
             except anthropic.APIStatusError as e:
-                return None, e
+                traceback.print_exc()
+                yield event({"type": "error", "detail": _ai_error_code(e) or str(e)})
+            except Exception as e:
+                traceback.print_exc()
+                yield event({"type": "error", "detail": str(e)})
 
-        first, ai_err = await run_in_threadpool(_pull_first)
-        if ai_err is not None:
-            raise _ai_http_error(ai_err) or HTTPException(status_code=500, detail=str(ai_err))
-
-        def stream_from_first():
-            if first:
-                yield first
-            yield from gen
-
-        return StreamingResponse(stream_from_first(), media_type="text/plain")
+        return StreamingResponse(stream(), media_type="application/x-ndjson")
 
     except HTTPException:
         raise
@@ -1627,7 +1628,8 @@ async def trade_finder(
         try:
             with ai.messages.stream(
                 model=MODEL_TRADE,
-                max_tokens=2000,
+                max_tokens=8000,
+                thinking=_ADAPTIVE_THINKING,
                 system=system_prompt,
                 messages=[{"role": "user", "content": prompt}],
             ) as s:
@@ -1793,7 +1795,7 @@ Do not include any preamble, introduction, or horizontal rules (---). Do not say
             model=MODEL_DASHBOARD,
             max_tokens=3000,
             thinking=_NO_THINKING,
-            tools=[{"type": "web_search_20250305", "name": "web_search"}],
+            tools=_WEB_SEARCH,
             messages=[{"role": "user", "content": prompt}],
         )
         content = _extract_text(response)
@@ -1971,7 +1973,7 @@ Rules:
             model=MODEL_DASHBOARD,
             max_tokens=5000,
             thinking=_NO_THINKING,
-            tools=[{"type": "web_search_20250305", "name": "web_search"}],
+            tools=_WEB_SEARCH,
             messages=[{"role": "user", "content": prompt}],
         )
         raw_text = _extract_text(response)
@@ -2175,7 +2177,7 @@ Do not include any preamble or introduction. Start directly with the first playe
             model=MODEL_DASHBOARD,
             max_tokens=5000,
             thinking=_NO_THINKING,
-            tools=[{"type": "web_search_20250305", "name": "web_search"}],
+            tools=_WEB_SEARCH,
             messages=[{"role": "user", "content": prompt}],
         )
         content = _extract_text(response)
