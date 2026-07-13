@@ -98,7 +98,17 @@ export function CategoryRanksWidget({
       const authHeader: Record<string, string> = token
         ? { Authorization: `Bearer ${token}` }
         : {};
-      const before = updatedAt;
+
+      // Read the currently-stored timestamp fresh, so clicking "Auto" before the
+      // on-mount fetch resolves doesn't capture a null/seed `before` and mistake
+      // the existing ranks for a new result.
+      let before = updatedAt;
+      const baseline = await fetch(`/api/league/category-ranks?league_id=${leagueId}`, {
+        headers: authHeader,
+      });
+      if (baseline.ok) {
+        before = (await baseline.json()).updated_at ?? before;
+      }
 
       const res = await fetch("/api/league/category-ranks/compute", {
         method: "POST",
@@ -107,8 +117,11 @@ export function CategoryRanksWidget({
       });
       if (!res.ok) throw new Error(await res.text());
 
-      for (let i = 0; i < 15; i++) {
-        await new Promise((r) => setTimeout(r, 6000));
+      // Poll immediately, then back off. A warm cache finishes in ~1-2s, so the
+      // old fixed 6s pre-sleep just added dead latency.
+      const delays = [1500, 2000, 2500, 3000, 3000, 4000, 4000, 5000, 5000,
+        6000, 6000, 6000, 6000, 6000, 6000, 6000, 6000, 6000, 6000];
+      for (const delay of delays) {
         const poll = await fetch(`/api/league/category-ranks?league_id=${leagueId}`, {
           headers: authHeader,
         });
@@ -121,6 +134,7 @@ export function CategoryRanksWidget({
             break;
           }
         }
+        await new Promise((r) => setTimeout(r, delay));
       }
     } catch {}
     finally { setComputing(false); }
