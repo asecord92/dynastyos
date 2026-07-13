@@ -50,9 +50,11 @@ def get_cached_stats_bulk(mlb_ids: list[int]) -> dict[int, dict]:
         supabase = get_supabase()
         ids = list({int(m) for m in mlb_ids})
         for i in range(0, len(ids), 100):
+            # Only the columns the caller needs — pulling the big recent_stats
+            # JSONB for a whole league bloats the payload and lengthens the block.
             result = (
                 supabase.table("player_stats")
-                .select("*")
+                .select("mlb_id, season_stats, refreshed_at")
                 .in_("mlb_id", ids[i:i + 100])
                 .execute()
             )

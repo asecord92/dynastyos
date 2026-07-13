@@ -64,7 +64,10 @@ async def compute_category_ranks(league_id: str, my_team_id: str, concurrency: i
         for m in id_map.values()
         if m.get("mlb_id")
     }
-    cached = get_cached_stats_bulk(list(unique.keys()))
+    # Offload the blocking bulk read to a thread. The Supabase client is
+    # synchronous, and running it inline froze the whole event loop while it
+    # pulled the league's cached stats — stalling every other request (499s).
+    cached = await asyncio.to_thread(get_cached_stats_bulk, list(unique.keys()))
     season_by_mlb = {
         mid: (row or {}).get("season_stats", {}) for mid, row in cached.items()
     }
