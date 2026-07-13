@@ -38,6 +38,32 @@ def get_cached_stats(mlb_id: int) -> dict | None:
     return None
 
 
+def get_cached_stats_bulk(mlb_ids: list[int]) -> dict[int, dict]:
+    """Return fresh cached stats for many players in one round-trip per 100 ids,
+    keyed by mlb_id. Stale or missing ids are simply absent from the result — the
+    caller fetches those individually. Mirrors the freshness rule in
+    get_cached_stats so a warm cache avoids ~one SELECT per player."""
+    out: dict[int, dict] = {}
+    if not mlb_ids:
+        return out
+    try:
+        supabase = get_supabase()
+        ids = list({int(m) for m in mlb_ids})
+        for i in range(0, len(ids), 100):
+            result = (
+                supabase.table("player_stats")
+                .select("*")
+                .in_("mlb_id", ids[i:i + 100])
+                .execute()
+            )
+            for row in (result.data or []):
+                if not is_stale(row["refreshed_at"]):
+                    out[row["mlb_id"]] = row
+    except Exception as e:
+        print(f"[stats] Supabase bulk read error: {e}")
+    return out
+
+
 def save_stats(mlb_id: int, season: int, player_type: str, season_stats: dict, recent_stats: dict) -> None:
     """Persist stats to Supabase."""
     try:

@@ -1,7 +1,7 @@
 import asyncio
 
 from .supabase_client import get_supabase
-from .mlb_stats_client import get_player_stats
+from .mlb_stats_client import get_player_stats, get_cached_stats_bulk
 
 # category -> (season_stat key, weight key for rate stats or None, higher_is_better)
 # Counting stats sum across the roster; rate stats (OBP/ERA/WHIP) are weighted by
@@ -55,20 +55,30 @@ async def compute_category_ranks(league_id: str, my_team_id: str, concurrency: i
         for r in (rows.data or []):
             id_map[r["fantrax_id"]] = r
 
-    # Fetch season stats once per unique MLB id (cached in player_stats).
+    # Fetch season stats once per unique MLB id (cached in player_stats). Read the
+    # whole warm cache in one batched query first, then fan out only for the ids
+    # that are missing or stale — on a warm cache this collapses ~one SELECT per
+    # player into a couple of queries.
     unique: dict[int, str] = {
         m["mlb_id"]: (m.get("player_type") or "hitter")
         for m in id_map.values()
         if m.get("mlb_id")
     }
+    cached = get_cached_stats_bulk(list(unique.keys()))
+    season_by_mlb = {
+        mid: (row or {}).get("season_stats", {}) for mid, row in cached.items()
+    }
+
+    misses = {mid: pt for mid, pt in unique.items() if mid not in cached}
     sem = asyncio.Semaphore(concurrency)
 
     async def fetch(mlb_id, ptype):
         async with sem:
             return mlb_id, await get_player_stats(mlb_id, ptype)
 
-    results = await asyncio.gather(*[fetch(mid, pt) for mid, pt in unique.items()])
-    season_by_mlb = {mid: (s or {}).get("season_stats", {}) for mid, s in results}
+    results = await asyncio.gather(*[fetch(mid, pt) for mid, pt in misses.items()])
+    for mid, s in results:
+        season_by_mlb[mid] = (s or {}).get("season_stats", {})
 
     # Aggregate each team's category values.
     team_values: dict[str, dict] = {}
