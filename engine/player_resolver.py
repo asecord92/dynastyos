@@ -91,12 +91,16 @@ def _update_id_map(supabase, fantrax_id: str, update: dict) -> None:
         supabase.table("player_id_map").update(update).eq("fantrax_id", fantrax_id).execute()
         if "age" in update:
             _age_column_available = True
-    except Exception:
+    except Exception as e:
         if "age" not in update:
             raise
         update.pop("age")
         supabase.table("player_id_map").update(update).eq("fantrax_id", fantrax_id).execute()
-        _age_column_available = False
+        # Only latch the column as missing when the error actually names it —
+        # a transient failure whose age-less retry happens to succeed would
+        # otherwise silently stop all age refreshes until the next restart.
+        if "age" in str(e).lower() and "column" in str(e).lower():
+            _age_column_available = False
 
 
 def pick_match(people: list, team: str) -> tuple[dict, str] | tuple[None, None]:

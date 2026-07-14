@@ -747,6 +747,10 @@ def _check_cache(sb, league_id: str, widget: str, force: bool,
 # few dozen entries (leagues × widgets), so it's never evicted.
 _widget_locks: dict[tuple[str, str], asyncio.Lock] = {}
 
+# After waiting on a concurrent generation, only a row written by that
+# generation should count as a cache hit — not an older row within normal TTL.
+_RECHECK_WINDOW = timedelta(minutes=5)
+
 
 async def _single_flight(league_id: str, widget: str, recheck, generate):
     """Deduplicate concurrent generations of the same widget. If another request
@@ -1851,7 +1855,7 @@ Do not include any preamble, introduction, or horizontal rules (---). Do not say
 
         return await _single_flight(
             body.league_id, "news",
-            recheck=lambda: cached_response(False, max_age=timedelta(minutes=5)),
+            recheck=lambda: cached_response(False, max_age=_RECHECK_WINDOW),
             generate=lambda: asyncio.to_thread(build),
         )
 
@@ -1898,7 +1902,7 @@ async def dashboard_start_sit(
 
         return await _single_flight(
             body.league_id, "start_sit",
-            recheck=lambda: cached_response(False, max_age=timedelta(minutes=5)),
+            recheck=lambda: cached_response(False, max_age=_RECHECK_WINDOW),
             generate=lambda: asyncio.to_thread(build),
         )
 
@@ -2144,7 +2148,7 @@ async def dashboard_waiver(
 
         return await _single_flight(
             body.league_id, "waiver",
-            recheck=lambda: cached_response(False, max_age=timedelta(minutes=5)),
+            recheck=lambda: cached_response(False, max_age=_RECHECK_WINDOW),
             generate=lambda: asyncio.to_thread(build),
         )
 
@@ -2325,7 +2329,7 @@ async def dashboard_minors(
         # dedupe, and the Supabase reads go through threads to keep the loop free.
         return await _single_flight(
             body.league_id, "minors",
-            recheck=lambda: cached_response(False, max_age=timedelta(minutes=5)),
+            recheck=lambda: cached_response(False, max_age=_RECHECK_WINDOW),
             generate=lambda: _build_minors_mlb(sb, body),
         )
 
