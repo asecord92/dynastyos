@@ -44,7 +44,7 @@ from engine.nfl_widgets import (
 )
 from engine.supabase_client import get_supabase
 from engine.fantrax_mapper import map_roster_to_analyze_result
-from engine.player_resolver import resolve_player, refresh_roster_statuses
+from engine.player_resolver import resolve_player, refresh_roster_statuses, get_existing_fantrax_ids
 from engine.mlb_stats_client import get_milb_player_summary
 from engine.category_ranks import compute_category_ranks
 from engine.trade_analyzer import (
@@ -681,11 +681,19 @@ def resolve_all_players(rosters: dict, player_names: dict) -> None:
     for tdata in rosters.values():
         all_items.extend(tdata.get("rosterItems", []))
 
+    # Most of the league is already mapped after the first sync — find those in a
+    # few batched queries instead of one Supabase round-trip per player.
+    all_ids = [item.get("id", "") for item in all_items if item.get("id")]
+    already_mapped = get_existing_fantrax_ids(all_ids)
+
     resolved = 0
     unresolved = []
-    processed_ids = []
+    processed_ids = list(already_mapped)
     for item in all_items:
         fantrax_id = item.get("id", "")
+        if fantrax_id in already_mapped:
+            resolved += 1
+            continue
         player_data = player_names.get(fantrax_id, {})
         name = player_data.get("name", "")
         team = player_data.get("team", "")
@@ -707,8 +715,11 @@ def resolve_all_players(rosters: dict, player_names: dict) -> None:
         refresh_roster_statuses(processed_ids)
 
 
-def _check_cache(sb, league_id: str, widget: str, force: bool) -> dict | None:
-    """Returns cached row {content, updated_at} if fresh, else None."""
+def _check_cache(sb, league_id: str, widget: str, force: bool,
+                 max_age: timedelta | None = None) -> dict | None:
+    """Returns cached row {content, updated_at} if fresh, else None. `max_age`
+    tightens the freshness window below the normal TTL (used after waiting on a
+    concurrent generation, where only a just-written row should count)."""
     if force:
         return None
     try:
@@ -723,11 +734,38 @@ def _check_cache(sb, league_id: str, widget: str, force: bool) -> dict | None:
         if result.data:
             row = result.data[0]
             updated_at = datetime.fromisoformat(row["updated_at"].replace("Z", "+00:00"))
-            if datetime.now(timezone.utc) - updated_at < DASHBOARD_CACHE_TTL:
+            if datetime.now(timezone.utc) - updated_at < (max_age or DASHBOARD_CACHE_TTL):
                 return row
     except Exception:
         pass
     return None
+
+
+# One lock per (league, widget): a widget generation is an expensive AI call
+# billed to the owner's key, so two concurrent requests (double-tap refresh,
+# user + cron overlapping) must not both pay for it. The map only ever holds a
+# few dozen entries (leagues × widgets), so it's never evicted.
+_widget_locks: dict[tuple[str, str], asyncio.Lock] = {}
+
+# After waiting on a concurrent generation, only a row written by that
+# generation should count as a cache hit — not an older row within normal TTL.
+_RECHECK_WINDOW = timedelta(minutes=5)
+
+
+async def _single_flight(league_id: str, widget: str, recheck, generate):
+    """Deduplicate concurrent generations of the same widget. If another request
+    holds the lock, wait for it and serve its freshly cached result via
+    `recheck()` (a callable returning the endpoint's cache-hit response or
+    None); only generate if the cache is still missing. `generate()` must
+    return an awaitable producing the endpoint response."""
+    lock = _widget_locks.setdefault((league_id, widget), asyncio.Lock())
+    waited = lock.locked()
+    async with lock:
+        if waited:
+            cached = await asyncio.to_thread(recheck)
+            if cached is not None:
+                return cached
+        return await generate()
 
 
 def _upsert_cache(sb, league_id: str, widget: str, content: str) -> str:
@@ -816,7 +854,9 @@ async def cron_refresh_widgets(x_cron_secret: str = Header(default="")):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
     sb = get_supabase()
-    leagues = (sb.table("leagues").select("id, fantrax_team_id").execute().data) or []
+    leagues = (await asyncio.to_thread(
+        lambda: sb.table("leagues").select("id, fantrax_team_id").execute()
+    )).data or []
 
     handlers = {
         "news": dashboard_news,
@@ -830,7 +870,7 @@ async def cron_refresh_widgets(x_cron_secret: str = Header(default="")):
         if not league_id or not team_id:
             continue
         for widget, handler in handlers.items():
-            age = _cache_age(sb, league_id, widget)
+            age = await asyncio.to_thread(_cache_age, sb, league_id, widget)
             if age is None or age < REFRESH_AFTER:
                 continue  # never generated (dormant league) or still fresh
             try:
@@ -1671,7 +1711,7 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-async def _nfl_start_sit(sb, body) -> dict:
+def _nfl_start_sit(sb, body) -> dict:
     team_name, items = nfl_my_roster(sb, body.league_id, body.my_team_id)
     if not items:
         raise HTTPException(status_code=404, detail="No roster found. Sync your league first.")
@@ -1700,7 +1740,7 @@ async def _nfl_start_sit(sb, body) -> dict:
     return {"content": structured, "updated_at": _upsert_cache(sb, body.league_id, "start_sit", _json.dumps(structured))}
 
 
-async def _nfl_news(sb, body) -> dict:
+def _nfl_news(sb, body) -> dict:
     team_name, items = nfl_my_roster(sb, body.league_id, body.my_team_id)
     if not items:
         return {"content": "Sync your league to see news.", "updated_at": _now_iso()}
@@ -1715,7 +1755,7 @@ async def _nfl_news(sb, body) -> dict:
     return {"content": content, "updated_at": _upsert_cache(sb, body.league_id, "news", content)}
 
 
-async def _nfl_waiver(sb, body) -> dict:
+def _nfl_waiver(sb, body) -> dict:
     league = sb.table("leagues").select("rules").eq("id", body.league_id).single().execute().data or {}
     fmt_key = f"pts_{((league.get('rules') or {}).get('scoring_format') or 'half_ppr')}"
     team_name, _items = nfl_my_roster(sb, body.league_id, body.my_team_id)
@@ -1740,46 +1780,56 @@ async def dashboard_news(
         sb = get_supabase()
         require_league_owner(sb, user, body.league_id)
 
-        cached = _check_cache(sb, body.league_id, "news", body.force)
+        def cached_response(force: bool, max_age: timedelta | None = None) -> dict | None:
+            row = _check_cache(sb, body.league_id, "news", force, max_age)
+            if row:
+                return {"content": row["content"], "updated_at": row["updated_at"]}
+            return None
+
+        cached = cached_response(body.force)
         if cached:
-            return {"content": cached["content"], "updated_at": cached["updated_at"]}
+            return cached
 
-        if _league_sport(sb, body.league_id) == "NFL":
-            return await _nfl_news(sb, body)
+        # Generation is all blocking I/O (Supabase + a web-search AI call that can
+        # run tens of seconds) — run it in a worker thread so the event loop stays
+        # free, deduplicated so concurrent requests don't bill two generations.
+        def build() -> dict:
+            if _league_sport(sb, body.league_id) == "NFL":
+                return _nfl_news(sb, body)
 
-        roster_result = (
-            sb.table("rosters")
-            .select("roster_items,team_name")
-            .eq("league_id", body.league_id)
-            .eq("fantrax_team_id", body.my_team_id)
-            .limit(1)
-            .execute()
-        )
-        if not roster_result.data:
-            raise HTTPException(status_code=404, detail="No roster found. Sync your league first.")
+            roster_result = (
+                sb.table("rosters")
+                .select("roster_items,team_name")
+                .eq("league_id", body.league_id)
+                .eq("fantrax_team_id", body.my_team_id)
+                .limit(1)
+                .execute()
+            )
+            if not roster_result.data:
+                raise HTTPException(status_code=404, detail="No roster found. Sync your league first.")
 
-        roster_row = roster_result.data[0]
-        roster_items = roster_row.get("roster_items", [])
-        team_name = roster_row.get("team_name", "Your Team")
+            roster_row = roster_result.data[0]
+            roster_items = roster_row.get("roster_items", [])
+            team_name = roster_row.get("team_name", "Your Team")
 
-        fantrax_ids = [item.get("id") for item in roster_items if item.get("id")]
-        name_result = (
-            sb.table("player_id_map")
-            .select("fantrax_id,full_name")
-            .in_("fantrax_id", fantrax_ids)
-            .execute()
-        )
-        name_map = {r["fantrax_id"]: r["full_name"] for r in (name_result.data or [])}
+            fantrax_ids = [item.get("id") for item in roster_items if item.get("id")]
+            name_result = (
+                sb.table("player_id_map")
+                .select("fantrax_id,full_name")
+                .in_("fantrax_id", fantrax_ids)
+                .execute()
+            )
+            name_map = {r["fantrax_id"]: r["full_name"] for r in (name_result.data or [])}
 
-        player_lines = []
-        for item in roster_items:
-            fid = item.get("id", "")
-            name = name_map.get(fid) or item.get("name", fid)
-            pos = item.get("position", "")
-            status = item.get("status", "")
-            player_lines.append(f"- {name} ({pos}, {status})")
+            player_lines = []
+            for item in roster_items:
+                fid = item.get("id", "")
+                name = name_map.get(fid) or item.get("name", fid)
+                pos = item.get("position", "")
+                status = item.get("status", "")
+                player_lines.append(f"- {name} ({pos}, {status})")
 
-        prompt = f"""You are a fantasy baseball analyst. Use web search to find the latest injury and performance news for the following players.
+            prompt = f"""You are a fantasy baseball analyst. Use web search to find the latest injury and performance news for the following players.
 {_today_line()}
 
 Team: {team_name}
@@ -1790,18 +1840,24 @@ Search for and summarize recent news (last 2 weeks) for each player. Focus on: I
 
 Do not include any preamble, introduction, or horizontal rules (---). Do not say "Based on my research" or similar. Start directly with the first player bullet point."""
 
-        ai = get_ai_client_for_league(sb, body.league_id)
-        response = ai.messages.create(
-            model=MODEL_DASHBOARD,
-            max_tokens=3000,
-            thinking=_NO_THINKING,
-            tools=_WEB_SEARCH,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        content = _extract_text(response)
+            ai = get_ai_client_for_league(sb, body.league_id)
+            response = ai.messages.create(
+                model=MODEL_DASHBOARD,
+                max_tokens=3000,
+                thinking=_NO_THINKING,
+                tools=_WEB_SEARCH,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            content = _extract_text(response)
 
-        updated_at = _upsert_cache(sb, body.league_id, "news", content)
-        return {"content": content, "updated_at": updated_at}
+            updated_at = _upsert_cache(sb, body.league_id, "news", content)
+            return {"content": content, "updated_at": updated_at}
+
+        return await _single_flight(
+            body.league_id, "news",
+            recheck=lambda: cached_response(False, max_age=_RECHECK_WINDOW),
+            generate=lambda: asyncio.to_thread(build),
+        )
 
     except HTTPException:
         raise
@@ -1819,20 +1875,47 @@ async def dashboard_start_sit(
         sb = get_supabase()
         require_league_owner(sb, user, body.league_id)
 
-        cached = _check_cache(sb, body.league_id, "start_sit", body.force)
+        def cached_response(force: bool, max_age: timedelta | None = None) -> dict | None:
+            row = _check_cache(sb, body.league_id, "start_sit", force, max_age)
+            if row:
+                try:
+                    content = _json.loads(row["content"])
+                    # Ignore an empty cached result (a prior failed generation) so it
+                    # doesn't stick for the full TTL — fall through and regenerate.
+                    if content.get("players"):
+                        return {"content": content, "updated_at": row["updated_at"]}
+                except Exception:
+                    pass  # Old prose cache — fall through to regenerate
+            return None
+
+        cached = cached_response(body.force)
         if cached:
-            try:
-                content = _json.loads(cached["content"])
-                # Ignore an empty cached result (a prior failed generation) so it
-                # doesn't stick for the full TTL — fall through and regenerate.
-                if content.get("players"):
-                    return {"content": content, "updated_at": cached["updated_at"]}
-            except Exception:
-                pass  # Old prose cache — fall through to regenerate
+            return cached
 
-        if _league_sport(sb, body.league_id) == "NFL":
-            return await _nfl_start_sit(sb, body)
+        # Blocking Supabase + web-search AI call — worker thread + single-flight
+        # (see /dashboard/news).
+        def build() -> dict:
+            if _league_sport(sb, body.league_id) == "NFL":
+                return _nfl_start_sit(sb, body)
 
+            return _build_start_sit_mlb(sb, body)
+
+        return await _single_flight(
+            body.league_id, "start_sit",
+            recheck=lambda: cached_response(False, max_age=_RECHECK_WINDOW),
+            generate=lambda: asyncio.to_thread(build),
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def _build_start_sit_mlb(sb, body) -> dict:
+    """Generate the MLB start/sit widget (blocking — runs in a worker thread)."""
+    try:
         roster_result = (
             sb.table("rosters")
             .select("roster_items,team_name")
@@ -2046,13 +2129,39 @@ async def dashboard_waiver(
         sb = get_supabase()
         require_league_owner(sb, user, body.league_id)
 
-        cached = _check_cache(sb, body.league_id, "waiver", body.force)
+        def cached_response(force: bool, max_age: timedelta | None = None) -> dict | None:
+            row = _check_cache(sb, body.league_id, "waiver", force, max_age)
+            if row:
+                return {"content": row["content"], "updated_at": row["updated_at"]}
+            return None
+
+        cached = cached_response(body.force)
         if cached:
-            return {"content": cached["content"], "updated_at": cached["updated_at"]}
+            return cached
 
-        if _league_sport(sb, body.league_id) == "NFL":
-            return await _nfl_waiver(sb, body)
+        # Blocking Supabase + web-search AI call — worker thread + single-flight
+        # (see /dashboard/news).
+        def build() -> dict:
+            if _league_sport(sb, body.league_id) == "NFL":
+                return _nfl_waiver(sb, body)
+            return _build_waiver_mlb(sb, body)
 
+        return await _single_flight(
+            body.league_id, "waiver",
+            recheck=lambda: cached_response(False, max_age=_RECHECK_WINDOW),
+            generate=lambda: asyncio.to_thread(build),
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def _build_waiver_mlb(sb, body) -> dict:
+    """Generate the MLB waiver widget (blocking — runs in a worker thread)."""
+    try:
         # Collect all claimed fantrax IDs across every team's roster
         all_rosters_result = (
             sb.table("rosters")
@@ -2203,15 +2312,40 @@ async def dashboard_minors(
         sb = get_supabase()
         require_league_owner(sb, user, body.league_id)
 
-        cached = _check_cache(sb, body.league_id, "minors", body.force)
-        if cached:
-            try:
-                return {"content": _json.loads(cached["content"]), "updated_at": cached["updated_at"]}
-            except Exception:
-                pass  # malformed cache — regenerate
+        def cached_response(force: bool, max_age: timedelta | None = None) -> dict | None:
+            row = _check_cache(sb, body.league_id, "minors", force, max_age)
+            if row:
+                try:
+                    return {"content": _json.loads(row["content"]), "updated_at": row["updated_at"]}
+                except Exception:
+                    pass  # malformed cache — regenerate
+            return None
 
-        roster_result = (
-            sb.table("rosters")
+        cached = cached_response(body.force)
+        if cached:
+            return cached
+
+        # No AI call here, but the MiLB stat fan-out is still slow enough to
+        # dedupe, and the Supabase reads go through threads to keep the loop free.
+        return await _single_flight(
+            body.league_id, "minors",
+            recheck=lambda: cached_response(False, max_age=_RECHECK_WINDOW),
+            generate=lambda: _build_minors_mlb(sb, body),
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+async def _build_minors_mlb(sb, body) -> dict:
+    """Generate the minors widget — async because the per-prospect MiLB stat
+    fetches fan out concurrently."""
+    try:
+        roster_result = await asyncio.to_thread(
+            lambda: sb.table("rosters")
             .select("roster_items")
             .eq("league_id", body.league_id)
             .eq("fantrax_team_id", body.my_team_id)
@@ -2224,8 +2358,8 @@ async def dashboard_minors(
         roster_items = roster_result.data[0].get("roster_items", [])
         fantrax_ids = [item.get("id") for item in roster_items if item.get("id")]
 
-        map_result = (
-            sb.table("player_id_map")
+        map_result = await asyncio.to_thread(
+            lambda: sb.table("player_id_map")
             .select("fantrax_id,full_name,mlb_id,player_type,roster_status")
             .in_("fantrax_id", fantrax_ids)
             .execute()
@@ -2265,7 +2399,9 @@ async def dashboard_minors(
         players = sorted(players, key=lambda p: (trend_order.get(p["trend"], 1), p["name"]))
 
         structured = {"players": players}
-        updated_at = _upsert_cache(sb, body.league_id, "minors", _json.dumps(structured))
+        updated_at = await asyncio.to_thread(
+            _upsert_cache, sb, body.league_id, "minors", _json.dumps(structured)
+        )
         return {"content": structured, "updated_at": updated_at}
 
     except HTTPException:

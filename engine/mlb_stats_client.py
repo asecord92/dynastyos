@@ -7,6 +7,25 @@ MLB_STATS_BASE = "https://statsapi.mlb.com/api/v1"
 STATS_TTL_HOURS = 24
 
 
+async def _get_with_retry(client: httpx.AsyncClient, url: str, params: dict) -> httpx.Response:
+    """GET with retries on transport errors and 5xx — a transient MLB API blip
+    otherwise turns into an empty stat line that gets cached for a full day."""
+    last_exc: Exception | None = None
+    for attempt in range(3):
+        try:
+            resp = await client.get(url, params=params)
+            if resp.status_code >= 500:
+                raise httpx.HTTPStatusError(
+                    f"server error {resp.status_code}", request=resp.request, response=resp
+                )
+            return resp
+        except (httpx.TransportError, httpx.HTTPStatusError) as e:
+            last_exc = e
+            if attempt < 2:
+                await asyncio.sleep(0.5 * (attempt + 1))
+    raise last_exc
+
+
 def _splits(resp) -> list:
     """First stat group's splits, tolerating an empty (not just missing) 'stats' list.
     The API returns "stats": [] for players with no data for a group (e.g. a prospect's
@@ -82,22 +101,24 @@ def save_stats(mlb_id: int, season: int, player_type: str, season_stats: dict, r
         print(f"[stats] Supabase write error for mlb_id {mlb_id}: {e}")
 
 
-async def fetch_hitting_stats(mlb_id: int, season: int) -> dict:
-    """Fetch season + advanced + expected hitting stats from MLB Stats API."""
+async def fetch_hitting_stats(mlb_id: int, season: int) -> dict | None:
+    """Fetch season + advanced + expected hitting stats from MLB Stats API.
+    Returns None when the fetch itself failed (as opposed to a player with no
+    stats), so callers can avoid caching a transient outage."""
     stats = {}
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             season_resp, advanced_resp, expected_resp = await asyncio.gather(
-                client.get(
-                    f"{MLB_STATS_BASE}/people/{mlb_id}/stats",
+                _get_with_retry(
+                    client, f"{MLB_STATS_BASE}/people/{mlb_id}/stats",
                     params={"stats": "season", "group": "hitting", "season": season},
                 ),
-                client.get(
-                    f"{MLB_STATS_BASE}/people/{mlb_id}/stats",
+                _get_with_retry(
+                    client, f"{MLB_STATS_BASE}/people/{mlb_id}/stats",
                     params={"stats": "seasonAdvanced", "group": "hitting", "season": season},
                 ),
-                client.get(
-                    f"{MLB_STATS_BASE}/people/{mlb_id}/stats",
+                _get_with_retry(
+                    client, f"{MLB_STATS_BASE}/people/{mlb_id}/stats",
                     params={"stats": "expectedStatistics", "group": "hitting", "season": season},
                 ),
             )
@@ -139,22 +160,24 @@ async def fetch_hitting_stats(mlb_id: int, season: int) -> dict:
 
     except Exception as e:
         print(f"[stats] Error fetching hitting stats for {mlb_id}: {e}")
+        return None
 
     return stats
 
 
-async def fetch_pitching_stats(mlb_id: int, season: int) -> dict:
-    """Fetch season + advanced pitching stats from MLB Stats API."""
+async def fetch_pitching_stats(mlb_id: int, season: int) -> dict | None:
+    """Fetch season + advanced pitching stats from MLB Stats API.
+    Returns None when the fetch itself failed (see fetch_hitting_stats)."""
     stats = {}
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             season_resp, advanced_resp = await asyncio.gather(
-                client.get(
-                    f"{MLB_STATS_BASE}/people/{mlb_id}/stats",
+                _get_with_retry(
+                    client, f"{MLB_STATS_BASE}/people/{mlb_id}/stats",
                     params={"stats": "season", "group": "pitching", "season": season},
                 ),
-                client.get(
-                    f"{MLB_STATS_BASE}/people/{mlb_id}/stats",
+                _get_with_retry(
+                    client, f"{MLB_STATS_BASE}/people/{mlb_id}/stats",
                     params={"stats": "seasonAdvanced", "group": "pitching", "season": season},
                 ),
             )
@@ -186,20 +209,21 @@ async def fetch_pitching_stats(mlb_id: int, season: int) -> dict:
 
     except Exception as e:
         print(f"[stats] Error fetching pitching stats for {mlb_id}: {e}")
+        return None
 
     return stats
 
 
-async def fetch_recent_stats(mlb_id: int, season: int, player_type: str) -> dict:
-    """Fetch last 30 days of stats."""
+async def fetch_recent_stats(mlb_id: int, season: int, player_type: str) -> dict | None:
+    """Fetch last 30 days of stats. None when the fetch itself failed."""
     end_date = datetime.now()
     start_date = end_date - timedelta(days=30)
     group = "hitting" if player_type == "hitter" else "pitching"
 
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(
-                f"{MLB_STATS_BASE}/people/{mlb_id}/stats",
+            resp = await _get_with_retry(
+                client, f"{MLB_STATS_BASE}/people/{mlb_id}/stats",
                 params={
                     "stats": "byDateRange",
                     "group": group,
@@ -215,6 +239,7 @@ async def fetch_recent_stats(mlb_id: int, season: int, player_type: str) -> dict
                 return split["stat"]
     except Exception as e:
         print(f"[stats] Error fetching recent stats for {mlb_id}: {e}")
+        return None
 
     return {}
 
@@ -406,8 +431,9 @@ async def get_player_stats(mlb_id: int, player_type: str) -> dict | None:
     Main entry point. Returns stats for a player, using cache if fresh.
     Fetches from MLB Stats API and stores in Supabase if stale or missing.
     """
-    # Check cache first
-    cached = get_cached_stats(mlb_id)
+    # Check cache first (thread — the Supabase client is sync and would
+    # otherwise block the event loop for every cache miss check)
+    cached = await asyncio.to_thread(get_cached_stats, mlb_id)
     if cached:
         return cached
 
@@ -422,13 +448,16 @@ async def get_player_stats(mlb_id: int, player_type: str) -> dict | None:
 
     recent_stats = await fetch_recent_stats(mlb_id, season, player_type)
 
-    # Store in Supabase
-    save_stats(mlb_id, season, player_type, season_stats, recent_stats)
+    # Only cache when every fetch actually reached the API (None = transport
+    # failure). Caching an outage would pin "no stats" for a full TTL and poison
+    # trade analyses; a player with genuinely empty stats ({}) caches fine.
+    if season_stats is not None and recent_stats is not None:
+        await asyncio.to_thread(save_stats, mlb_id, season, player_type, season_stats, recent_stats)
 
     return {
         "mlb_id": mlb_id,
         "season": season,
         "player_type": player_type,
-        "season_stats": season_stats,
-        "recent_stats": recent_stats,
+        "season_stats": season_stats or {},
+        "recent_stats": recent_stats or {},
     }

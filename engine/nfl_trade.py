@@ -7,11 +7,23 @@ shared ``rosters`` table (from the Sleeper sync), and season fantasy points come
 from Sleeper's in-process-cached season stats — so this module does no live
 per-player fetches.
 """
+import asyncio
 from datetime import datetime, timezone
 from typing import Any
 
 from .supabase_client import get_supabase
 from .sleeper_client import get_season_stats
+
+
+async def _load_blocking(sb, league_id: str, team_ids: list | None = None) -> tuple[dict, dict, list]:
+    """League row, season stats, and rosters — all blocking (sync Supabase +
+    Sleeper's season-stats download on a cold cache), so off the event loop."""
+    def load():
+        league = _load_league(sb, league_id)
+        stats = get_season_stats(stats_season())
+        rosters = _load_rosters(sb, league_id, team_ids)
+        return league, stats, rosters
+    return await asyncio.to_thread(load)
 
 STARTABLE = ["QB", "RB", "WR", "TE"]
 
@@ -209,14 +221,11 @@ async def build_nfl_trade_context(
     receiving_ids: list[str],
 ) -> dict[str, Any]:
     sb = get_supabase()
-    league = _load_league(sb, league_id)
+    league, stats, rosters = await _load_blocking(sb, league_id, [my_team_id, opponent_team_id])
     rules = league.get("rules") or {}
     fmt_key = _format_key(rules)
     season = stats_season()
-    stats = get_season_stats(season)
     next_season = datetime.now(timezone.utc).year + 1
-
-    rosters = _load_rosters(sb, league_id, [my_team_id, opponent_team_id])
     my = next((r for r in rosters if r["fantrax_team_id"] == my_team_id), None)
     opp = next((r for r in rosters if r["fantrax_team_id"] == opponent_team_id), None)
     if not my or not opp:
@@ -336,14 +345,11 @@ async def build_nfl_finder_context(
     target_position: str | None = None,
 ) -> dict[str, Any]:
     sb = get_supabase()
-    league = _load_league(sb, league_id)
+    league, stats, rosters = await _load_blocking(sb, league_id)
     rules = league.get("rules") or {}
     fmt_key = _format_key(rules)
     season = stats_season()
-    stats = get_season_stats(season)
     next_season = datetime.now(timezone.utc).year + 1
-
-    rosters = _load_rosters(sb, league_id)
     my = next((r for r in rosters if r["fantrax_team_id"] == my_team_id), None)
     if not my:
         raise ValueError("Could not load your roster.")
@@ -444,12 +450,9 @@ async def build_nfl_add_drop_context(
     outgoing_ids: list[str],
 ) -> dict[str, Any]:
     sb = get_supabase()
-    league = _load_league(sb, league_id)
+    league, stats, rosters = await _load_blocking(sb, league_id)
     rules = league.get("rules") or {}
     fmt_key = _format_key(rules)
-    stats = get_season_stats(stats_season())
-
-    rosters = _load_rosters(sb, league_id)
     my = next((r for r in rosters if r["fantrax_team_id"] == my_team_id), None)
     if not my:
         raise ValueError("Could not load your roster. Sync your league first.")
