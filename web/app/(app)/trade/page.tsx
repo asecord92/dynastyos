@@ -296,22 +296,34 @@ export default function TradePage() {
   // Carries a prefill target across the opponent-change effect (which clears receiving).
   const pendingReceiveRef = useRef<string[] | null>(null);
 
-  // Cancels an in-flight analysis/finder stream on unmount or league switch —
-  // the read loop would otherwise keep running and setState on a dead component.
-  const streamAbortRef = useRef<AbortController | null>(null);
+  // Cancel in-flight analysis/finder streams on unmount or league switch —
+  // the read loops would otherwise keep running and setState on a dead
+  // component. Separate controllers: the two streams can run concurrently.
+  const analyzeAbortRef = useRef<AbortController | null>(null);
+  const finderAbortRef = useRef<AbortController | null>(null);
   useEffect(() => {
-    return () => streamAbortRef.current?.abort();
+    return () => {
+      analyzeAbortRef.current?.abort();
+      finderAbortRef.current?.abort();
+    };
   }, [leagueId]);
 
   useEffect(() => {
     if (!leagueId) return;
     let cancelled = false;
 
-    // A league switch invalidates everything selected under the old league.
+    // A league switch invalidates everything selected under the old league,
+    // plus any streamed analysis/finder output that was still on screen.
     setOpponentTeamId("");
     setOffering([]);
     setReceiving([]);
     pendingReceiveRef.current = null;
+    setStreamText("");
+    setError(null);
+    setLoading(false);
+    setFinder(null);
+    setFinderError(null);
+    setFinderLoading(false);
 
     async function load() {
       // Get my team ID from leagues table
@@ -432,9 +444,9 @@ export default function TradePage() {
 
   async function runFinder(category?: string) {
     if (!leagueId || !myTeamId) return;
-    streamAbortRef.current?.abort();
+    finderAbortRef.current?.abort();
     const ac = new AbortController();
-    streamAbortRef.current = ac;
+    finderAbortRef.current = ac;
     setFinderLoading(true);
     setFinderError(null);
     setNeedsApiKey(false);
@@ -512,10 +524,13 @@ export default function TradePage() {
       }
       flush(buf);
     } catch (e: unknown) {
-      if (ac.signal.aborted) return; // navigated away / league switched
-      setFinderError(e instanceof Error ? e.message : "Something went wrong.");
+      if (!ac.signal.aborted) {
+        setFinderError(e instanceof Error ? e.message : "Something went wrong.");
+      }
     } finally {
-      if (!ac.signal.aborted) setFinderLoading(false);
+      // Clear loading unless a newer run has taken over (its own spinner is
+      // up); on abort-while-mounted this still clears, on unmount React no-ops.
+      if (finderAbortRef.current === ac) setFinderLoading(false);
     }
   }
 
@@ -587,9 +602,9 @@ export default function TradePage() {
   async function analyze() {
     if (!leagueId || !myTeamId || !opponentTeamId || offering.length === 0 || receiving.length === 0) return;
 
-    streamAbortRef.current?.abort();
+    analyzeAbortRef.current?.abort();
     const ac = new AbortController();
-    streamAbortRef.current = ac;
+    analyzeAbortRef.current = ac;
     setLoading(true);
     setStreamText("");
     setError(null);
@@ -662,10 +677,13 @@ export default function TradePage() {
       flush(buf);
       if (!failed && full) saveHistory(full);
     } catch (e: unknown) {
-      if (ac.signal.aborted) return; // navigated away / league switched
-      setError(e instanceof Error ? e.message : "Something went wrong.");
+      if (!ac.signal.aborted) {
+        setError(e instanceof Error ? e.message : "Something went wrong.");
+      }
     } finally {
-      if (!ac.signal.aborted) setLoading(false);
+      // Clear loading unless a newer run has taken over (its own spinner is
+      // up); on abort-while-mounted this still clears, on unmount React no-ops.
+      if (analyzeAbortRef.current === ac) setLoading(false);
     }
   }
 

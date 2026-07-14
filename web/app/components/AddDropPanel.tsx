@@ -79,6 +79,16 @@ export function AddDropPanel({
     return () => streamAbortRef.current?.abort();
   }, [leagueId]);
 
+  // A league switch invalidates selections and any streamed analysis from the
+  // old league (the component stays mounted when the nav switcher changes).
+  useEffect(() => {
+    setIncoming([]);
+    setOutgoing([]);
+    setStreamText("");
+    setError(null);
+    setLoading(false);
+  }, [leagueId]);
+
   // Load rosters + resolve names (mirrors the trade page).
   useEffect(() => {
     if (!leagueId || !myTeamId) return;
@@ -247,10 +257,13 @@ export function AddDropPanel({
       }
       flush(buf);
     } catch (e: unknown) {
-      if (ac.signal.aborted) return; // navigated away / league switched
-      setError(e instanceof Error ? e.message : "Something went wrong.");
+      if (!ac.signal.aborted) {
+        setError(e instanceof Error ? e.message : "Something went wrong.");
+      }
     } finally {
-      if (!ac.signal.aborted) setLoading(false);
+      // Clear loading unless a newer run has taken over (its own spinner is
+      // up); on abort-while-mounted this still clears, on unmount React no-ops.
+      if (streamAbortRef.current === ac) setLoading(false);
     }
   }
 
