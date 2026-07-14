@@ -296,8 +296,22 @@ export default function TradePage() {
   // Carries a prefill target across the opponent-change effect (which clears receiving).
   const pendingReceiveRef = useRef<string[] | null>(null);
 
+  // Cancels an in-flight analysis/finder stream on unmount or league switch —
+  // the read loop would otherwise keep running and setState on a dead component.
+  const streamAbortRef = useRef<AbortController | null>(null);
+  useEffect(() => {
+    return () => streamAbortRef.current?.abort();
+  }, [leagueId]);
+
   useEffect(() => {
     if (!leagueId) return;
+    let cancelled = false;
+
+    // A league switch invalidates everything selected under the old league.
+    setOpponentTeamId("");
+    setOffering([]);
+    setReceiving([]);
+    pendingReceiveRef.current = null;
 
     async function load() {
       // Get my team ID from leagues table
@@ -307,6 +321,7 @@ export default function TradePage() {
         .eq("id", leagueId)
         .single();
 
+      if (cancelled) return;
       if (leagueRow?.fantrax_team_id) {
         setMyTeamId(leagueRow.fantrax_team_id);
       }
@@ -317,6 +332,7 @@ export default function TradePage() {
         .select("fantrax_team_id, team_name, roster_items, draft_picks")
         .eq("league_id", leagueId);
 
+      if (cancelled) return;
       if (rosterRows) setTeams(rosterRows as TeamRoster[]);
 
       // Base name map from embedded roster data (Sleeper/NFL carries names inline).
@@ -339,12 +355,16 @@ export default function TradePage() {
         .from("fantrax_players")
         .select("fantrax_id, name")
         .in("fantrax_id", allRosterIds);
+      if (cancelled) return;
       fantraxPlayerRows?.forEach((r) => { map[r.fantrax_id] = r.name; });
       idMapRows?.forEach((r) => { map[r.fantrax_id] = r.full_name; });
       setPlayerNameMap(map);
     }
 
     load();
+    return () => {
+      cancelled = true;
+    };
   }, [leagueId]);
 
   useEffect(() => {
@@ -412,6 +432,9 @@ export default function TradePage() {
 
   async function runFinder(category?: string) {
     if (!leagueId || !myTeamId) return;
+    streamAbortRef.current?.abort();
+    const ac = new AbortController();
+    streamAbortRef.current = ac;
     setFinderLoading(true);
     setFinderError(null);
     setNeedsApiKey(false);
@@ -419,6 +442,7 @@ export default function TradePage() {
     try {
       const res = await authedFetch("/api/trade/finder", {
         method: "POST",
+        signal: ac.signal,
         body: JSON.stringify({
           league_id: leagueId,
           my_team_id: myTeamId,
@@ -488,9 +512,10 @@ export default function TradePage() {
       }
       flush(buf);
     } catch (e: unknown) {
+      if (ac.signal.aborted) return; // navigated away / league switched
       setFinderError(e instanceof Error ? e.message : "Something went wrong.");
     } finally {
-      setFinderLoading(false);
+      if (!ac.signal.aborted) setFinderLoading(false);
     }
   }
 
@@ -562,21 +587,18 @@ export default function TradePage() {
   async function analyze() {
     if (!leagueId || !myTeamId || !opponentTeamId || offering.length === 0 || receiving.length === 0) return;
 
+    streamAbortRef.current?.abort();
+    const ac = new AbortController();
+    streamAbortRef.current = ac;
     setLoading(true);
     setStreamText("");
     setError(null);
     setNeedsApiKey(false);
 
     try {
-      const { data: sessionData } = await supabase.auth.getSession();
-      const accessToken = sessionData.session?.access_token;
-
-      const res = await fetch("/api/trade/analyze", {
+      const res = await authedFetch("/api/trade/analyze", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
-        },
+        signal: ac.signal,
         body: JSON.stringify({
           league_id: leagueId,
           my_team_id: myTeamId,
@@ -639,10 +661,11 @@ export default function TradePage() {
       }
       flush(buf);
       if (!failed && full) saveHistory(full);
-    } catch (e: any) {
-      setError(e?.message ?? "Something went wrong.");
+    } catch (e: unknown) {
+      if (ac.signal.aborted) return; // navigated away / league switched
+      setError(e instanceof Error ? e.message : "Something went wrong.");
     } finally {
-      setLoading(false);
+      if (!ac.signal.aborted) setLoading(false);
     }
   }
 

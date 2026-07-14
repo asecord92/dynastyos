@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { supabase } from "../lib/supabaseClient";
 import { useLeague } from "../lib/useLeague";
+import { authedFetch } from "../lib/useDashboardWidget";
 import { readCache, writeCache } from "../lib/clientCache";
 import { StatCard } from "../components/StatCard";
 import { StartSitPanel } from "../components/StartSitPanel";
@@ -43,17 +44,22 @@ export default function DashboardPage() {
   // Load team ID
   useEffect(() => {
     if (!leagueId) { setMyTeamId(""); return; }
+    let cancelled = false;
     supabase
       .from("leagues")
       .select("fantrax_team_id")
       .eq("id", leagueId)
       .single()
-      .then(({ data }) => setMyTeamId(data?.fantrax_team_id ?? ""));
+      .then(({ data }) => {
+        if (!cancelled) setMyTeamId(data?.fantrax_team_id ?? "");
+      });
+    return () => { cancelled = true; };
   }, [leagueId]);
 
   // Load roster summary (cap + IL) directly from Supabase
   useEffect(() => {
     if (!leagueId || !myTeamId) { setRosterSummary(null); return; }
+    let cancelled = false;
     const cacheKey = `dynastyos:roster-summary:${leagueId}:${myTeamId}`;
     setRosterSummary(readCache<RosterSummary>(cacheKey)); // instant paint, then revalidate
     supabase
@@ -63,7 +69,7 @@ export default function DashboardPage() {
       .eq("fantrax_team_id", myTeamId)
       .single()
       .then(async ({ data }) => {
-        if (!data) return;
+        if (!data || cancelled) return;
         const items: any[] = data.roster_items ?? [];
         const capItems = items.filter((i) =>
           ["ACTIVE", "RESERVE", "INJURED_RESERVE"].includes(i.status?.toUpperCase() ?? "")
@@ -90,32 +96,34 @@ export default function DashboardPage() {
           .filter(Boolean);
 
         const summary = { capUsed, capLimit: data.salary_cap ?? 450, ilPlayers };
+        if (cancelled) return;
         setRosterSummary(summary);
         writeCache(cacheKey, summary);
       });
+    return () => { cancelled = true; };
   }, [leagueId, myTeamId]);
 
   // One call for standings + cached widget contents (instant paint, then revalidate)
   useEffect(() => {
     if (!leagueId || !myTeamId) { setSummary(null); return; }
+    let cancelled = false;
     const cacheKey = `dynastyos:summary:${leagueId}:${myTeamId}`;
     setSummary(readCache<Summary>(cacheKey));
     setRecordLoading(true);
-    supabase.auth.getSession().then(async ({ data: sessionData }) => {
-      const token = sessionData.session?.access_token;
+    (async () => {
       try {
-        const res = await fetch(
-          `/api/dashboard/summary?league_id=${leagueId}&my_team_id=${myTeamId}`,
-          { headers: token ? { Authorization: `Bearer ${token}` } : {} }
+        const res = await authedFetch(
+          `/api/dashboard/summary?league_id=${leagueId}&my_team_id=${myTeamId}`
         );
-        if (res.ok) {
+        if (res.ok && !cancelled) {
           const json = (await res.json()) as Summary;
           setSummary(json);
           writeCache(cacheKey, json);
         }
       } catch {}
-      finally { setRecordLoading(false); }
-    });
+      finally { if (!cancelled) setRecordLoading(false); }
+    })();
+    return () => { cancelled = true; };
   }, [leagueId, myTeamId]);
 
   const record: Record | null = summary?.standings
