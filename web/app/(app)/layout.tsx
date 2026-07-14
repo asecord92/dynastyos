@@ -1,6 +1,7 @@
 import { AppNav } from "../components/AppNav";
 import AuthGate from "../components/AuthGate";
 import { AutoSync } from "../components/AutoSync";
+import { PullToRefresh } from "../components/PullToRefresh";
 import { AiStatusBanner } from "../components/ui/AiStatusBanner";
 import { WhatsNewModal } from "../components/WhatsNewModal";
 import { AiStatusProvider } from "../lib/aiStatus";
@@ -16,6 +17,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           <div className="min-h-screen bg-canvas text-gray-900">
             <AppNav />
             <AutoSync />
+            <PullToRefresh />
             <WhatsNewModal />
             <AiStatusBanner />
             {/* Extra bottom padding on mobile so content clears the bottom tab bar */}
