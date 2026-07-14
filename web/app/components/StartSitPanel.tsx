@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useDashboardWidget } from "../lib/useDashboardWidget";
+import { timeAgo } from "../lib/format";
 import { MinorsPanel } from "./MinorsPanel";
 import { Spinner } from "./ui/Spinner";
 import { NeedsApiKey } from "./ui/NeedsApiKey";
@@ -27,16 +28,6 @@ type StartSitData = {
 };
 
 type WidgetResponse = { content: StartSitData; updated_at: string };
-
-function timeAgo(iso: string): string {
-  const seconds = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
-  if (seconds < 60) return "just now";
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.floor(hours / 24)}d ago`;
-}
 
 const recPill: Record<string, string> = {
   start: "bg-green-500/15 text-green-300",
