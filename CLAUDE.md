@@ -15,6 +15,8 @@ Branch → PR → CI green → **squash-merge to main** → **Vercel** (frontend
 - **Models:** `MODEL_TRADE = "claude-opus-4-8"` (trade — **adaptive thinking ON** via `_ADAPTIVE_THINKING`; Opus runs thinking-off when the param is omitted, so don't drop it), `MODEL_DASHBOARD = "claude-sonnet-5"` (news/start_sit/waiver — thinking explicitly disabled via `_NO_THINKING` since Sonnet 5 defaults it on). Web search tool is `web_search_20260209`; `/trade/analyze` gets a bounded `_TRADE_WEB_SEARCH` (`max_uses: 4`) to verify injuries/roster moves — searches bill the owner's BYOK key. All AI prompts are date-anchored via `_today_line()`.
 - **Trade/AI streaming protocol:** `/trade/analyze`, `/trade/finder`, and `/waivers/add-drop` all stream **ndjson events** (`meta` → `text` deltas → `done`/`packages`, errors as `error` events with stable codes). The immediate `meta` event commits the response before Opus finishes thinking, avoiding the Vercel proxy timeout.
 - **`dashboard_cache`** table: per-`(league_id, widget)` cache, 4h TTL via `_check_cache`/`_upsert_cache`; widgets: `news`, `start_sit`, `waiver`, `category_ranks`, `minors`. `force: true` bypasses.
+- **Widget generation is single-flight + threaded** (`_single_flight` + `asyncio.to_thread`): the Anthropic client is sync, so generation must never run inline in an async endpoint (it froze the whole event loop pre-#58), and concurrent requests for the same `(league, widget)` share one generation instead of double-billing the owner's key. Keep new blocking work (Supabase, Fantrax, Sleeper) off the loop the same way (`_db()` in `trade_analyzer`, `_load_blocking()` in `nfl_trade`).
+- MLB stat fetches retry transient failures and **never cache an outage** (`fetch_*` return `None` on failure vs `{}` for a legitimately stat-less player) — don't reintroduce unconditional `save_stats`.
 - **`player_id_map`** table: `fantrax_id → mlb_id, full_name, mlb_team, player_type, roster_status, il_type, age`. `roster_status`, `mlb_team` **and** `age` are refreshed every sync (`refresh_roster_statuses`). The `age` column ships in `20260711_player_id_map_age.sql`; all reads/writes tolerate it being absent pre-migration (`_select_id_map` / `_update_id_map`).
 - Key endpoints: `/roster/sync` (kicks off a background resolve + status refresh of the whole league), `/dashboard/{news,start_sit,waiver,minors}`, `/trade/{analyze,finder}`, `/league/{standings,category-ranks,category-ranks/compute}`, `/admin/overview` (owner-only via `ADMIN_EMAILS`; usage + error/support view).
 - **`app_events`** table: best-effort error log written by a **global exception handler** (`_log_event`, logs 5xx only — expected 4xx like the 402 no-key are skipped), surfaced in the admin dashboard. `user_secrets` and `app_events` have RLS **on with no client policies** — backend service-role only.
@@ -22,7 +24,8 @@ Branch → PR → CI green → **squash-merge to main** → **Vercel** (frontend
 
 ## Frontend shape (`web/app/`)
 - App Router, all client components; `(app)/` is auth-gated (`AuthGate`).
-- `AppNav` = desktop top bar **+ mobile bottom tab bar** (`lg:hidden`). `useLeague` (selected league in localStorage + URL). `useDashboardWidget` (shared fetch hook + `authedFetch`) — reuse it for any cached widget.
+- `AppNav` = desktop top bar **+ mobile bottom tab bar** (`lg:hidden`). `useLeague` (selected league in localStorage + URL). `useDashboardWidget` (shared fetch hook + `authedFetch`) — reuse it for any cached widget. `lib/format.tsx` owns `timeAgo` + `MarkdownContent` — don't re-inline them.
+- AI streams (trade analyze/finder, add/drop) carry an `AbortController` aborted on unmount/league switch, with loading cleared via a controller-identity guard; `PullToRefresh` (in the `(app)` layout) reloads on a top-of-page pull.
 - Dashboard widgets: `StartSitPanel` (has a **Minors** tab → `MinorsPanel`), `CategoryRanksWidget` (manual entry **+ "Auto" compute**), `InjuryTicker`, `NewsWidget`, `WaiverWidget`.
 - Tailwind v4. Mobile: bottom tab bar, `viewport-fit=cover` for safe areas, icons generated via `next/og` (`app/apple-icon.tsx`, `app/icon.tsx`).
 
@@ -40,6 +43,8 @@ Branch → PR → CI green → **squash-merge to main** → **Vercel** (frontend
 
 ## Roadmap / not done
 - Dark theme **shipped** — a "command center" dark theme (canvas `#0a0c11`, `bg-gray-50` cards, Inter, violet accent). Implemented by inverting Tailwind's gray ramp in `web/app/globals.css` `@theme` (gray-50..300 = dark surfaces, 400..900 = light text; `red/amber/green-50` are dark tints). The original Navy/Lora spec was superseded.
-- Optional: auto-compute category ranks on every sync (currently an on-demand "Auto" button).
+- **Agreed next-features order** (July 2026 audit): 1) rank trends over time (auto-compute on sync + `category_rank_history` + sparklines), 2) contract/cap planner page, 3) daily digest via the `/cron/refresh-widgets` warmer (needs scheduled trigger + push/email), 4) trade outcome tracking on `trade_history`.
+- **Manual Supabase step pending:** run `supabase/RLS_AUDIT.md` queries (verify owner-scoped policies on `leagues`/`rosters`; capture base-table schemas) and apply `20260714_app_events_league_idx.sql`.
+- Frontend lint stays advisory in CI — 26 pre-existing errors (several `react-hooks` rewrites) to clear before enforcing.
 - Deeper usage analytics (per-call token spend / time-series) on top of the admin dashboard's `app_events`.
-- No automated tests yet (only build/lint/import-smoke in CI).
+- No automated tests yet (only build/lint/import-smoke in CI). Highest-value first targets: `player_resolver` name matching and `category_ranks` aggregation (pure logic).
