@@ -1,47 +1,65 @@
-# RLS + schema audit (run in the Supabase SQL editor)
+# RLS + schema audit — one paste, one run
 
-The base tables (`leagues`, `rosters`, `player_id_map`, `player_stats`,
-`fantrax_players`, `snapshots`) were created by hand and are not captured in
-`supabase/migrations/`. An anon-key probe (2026-07-14) confirmed anonymous
-requests get **zero rows** from every user-data table; only the shared
-reference tables (`player_id_map`, `player_stats`, `fantrax_players`) are
-readable, which the frontend depends on. Two things remain to verify with the
-queries below — paste the output back into a Claude Code session and it will
-write the follow-up migration:
+Open the Supabase **SQL Editor**, paste the **entire block below**, and hit Run.
+It first applies the pending `app_events` index (idempotent — safe to re-run),
+then returns a single result table with everything the audit needs. Export or
+copy the full result and paste it back into a Claude Code session — it will
+write the follow-up migration (owner-scoped policies if any are missing, plus
+a documentation migration capturing the base-table schemas).
 
-1. **Cross-user reads**: whether a *logged-in* user's policies on `leagues` /
-   `rosters` are scoped to the owner (`owner_user_id = auth.uid()` and a
-   league-ownership join) or just `authenticated`.
-2. **Base-table schema capture**: a documentation migration so the schema is
-   recoverable without the live DB.
+Background: an anon-key probe (2026-07-14) already confirmed anonymous requests
+get **zero rows** from every user-data table; only the shared reference tables
+(`player_id_map`, `player_stats`, `fantrax_players`) are readable, which the
+frontend depends on. What's left to verify is whether *logged-in* users are
+owner-scoped on `leagues`/`rosters`, and to capture the hand-created base-table
+schemas somewhere recoverable.
 
 ```sql
--- 1) RLS on/off per table
-select relname as table, relrowsecurity as rls_enabled
+-- Pending migration (idempotent): admin-view index on app_events.
+create index if not exists app_events_league_created_idx
+  on public.app_events (league_id, created_at desc);
+
+-- Full audit in one result set. Sections:
+--   1_rls     — RLS on/off per table
+--   2_policy  — every policy (who can do what, with its USING / CHECK)
+--   3_column  — base-table columns in order (for the documentation migration)
+--   4_index   — every index on public tables
+select '1_rls' as section,
+       relname as item,
+       case when relrowsecurity then 'RLS ENABLED' else 'RLS DISABLED' end as detail
 from pg_class
 where relnamespace = 'public'::regnamespace and relkind = 'r'
-order by relname;
 
--- 2) All policies (who can do what)
-select tablename, policyname, roles, cmd, qual, with_check
+union all
+
+select '2_policy',
+       tablename || ' / ' || policyname,
+       'roles=' || array_to_string(roles, ',')
+         || ' | cmd=' || cmd
+         || ' | using=' || coalesce(qual, '—')
+         || ' | check=' || coalesce(with_check, '—')
 from pg_policies
 where schemaname = 'public'
-order by tablename, policyname;
 
--- 3) Base-table schemas (for the documentation migration)
-select table_name, column_name, data_type, is_nullable, column_default
+union all
+
+select '3_column',
+       table_name || '.' || lpad(ordinal_position::text, 2, '0') || ' ' || column_name,
+       data_type
+         || case when is_nullable = 'YES' then '' else ' not null' end
+         || coalesce(' default ' || column_default, '')
 from information_schema.columns
 where table_schema = 'public'
   and table_name in ('leagues','rosters','player_id_map','player_stats',
                      'fantrax_players','snapshots')
-order by table_name, ordinal_position;
 
--- 4) Indexes on the base tables
-select tablename, indexname, indexdef
+union all
+
+select '4_index',
+       tablename || ' / ' || indexname,
+       indexdef
 from pg_indexes
 where schemaname = 'public'
-order by tablename, indexname;
-```
 
-Also apply the new migration in this folder:
-`20260714_app_events_league_idx.sql`.
+order by section, item;
+```
