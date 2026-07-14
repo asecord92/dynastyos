@@ -11,36 +11,62 @@ const THRESHOLD = 80;
  * background, so it feels like a data refresh, not a cold load. No-op on
  * desktop (mouse input never fires touch events).
  */
+/** True when the touch began inside a nested scrollable element (modal, player
+ * list) — pulling there should scroll that element, never reload the page. */
+function inScrollableChild(target: EventTarget | null): boolean {
+  let el = target instanceof Element ? target : null;
+  while (el && el !== document.body) {
+    const style = window.getComputedStyle(el);
+    if (
+      (style.overflowY === "auto" || style.overflowY === "scroll") &&
+      el.scrollHeight > el.clientHeight
+    ) {
+      return true;
+    }
+    el = el.parentElement;
+  }
+  return false;
+}
+
 export function PullToRefresh() {
   const [pull, setPull] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
   const startY = useRef<number | null>(null);
+  // Mirrors `pull` so touchend can decide without side effects inside a state
+  // updater (React may invoke updaters twice in dev StrictMode).
+  const pullRef = useRef(0);
 
   useEffect(() => {
+    const setPullBoth = (v: number) => {
+      pullRef.current = v;
+      setPull(v);
+    };
     const onTouchStart = (e: TouchEvent) => {
-      // Only arm when the page is scrolled to the very top.
-      startY.current = window.scrollY <= 0 ? e.touches[0].clientY : null;
+      // Only arm when the page is at the very top and the touch isn't inside
+      // a nested scrollable element.
+      startY.current =
+        window.scrollY <= 0 && !inScrollableChild(e.target)
+          ? e.touches[0].clientY
+          : null;
     };
     const onTouchMove = (e: TouchEvent) => {
       if (startY.current == null) return;
       const dy = e.touches[0].clientY - startY.current;
       if (dy > 10 && window.scrollY <= 0) {
         // Dampen so the indicator trails the finger.
-        setPull(Math.min(dy * 0.5, THRESHOLD * 1.4));
+        setPullBoth(Math.min(dy * 0.5, THRESHOLD * 1.4));
       } else {
-        setPull(0);
+        setPullBoth(0);
       }
     };
     const onTouchEnd = () => {
       startY.current = null;
-      setPull((p) => {
-        if (p >= THRESHOLD) {
-          setRefreshing(true);
-          window.location.reload();
-          return p; // keep the spinner up while the reload lands
-        }
-        return 0;
-      });
+      if (pullRef.current >= THRESHOLD) {
+        setRefreshing(true);
+        window.location.reload(); // keep the spinner up while the reload lands
+      } else {
+        setPullBoth(0);
+      }
     };
     document.addEventListener("touchstart", onTouchStart, { passive: true });
     document.addEventListener("touchmove", onTouchMove, { passive: true });
