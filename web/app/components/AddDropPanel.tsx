@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
 import { authedFetch } from "../lib/useDashboardWidget";
 import { aiIssueFromDetail, useAiStatus } from "../lib/aiStatus";
@@ -71,6 +71,23 @@ export function AddDropPanel({
   const [streamText, setStreamText] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [needsApiKey, setNeedsApiKey] = useState(false);
+
+  // Cancels an in-flight analysis stream on unmount or league switch — the
+  // read loop would otherwise keep running and setState on a dead component.
+  const streamAbortRef = useRef<AbortController | null>(null);
+  useEffect(() => {
+    return () => streamAbortRef.current?.abort();
+  }, [leagueId]);
+
+  // A league switch invalidates selections and any streamed analysis from the
+  // old league (the component stays mounted when the nav switcher changes).
+  useEffect(() => {
+    setIncoming([]);
+    setOutgoing([]);
+    setStreamText("");
+    setError(null);
+    setLoading(false);
+  }, [leagueId]);
 
   // Load rosters + resolve names (mirrors the trade page).
   useEffect(() => {
@@ -172,6 +189,9 @@ export function AddDropPanel({
 
   async function analyze() {
     if (incoming.length === 0 && outgoing.length === 0) return;
+    streamAbortRef.current?.abort();
+    const ac = new AbortController();
+    streamAbortRef.current = ac;
     setLoading(true);
     setStreamText("");
     setError(null);
@@ -179,6 +199,7 @@ export function AddDropPanel({
     try {
       const res = await authedFetch("/api/waivers/add-drop", {
         method: "POST",
+        signal: ac.signal,
         body: JSON.stringify({
           league_id: leagueId,
           my_team_id: myTeamId,
@@ -236,9 +257,13 @@ export function AddDropPanel({
       }
       flush(buf);
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Something went wrong.");
+      if (!ac.signal.aborted) {
+        setError(e instanceof Error ? e.message : "Something went wrong.");
+      }
     } finally {
-      setLoading(false);
+      // Clear loading unless a newer run has taken over (its own spinner is
+      // up); on abort-while-mounted this still clears, on unmount React no-ops.
+      if (streamAbortRef.current === ac) setLoading(false);
     }
   }
 

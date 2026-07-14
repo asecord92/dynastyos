@@ -296,8 +296,34 @@ export default function TradePage() {
   // Carries a prefill target across the opponent-change effect (which clears receiving).
   const pendingReceiveRef = useRef<string[] | null>(null);
 
+  // Cancel in-flight analysis/finder streams on unmount or league switch —
+  // the read loops would otherwise keep running and setState on a dead
+  // component. Separate controllers: the two streams can run concurrently.
+  const analyzeAbortRef = useRef<AbortController | null>(null);
+  const finderAbortRef = useRef<AbortController | null>(null);
+  useEffect(() => {
+    return () => {
+      analyzeAbortRef.current?.abort();
+      finderAbortRef.current?.abort();
+    };
+  }, [leagueId]);
+
   useEffect(() => {
     if (!leagueId) return;
+    let cancelled = false;
+
+    // A league switch invalidates everything selected under the old league,
+    // plus any streamed analysis/finder output that was still on screen.
+    setOpponentTeamId("");
+    setOffering([]);
+    setReceiving([]);
+    pendingReceiveRef.current = null;
+    setStreamText("");
+    setError(null);
+    setLoading(false);
+    setFinder(null);
+    setFinderError(null);
+    setFinderLoading(false);
 
     async function load() {
       // Get my team ID from leagues table
@@ -307,6 +333,7 @@ export default function TradePage() {
         .eq("id", leagueId)
         .single();
 
+      if (cancelled) return;
       if (leagueRow?.fantrax_team_id) {
         setMyTeamId(leagueRow.fantrax_team_id);
       }
@@ -317,6 +344,7 @@ export default function TradePage() {
         .select("fantrax_team_id, team_name, roster_items, draft_picks")
         .eq("league_id", leagueId);
 
+      if (cancelled) return;
       if (rosterRows) setTeams(rosterRows as TeamRoster[]);
 
       // Base name map from embedded roster data (Sleeper/NFL carries names inline).
@@ -339,12 +367,16 @@ export default function TradePage() {
         .from("fantrax_players")
         .select("fantrax_id, name")
         .in("fantrax_id", allRosterIds);
+      if (cancelled) return;
       fantraxPlayerRows?.forEach((r) => { map[r.fantrax_id] = r.name; });
       idMapRows?.forEach((r) => { map[r.fantrax_id] = r.full_name; });
       setPlayerNameMap(map);
     }
 
     load();
+    return () => {
+      cancelled = true;
+    };
   }, [leagueId]);
 
   useEffect(() => {
@@ -412,6 +444,9 @@ export default function TradePage() {
 
   async function runFinder(category?: string) {
     if (!leagueId || !myTeamId) return;
+    finderAbortRef.current?.abort();
+    const ac = new AbortController();
+    finderAbortRef.current = ac;
     setFinderLoading(true);
     setFinderError(null);
     setNeedsApiKey(false);
@@ -419,6 +454,7 @@ export default function TradePage() {
     try {
       const res = await authedFetch("/api/trade/finder", {
         method: "POST",
+        signal: ac.signal,
         body: JSON.stringify({
           league_id: leagueId,
           my_team_id: myTeamId,
@@ -488,9 +524,13 @@ export default function TradePage() {
       }
       flush(buf);
     } catch (e: unknown) {
-      setFinderError(e instanceof Error ? e.message : "Something went wrong.");
+      if (!ac.signal.aborted) {
+        setFinderError(e instanceof Error ? e.message : "Something went wrong.");
+      }
     } finally {
-      setFinderLoading(false);
+      // Clear loading unless a newer run has taken over (its own spinner is
+      // up); on abort-while-mounted this still clears, on unmount React no-ops.
+      if (finderAbortRef.current === ac) setFinderLoading(false);
     }
   }
 
@@ -562,21 +602,18 @@ export default function TradePage() {
   async function analyze() {
     if (!leagueId || !myTeamId || !opponentTeamId || offering.length === 0 || receiving.length === 0) return;
 
+    analyzeAbortRef.current?.abort();
+    const ac = new AbortController();
+    analyzeAbortRef.current = ac;
     setLoading(true);
     setStreamText("");
     setError(null);
     setNeedsApiKey(false);
 
     try {
-      const { data: sessionData } = await supabase.auth.getSession();
-      const accessToken = sessionData.session?.access_token;
-
-      const res = await fetch("/api/trade/analyze", {
+      const res = await authedFetch("/api/trade/analyze", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
-        },
+        signal: ac.signal,
         body: JSON.stringify({
           league_id: leagueId,
           my_team_id: myTeamId,
@@ -639,10 +676,14 @@ export default function TradePage() {
       }
       flush(buf);
       if (!failed && full) saveHistory(full);
-    } catch (e: any) {
-      setError(e?.message ?? "Something went wrong.");
+    } catch (e: unknown) {
+      if (!ac.signal.aborted) {
+        setError(e instanceof Error ? e.message : "Something went wrong.");
+      }
     } finally {
-      setLoading(false);
+      // Clear loading unless a newer run has taken over (its own spinner is
+      // up); on abort-while-mounted this still clears, on unmount React no-ops.
+      if (analyzeAbortRef.current === ac) setLoading(false);
     }
   }
 
