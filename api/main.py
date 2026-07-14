@@ -2297,10 +2297,15 @@ def _build_waiver_mlb(sb, body) -> dict:
             if (item.get("status") or "").upper() in ("ACTIVE", "RESERVE", "INJURED_RESERVE")
         )
         cap_limit = my_roster.get("salary_cap")
-        cap_line = (
-            f"My salary cap: ${cap_limit} total, ${max(cap_limit - cap_used, 0)} remaining."
-            if isinstance(cap_limit, (int, float)) else ""
-        )
+        if isinstance(cap_limit, (int, float)):
+            def _dollars(v: float) -> str:
+                return str(int(v)) if float(v).is_integer() else str(v)
+            cap_line = (
+                f"My salary cap: ${_dollars(cap_limit)} total, "
+                f"${_dollars(max(cap_limit - cap_used, 0))} remaining."
+            )
+        else:
+            cap_line = ""
 
         # Get league context for weaknesses
         league_result = (
