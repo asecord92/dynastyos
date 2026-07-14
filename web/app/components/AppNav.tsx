@@ -310,7 +310,7 @@ export function AppNav() {
                     onMouseEnter={() => setShowTooltip(true)}
                     onMouseLeave={() => setShowTooltip(false)}
                     disabled={syncing}
-                    className="w-8 h-8 rounded-full border border-gray-200 bg-gray-50 hover:border-gray-300 flex items-center justify-center disabled:opacity-40 transition"
+                    className="w-11 h-11 lg:w-8 lg:h-8 rounded-full border border-gray-200 bg-gray-50 hover:border-gray-300 flex items-center justify-center disabled:opacity-40 transition"
                   >
                     <svg
                       xmlns="http://www.w3.org/2000/svg"

@@ -120,6 +120,7 @@ export default function SettingsPage() {
   const [keySet, setKeySet] = useState<boolean | null>(null);
   const [keyLast4, setKeyLast4] = useState<string | null>(null);
   const [keyInput, setKeyInput] = useState("");
+  const [keyVisible, setKeyVisible] = useState(false);
   const [keyBusy, setKeyBusy] = useState(false);
   const [keyError, setKeyError] = useState<string | null>(null);
 
@@ -622,14 +623,25 @@ export default function SettingsPage() {
             </a>
             . It should start with <code className="text-gray-600">sk-ant-</code>.
           </p>
-          <input
-            type="password"
-            value={keyInput}
-            onChange={(e) => setKeyInput(e.target.value)}
-            placeholder={keySet ? "Enter a new key to replace the current one" : "sk-ant-..."}
-            autoComplete="off"
-            className="w-full px-3 py-2 rounded-xl border border-gray-200 bg-gray-50 text-sm font-mono outline-none focus:border-gray-400"
-          />
+          <div className="relative">
+            <input
+              type={keyVisible ? "text" : "password"}
+              value={keyInput}
+              onChange={(e) => setKeyInput(e.target.value)}
+              placeholder={keySet ? "Enter a new key to replace the current one" : "sk-ant-..."}
+              autoComplete="off"
+              className="w-full px-3 py-2 pr-16 rounded-xl border border-gray-200 bg-gray-50 text-sm font-mono outline-none focus:border-gray-400"
+            />
+            {keyInput && (
+              <button
+                type="button"
+                onClick={() => setKeyVisible((v) => !v)}
+                className="absolute right-2 top-1/2 -translate-y-1/2 px-2 py-1 rounded-lg text-xs text-gray-400 hover:text-gray-600 transition"
+              >
+                {keyVisible ? "Hide" : "Show"}
+              </button>
+            )}
+          </div>
           <div className="flex gap-2">
             <button
               onClick={saveKey}

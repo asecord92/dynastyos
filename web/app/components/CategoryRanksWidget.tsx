@@ -50,6 +50,14 @@ export function CategoryRanksWidget({
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [computing, setComputing] = useState(false);
+  const [computeSeconds, setComputeSeconds] = useState(0);
+
+  // Elapsed-time ticker so the 5–30s "Auto" compute never looks frozen.
+  useEffect(() => {
+    if (!computing) { setComputeSeconds(0); return; }
+    const t = setInterval(() => setComputeSeconds((s) => s + 1), 1000);
+    return () => clearInterval(t);
+  }, [computing]);
   const [updatedAt, setUpdatedAt] = useState<string | null>(
     initialUpdatedAt ?? seeded?.updatedAt ?? null
   );
@@ -210,6 +218,13 @@ export function CategoryRanksWidget({
           </div>
         </div>
 
+        {computing && (
+          <p className="text-xs text-gray-400 animate-pulse">
+            Estimating ranks from every roster&apos;s live stats — usually 5–30s
+            {computeSeconds > 0 ? ` (${computeSeconds}s)` : ""}…
+          </p>
+        )}
+
         {loading && !hasRanks && (
           <div className="space-y-2 animate-pulse">
             {CATEGORIES.map((c) => (
@@ -274,7 +289,7 @@ export function CategoryRanksWidget({
             className="absolute inset-0 bg-black/40 backdrop-blur-sm"
             onClick={() => setEditOpen(false)}
           />
-          <div className="relative bg-gray-50 rounded-2xl shadow-xl p-6 w-full max-w-sm mx-4 space-y-5">
+          <div className="relative bg-gray-50 rounded-2xl shadow-xl p-6 w-full max-w-sm mx-4 space-y-5 max-h-[85vh] overflow-y-auto">
             <h2 className="text-lg font-semibold">Edit Category Ranks</h2>
             <p className="text-xs text-gray-500">
               Enter your rank for each category (1 = best, {TOTAL_TEAMS} = worst).
@@ -287,9 +302,10 @@ export function CategoryRanksWidget({
                     type="number"
                     min={1}
                     max={TOTAL_TEAMS}
+                    inputMode="numeric"
                     value={draft[cat] ?? ""}
                     onChange={(e) => setDraft((d) => ({ ...d, [cat]: e.target.value }))}
-                    className="w-full px-2.5 py-1.5 rounded-lg border border-gray-200 text-sm outline-none focus:border-gray-400"
+                    className="w-full px-2.5 py-2 rounded-lg border border-gray-200 text-sm outline-none focus:border-gray-400"
                     placeholder="—"
                   />
                 </div>

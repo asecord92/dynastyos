@@ -779,7 +779,10 @@ export default function TradePage() {
 
             {error && (
               <div className="text-sm text-red-300 bg-red-50 border border-red-500/30 rounded-xl p-3">
-                {error}
+                {error}{" "}
+                <button onClick={analyze} disabled={!canAnalyze} className="underline disabled:opacity-40">
+                  Retry
+                </button>
               </div>
             )}
           </div>
