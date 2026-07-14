@@ -44,7 +44,7 @@ Branch → PR → CI green → **squash-merge to main** → **Vercel** (frontend
 ## Roadmap / not done
 - Dark theme **shipped** — a "command center" dark theme (canvas `#0a0c11`, `bg-gray-50` cards, Inter, violet accent). Implemented by inverting Tailwind's gray ramp in `web/app/globals.css` `@theme` (gray-50..300 = dark surfaces, 400..900 = light text; `red/amber/green-50` are dark tints). The original Navy/Lora spec was superseded.
 - **Agreed next-features order** (July 2026 audit): 1) rank trends over time (auto-compute on sync + `category_rank_history` + sparklines), 2) contract/cap planner page, 3) daily digest via the `/cron/refresh-widgets` warmer (needs scheduled trigger + push/email), 4) trade outcome tracking on `trade_history`.
-- **Manual Supabase step pending:** run `supabase/RLS_AUDIT.md` queries (verify owner-scoped policies on `leagues`/`rosters`; capture base-table schemas) and apply `20260714_app_events_league_idx.sql`.
+- **Manual Supabase step pending:** paste `supabase/RLS_AUDIT.sql` (whole file) into the SQL editor and run — it applies `20260714_app_events_league_idx.sql` and returns the policy/schema audit to paste back.
 - Frontend lint stays advisory in CI — 26 pre-existing errors (several `react-hooks` rewrites) to clear before enforcing.
 - Deeper usage analytics (per-call token spend / time-series) on top of the admin dashboard's `app_events`.
 - No automated tests yet (only build/lint/import-smoke in CI). Highest-value first targets: `player_resolver` name matching and `category_ranks` aggregation (pure logic).
