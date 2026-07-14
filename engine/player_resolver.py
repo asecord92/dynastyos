@@ -1,3 +1,5 @@
+from concurrent.futures import ThreadPoolExecutor
+
 import httpx
 from .supabase_client import get_supabase
 from .mlb_stats_client import fetch_roster_status
@@ -27,6 +29,29 @@ def search_mlb(name: str) -> list:
     except Exception as e:
         print(f"[resolver] MLB API error searching '{name}': {e}")
         return []
+
+
+def get_existing_fantrax_ids(fantrax_ids: list[str]) -> set[str]:
+    """Which of these fantrax IDs are already resolved in player_id_map.
+    One batched query per 100 ids instead of a per-player lookup — the full
+    league resolve otherwise costs one Supabase round-trip per rostered player."""
+    found: set[str] = set()
+    if not fantrax_ids:
+        return found
+    try:
+        supabase = get_supabase()
+        ids = list(dict.fromkeys(fantrax_ids))
+        for i in range(0, len(ids), 100):
+            result = (
+                supabase.table("player_id_map")
+                .select("fantrax_id")
+                .in_("fantrax_id", ids[i:i + 100])
+                .execute()
+            )
+            found.update(r["fantrax_id"] for r in (result.data or []))
+    except Exception as e:
+        print(f"[resolver] Supabase bulk read error: {e}")
+    return found
 
 
 def get_existing_mapping(fantrax_id: str) -> dict | None:
@@ -191,12 +216,12 @@ def refresh_roster_statuses(fantrax_ids: list[str]) -> None:
         return
 
     print(f"[refresh_status] Refreshing roster status for {len(rows)} players...")
-    updated = 0
-    for row in rows:
+
+    def refresh_one(row) -> bool:
         fantrax_id = row.get("fantrax_id", "")
         mlb_id = row.get("mlb_id")
         if not mlb_id:
-            continue
+            return False
         try:
             status_data = fetch_roster_status(int(mlb_id))
             update = {
@@ -210,8 +235,15 @@ def refresh_roster_statuses(fantrax_ids: list[str]) -> None:
             if status_data.get("age") is not None:
                 update["age"] = status_data["age"]
             _update_id_map(supabase, fantrax_id, update)
-            updated += 1
+            return True
         except Exception as e:
             print(f"[refresh_status] Failed for {fantrax_id}: {e}")
+            return False
+
+    # One MLB API call + one Supabase update per player — done sequentially this
+    # took ~0.5s/player (25s+ per sync for a full league). Bounded workers keep
+    # it polite to both APIs while finishing in a few seconds.
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        updated = sum(pool.map(refresh_one, rows))
 
     print(f"[refresh_status] Done — {updated}/{len(rows)} statuses updated")

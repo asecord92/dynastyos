@@ -10,6 +10,13 @@ from .rules import LeagueRules, ContractRules, load_rules
 from .player_value import production_ratings, assign_values
 
 
+async def _db(fn):
+    """Run a blocking Supabase/Fantrax call off the event loop. The context
+    builders are async (for the stat fan-out) but the DB client is sync — inline
+    it and every query stalls all concurrent requests."""
+    return await asyncio.to_thread(fn)
+
+
 def _today_line() -> str:
     """Anchor trade prompts to the current date so 'current value'/'this season'
     reasoning isn't interpreted against the model's training cutoff."""
@@ -307,18 +314,18 @@ async def build_trade_context(
     sb = get_supabase()
 
     # Load league profile
-    league_row = sb.table("leagues").select(
+    league_row = await _db(lambda: sb.table("leagues").select(
         "name, competitive_window, cap_philosophy, team_weaknesses, goals, sport"
-    ).eq("id", league_id).single().execute()
+    ).eq("id", league_id).single().execute())
     league = league_row.data
-    rules = _load_league_rules(sb, league_id, league)
+    rules = await _db(lambda: _load_league_rules(sb, league_id, league))
 
     # Load both rosters
-    roster_rows = sb.table("rosters").select(
+    roster_rows = await _db(lambda: sb.table("rosters").select(
         "fantrax_team_id, team_name, roster_items, salary_cap"
     ).eq("league_id", league_id).in_(
         "fantrax_team_id", [my_team_id, opponent_team_id]
-    ).execute()
+    ).execute())
 
     my_roster_row = next((r for r in roster_rows.data if r["fantrax_team_id"] == my_team_id), None)
     opp_roster_row = next((r for r in roster_rows.data if r["fantrax_team_id"] == opponent_team_id), None)
@@ -333,7 +340,7 @@ async def build_trade_context(
     )
 
     # Load resolved mappings from player_id_map table (incl. injury status + age)
-    id_map_rows = _select_id_map(sb, all_fantrax_ids)
+    id_map_rows = await _db(lambda: _select_id_map(sb, all_fantrax_ids))
 
     # Build resolved lookup
     player_id_map = {
@@ -358,7 +365,7 @@ async def build_trade_context(
     unresolved_ids = [fid for fid in all_fantrax_ids if fid not in player_id_map]
     if unresolved_ids:
         from .fantrax_client import get_player_ids
-        fantrax_name_map = get_player_ids(sport)
+        fantrax_name_map = await _db(lambda: get_player_ids(sport))
         for fid in unresolved_ids:
             player_data = fantrax_name_map.get(fid, {})
             name = player_data.get("name", f"Unknown ({fid})")
@@ -372,6 +379,7 @@ async def build_trade_context(
     # MLB stats this season (prospect / recent call-up) gets a MiLB summary
     # instead, so the model has real production to reason from.
     trade_ids = offering_ids + receiving_ids
+    sem = asyncio.Semaphore(12)
 
     async def fetch_stat(fid):
         mlb_id = fantrax_to_mlb.get(fid)
@@ -379,11 +387,12 @@ async def build_trade_context(
         player_type = player_info.get("player_type", "hitter")
         if not mlb_id:
             return fid, None, None
-        stats = await get_player_stats(mlb_id, player_type)
-        season = (stats or {}).get("season_stats") or {}
-        milb = None
-        if not any(v not in (None, "") for v in season.values()):
-            milb = await get_milb_player_summary(mlb_id, player_type)
+        async with sem:
+            stats = await get_player_stats(mlb_id, player_type)
+            season = (stats or {}).get("season_stats") or {}
+            milb = None
+            if not any(v not in (None, "") for v in season.values()):
+                milb = await get_milb_player_summary(mlb_id, player_type)
         return fid, stats, milb
 
     results = await asyncio.gather(*[fetch_stat(fid) for fid in trade_ids])
@@ -394,8 +403,8 @@ async def build_trade_context(
     category_ranks = {}
     try:
         import json as _json
-        ranks_result = (
-            sb.table("dashboard_cache")
+        ranks_result = await _db(
+            lambda: sb.table("dashboard_cache")
             .select("content")
             .eq("league_id", league_id)
             .eq("widget", "category_ranks")
@@ -632,17 +641,17 @@ async def build_finder_context(
     """
     sb = get_supabase()
 
-    league_row = sb.table("leagues").select(
+    league_row = await _db(lambda: sb.table("leagues").select(
         "name, competitive_window, cap_philosophy, team_weaknesses, goals, sport"
-    ).eq("id", league_id).single().execute()
+    ).eq("id", league_id).single().execute())
     league = league_row.data or {}
-    rules = _load_league_rules(sb, league_id, league)
+    rules = await _db(lambda: _load_league_rules(sb, league_id, league))
 
     # Resolve the target category — explicit, else the weakest ranked category.
     category_ranks: dict = {}
     try:
-        ranks_result = (
-            sb.table("dashboard_cache")
+        ranks_result = await _db(
+            lambda: sb.table("dashboard_cache")
             .select("content")
             .eq("league_id", league_id)
             .eq("widget", "category_ranks")
@@ -667,15 +676,15 @@ async def build_finder_context(
     player_type, stat_key, higher_is_better = CATEGORY_STAT[target_category]
 
     # Load every roster except the manager's.
-    roster_rows = sb.table("rosters").select(
+    roster_rows = await _db(lambda: sb.table("rosters").select(
         "fantrax_team_id, team_name, roster_items"
-    ).eq("league_id", league_id).neq("fantrax_team_id", my_team_id).execute()
+    ).eq("league_id", league_id).neq("fantrax_team_id", my_team_id).execute())
     opp_rosters = roster_rows.data or []
 
     # Resolve all opponent players to MLB IDs + player_type. Batched IN filter —
     # the full opponent pool (~250 IDs) can exceed PostgREST's query-length limit.
     all_ids = [item["id"] for r in opp_rosters for item in r["roster_items"]]
-    id_map = {row["fantrax_id"]: row for row in _select_id_map(sb, all_ids)}
+    id_map = {row["fantrax_id"]: row for row in await _db(lambda: _select_id_map(sb, all_ids))}
 
     # Candidate pool: opponent players of the relevant type with a resolved MLB ID.
     candidates = []
@@ -722,15 +731,15 @@ async def build_finder_context(
 
     # Load the manager's own roster so we can suggest concrete, value-balanced
     # packages to send back — not just the abstract "shape" of an offer.
-    my_row = sb.table("rosters").select(
+    my_row = await _db(lambda: sb.table("rosters").select(
         "roster_items, salary_cap"
-    ).eq("league_id", league_id).eq("fantrax_team_id", my_team_id).limit(1).execute()
+    ).eq("league_id", league_id).eq("fantrax_team_id", my_team_id).limit(1).execute())
     my_data = (my_row.data or [{}])[0]
     my_items = my_data.get("roster_items") or []
     salary_cap = my_data.get("salary_cap")
 
     my_ids = [item["id"] for item in my_items]
-    my_id_map = {row["fantrax_id"]: row for row in _select_id_map(sb, my_ids)}
+    my_id_map = {row["fantrax_id"]: row for row in await _db(lambda: _select_id_map(sb, my_ids))}
 
     my_assets = []
     for item in my_items:
@@ -936,17 +945,17 @@ async def build_add_drop_context(
 ) -> dict[str, Any]:
     sb = get_supabase()
 
-    league_row = sb.table("leagues").select(
+    league_row = await _db(lambda: sb.table("leagues").select(
         "name, competitive_window, cap_philosophy, team_weaknesses, goals, sport"
-    ).eq("id", league_id).single().execute()
+    ).eq("id", league_id).single().execute())
     league = league_row.data or {}
-    rules = _load_league_rules(sb, league_id, league)
+    rules = await _db(lambda: _load_league_rules(sb, league_id, league))
 
     # Load every roster: mine is the drop pool; the full set lets us resolve an
     # incoming player who is already rostered (IL activation or trade arrival).
-    roster_rows = sb.table("rosters").select(
+    roster_rows = await _db(lambda: sb.table("rosters").select(
         "fantrax_team_id, team_name, roster_items, salary_cap"
-    ).eq("league_id", league_id).execute()
+    ).eq("league_id", league_id).execute())
     rosters = roster_rows.data or []
     my_row = next((r for r in rosters if r["fantrax_team_id"] == my_team_id), None)
     if not my_row:
@@ -968,7 +977,9 @@ async def build_add_drop_context(
 
     # Resolve my roster + incoming rostered players in one batched pass.
     resolve_ids = [item["id"] for item in my_items] + incoming_ids
-    id_map: dict[str, dict] = {row["fantrax_id"]: row for row in _select_id_map(sb, resolve_ids)}
+    id_map: dict[str, dict] = {
+        row["fantrax_id"]: row for row in await _db(lambda: _select_id_map(sb, resolve_ids))
+    }
 
     sem = asyncio.Semaphore(12)
 

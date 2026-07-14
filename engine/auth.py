@@ -1,4 +1,5 @@
 import os
+import time
 import httpx
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -8,16 +9,26 @@ from jose.backends import ECKey  # noqa: F401 — registers the EC backend for E
 _bearer = HTTPBearer()
 
 SUPABASE_URL = os.environ["SUPABASE_URL"]
+# Re-fetch the JWKS hourly so a Supabase signing-key rotation doesn't keep an
+# old key trusted for the life of the process.
+_JWKS_TTL_SECONDS = 3600
 _jwks_cache: dict | None = None
+_jwks_fetched_at: float = 0.0
 
 
 def _get_jwks() -> dict:
-    global _jwks_cache
-    if _jwks_cache is None:
+    global _jwks_cache, _jwks_fetched_at
+    if _jwks_cache is None or time.monotonic() - _jwks_fetched_at > _JWKS_TTL_SECONDS:
         url = f"{SUPABASE_URL}/auth/v1/.well-known/jwks.json"
-        resp = httpx.get(url, timeout=10)
-        resp.raise_for_status()
-        _jwks_cache = resp.json()
+        try:
+            resp = httpx.get(url, timeout=10)
+            resp.raise_for_status()
+            _jwks_cache = resp.json()
+            _jwks_fetched_at = time.monotonic()
+        except Exception:
+            if _jwks_cache is None:
+                raise  # no keys at all — auth can't proceed
+            # refresh failed — keep serving the last good key set
     return _jwks_cache
 
 
