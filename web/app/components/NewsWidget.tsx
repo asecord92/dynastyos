@@ -2,50 +2,11 @@
 
 import { useState } from "react";
 import { useDashboardWidget } from "../lib/useDashboardWidget";
+import { timeAgo, MarkdownContent } from "../lib/format";
 import { Spinner } from "./ui/Spinner";
 import { NeedsApiKey } from "./ui/NeedsApiKey";
 
 type WidgetData = { content: string; updated_at: string };
-
-function timeAgo(iso: string): string {
-  const seconds = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
-  if (seconds < 60) return "just now";
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.floor(hours / 24)}d ago`;
-}
-
-function ContentRenderer({ text }: { text: string }) {
-  return (
-    <div className="space-y-1">
-      {text.split("\n").map((line, i) => {
-        const parts = line.split(/\*\*(.*?)\*\*/g);
-        const isHeading = line.startsWith("##");
-        const cleanLine = isHeading ? line.replace(/^#+\s*/, "") : line;
-        return (
-          <p
-            key={i}
-            className={
-              isHeading
-                ? "font-semibold text-gray-900 mt-3 mb-1"
-                : line.trim() === ""
-                ? "h-2"
-                : "text-sm text-gray-700 leading-relaxed"
-            }
-          >
-            {isHeading
-              ? cleanLine
-              : parts.map((part, j) =>
-                  j % 2 === 1 ? <strong key={j}>{part}</strong> : part
-                )}
-          </p>
-        );
-      })}
-    </div>
-  );
-}
 
 export function NewsWidget({
   leagueId,
@@ -105,7 +66,7 @@ export function NewsWidget({
       {data && !loading && (
         <>
           <div className={`relative ${expanded ? "" : "max-h-48 overflow-hidden"}`}>
-            <ContentRenderer text={data.content} />
+            <MarkdownContent text={data.content} />
             {!expanded && (
               <div className="absolute bottom-0 left-0 right-0 h-12 bg-gradient-to-t from-gray-50 to-transparent" />
             )}

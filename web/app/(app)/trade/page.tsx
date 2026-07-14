@@ -4,6 +4,8 @@ import { useState, useEffect, useRef } from "react";
 import { supabase } from "../../lib/supabaseClient";
 import { useLeague } from "../../lib/useLeague";
 import { authedFetch } from "../../lib/useDashboardWidget";
+import { AnalysisRenderer } from "../../components/trade/AnalysisRenderer";
+import { TradeHistory } from "../../components/trade/TradeHistory";
 import { aiIssueFromDetail, useAiStatus } from "../../lib/aiStatus";
 import { NeedsApiKey } from "../../components/ui/NeedsApiKey";
 
@@ -15,34 +17,6 @@ function extractVerdict(text: string): string {
   const m = text.match(/VERDICT\s*([\s\S]*?)(?=ANALYSIS|$)/i);
   return m ? m[1].trim().split("\n")[0].trim() : "";
 }
-
-function timeAgo(iso: string): string {
-  const s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
-  if (s < 60) return "just now";
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  return `${Math.floor(h / 24)}d ago`;
-}
-
-/** Tailwind classes for a verdict pill, by its leading word. */
-function verdictColor(verdict: string): string {
-  const word = verdict.split(/[\s—–-]/)[0].toUpperCase();
-  if (word === "ACCEPT") return "bg-green-50 border-green-500/30 text-green-900";
-  if (word === "DECLINE") return "bg-red-50 border-red-500/30 text-red-900";
-  return "bg-amber-50 border-amber-500/30 text-amber-900";
-}
-
-type TradeHistoryPlayer = { id: string; name: string };
-type TradeHistoryRow = {
-  id: string;
-  created_at: string;
-  offering: TradeHistoryPlayer[];
-  receiving: TradeHistoryPlayer[];
-  verdict: string | null;
-  analysis: string;
-};
 
 type Candidate = {
   fantrax_id: string;
@@ -198,73 +172,6 @@ function PlayerSearch({
   );
 }
 
-function AnalysisRenderer({ text }: { text: string }) {
-  const sections = {
-    verdict: "",
-    analysis: "",
-    counter: "",
-  };
-
-  const verdictMatch = text.match(/VERDICT\s*([\s\S]*?)(?=ANALYSIS|$)/i);
-  const analysisMatch = text.match(/ANALYSIS\s*([\s\S]*?)(?=COUNTER OFFER|$)/i);
-  const counterMatch = text.match(/COUNTER OFFER\s*([\s\S]*?)$/i);
-
-  if (verdictMatch) sections.verdict = verdictMatch[1].trim();
-  if (analysisMatch) sections.analysis = analysisMatch[1].trim();
-  if (counterMatch) sections.counter = counterMatch[1].trim();
-
-  const verdictWord = sections.verdict.split(/[\s—–-]/)[0].toUpperCase();
-  const verdictColor =
-    verdictWord === "ACCEPT"
-      ? "bg-green-50 border-green-500/30 text-green-900"
-      : verdictWord === "DECLINE"
-      ? "bg-red-50 border-red-500/30 text-red-900"
-      : "bg-amber-50 border-amber-500/30 text-amber-900";
-
-  return (
-    <div className="space-y-4">
-      {sections.verdict && (
-        <div className={`border rounded-2xl p-5 ${verdictColor}`}>
-          <div className="text-xs font-semibold uppercase tracking-widest mb-1 opacity-60">
-            Verdict
-          </div>
-          <p className="font-semibold text-lg leading-snug">{sections.verdict}</p>
-        </div>
-      )}
-
-      {sections.analysis && (
-        <div className="bg-gray-50 border rounded-2xl p-5 shadow-sm">
-          <div className="text-xs font-semibold uppercase tracking-widest text-gray-400 mb-3">
-            Analysis
-          </div>
-          <div className="space-y-3">
-            {sections.analysis.split("\n\n").map((para, i) => (
-              <p key={i} className="text-sm text-gray-700 leading-relaxed">
-                {para.trim()}
-              </p>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {sections.counter && (
-        <div className="bg-gray-50 border rounded-2xl p-5 shadow-sm">
-          <div className="text-xs font-semibold uppercase tracking-widest text-gray-400 mb-3">
-            Counter Offer
-          </div>
-          <div className="space-y-3">
-            {sections.counter.split("\n\n").map((para, i) => (
-              <p key={i} className="text-sm text-gray-700 leading-relaxed">
-                {para.trim()}
-              </p>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
 export default function TradePage() {
   const { leagueId, sport } = useLeague();
   const isNFL = sport === "NFL";
@@ -287,9 +194,6 @@ export default function TradePage() {
   const { reportIssue, clearIssue } = useAiStatus();
 
   const [mode, setMode] = useState<"build" | "find" | "history">("build");
-  const [historyItems, setHistoryItems] = useState<TradeHistoryRow[]>([]);
-  const [historyLoading, setHistoryLoading] = useState(false);
-  const [expandedHistoryId, setExpandedHistoryId] = useState<string | null>(null);
   const [finderLoading, setFinderLoading] = useState(false);
   const [finderError, setFinderError] = useState<string | null>(null);
   const [finder, setFinder] = useState<FinderResult | null>(null);
@@ -401,27 +305,6 @@ export default function TradePage() {
       setReceiving([]);
     }
   }, [opponentTeamId, teams, playerNameMap]);
-
-  // Load the user's saved analyses when the History tab is opened.
-  useEffect(() => {
-    if (mode !== "history" || !leagueId) return;
-    let cancelled = false;
-    (async () => {
-      setHistoryLoading(true);
-      try {
-        const res = await authedFetch(`/api/trade/history?league_id=${leagueId}`);
-        const json = await res.json();
-        if (!cancelled) setHistoryItems(json.items ?? []);
-      } catch {
-        if (!cancelled) setHistoryItems([]);
-      } finally {
-        if (!cancelled) setHistoryLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [mode, leagueId]);
 
   // Persist a completed analysis to the user's private history (best-effort).
   async function saveHistory(analysis: string) {
@@ -963,58 +846,7 @@ export default function TradePage() {
             </div>
           )}
 
-          {mode === "history" && (
-            <div className="space-y-4">
-              {historyLoading && (
-                <div className="bg-gray-50 border rounded-2xl p-6 shadow-sm text-sm text-gray-400 animate-pulse">
-                  Loading your recent analyses…
-                </div>
-              )}
-              {!historyLoading && historyItems.length === 0 && (
-                <div className="bg-gray-50 border rounded-2xl p-6 shadow-sm text-sm text-gray-400">
-                  No analyzed trades yet. Build a trade and hit Analyze — it&apos;ll show up here.
-                </div>
-              )}
-              {!historyLoading &&
-                historyItems.map((h) => {
-                  const expanded = expandedHistoryId === h.id;
-                  return (
-                    <div key={h.id} className="bg-gray-50 border rounded-2xl p-5 shadow-sm space-y-3">
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="text-sm text-gray-900">
-                          <span className="font-medium">Gave</span>{" "}
-                          {h.offering.map((p) => p.name).join(", ") || "—"}{" "}
-                          <span className="text-gray-400">→</span>{" "}
-                          <span className="font-medium">Got</span>{" "}
-                          {h.receiving.map((p) => p.name).join(", ") || "—"}
-                        </div>
-                        <span className="shrink-0 text-xs text-gray-400">
-                          {timeAgo(h.created_at)}
-                        </span>
-                      </div>
-                      {h.verdict && (
-                        <span
-                          className={`inline-block px-3 py-1.5 rounded-xl border text-sm font-medium ${verdictColor(
-                            h.verdict
-                          )}`}
-                        >
-                          {h.verdict}
-                        </span>
-                      )}
-                      <div>
-                        <button
-                          onClick={() => setExpandedHistoryId(expanded ? null : h.id)}
-                          className="text-xs font-medium text-violet-600 hover:text-violet-300"
-                        >
-                          {expanded ? "Hide analysis" : "Show analysis"}
-                        </button>
-                      </div>
-                      {expanded && <AnalysisRenderer text={h.analysis} />}
-                    </div>
-                  );
-                })}
-            </div>
-          )}
+          {mode === "history" && <TradeHistory leagueId={leagueId} />}
         </div>
       )}
     </main>

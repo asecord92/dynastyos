@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { supabase } from "../lib/supabaseClient";
 import { useLeague } from "../lib/useLeague";
+import { timeAgo } from "../lib/format";
 
 type League = { id: string; name: string };
 
@@ -63,16 +64,6 @@ function initials(email: string) {
   const a = parts[0]?.[0] ?? left[0] ?? "?";
   const b = parts[1]?.[0] ?? parts[0]?.[1] ?? "";
   return (a + b).toUpperCase();
-}
-
-function timeAgo(date: Date): string {
-  const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
-  if (seconds < 60) return "just now";
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.floor(hours / 24)}d ago`;
 }
 
 export function AppNav() {

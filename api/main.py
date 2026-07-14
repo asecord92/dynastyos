@@ -57,8 +57,9 @@ from engine.trade_analyzer import (
     build_add_drop_context,
     build_add_drop_prompt,
 )
-from engine.auth import get_current_user
+from engine.auth import get_current_user, _get_jwks
 from engine import crypto
+from jose import jwt
 
 app = FastAPI(title="DynastyOS API")
 
@@ -101,8 +102,6 @@ def _user_id_from_request(request: Request) -> str | None:
         auth = request.headers.get("authorization") or ""
         if not auth.lower().startswith("bearer "):
             return None
-        from engine.auth import _get_jwks
-        from jose import jwt
         payload = jwt.decode(
             auth.split(" ", 1)[1],
             _get_jwks(),
