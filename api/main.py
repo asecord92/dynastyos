@@ -45,7 +45,7 @@ from engine.nfl_widgets import (
 from engine.supabase_client import get_supabase
 from engine.fantrax_mapper import map_roster_to_analyze_result
 from engine.player_resolver import resolve_player, refresh_roster_statuses, get_existing_fantrax_ids
-from engine.mlb_stats_client import get_milb_player_summary
+from engine.mlb_stats_client import get_milb_player_summary, get_cached_stats_bulk
 from engine.category_ranks import compute_category_ranks
 from engine.trade_analyzer import (
     build_trade_context,
@@ -776,6 +776,50 @@ def _upsert_cache(sb, league_id: str, widget: str, content: str) -> str:
         on_conflict="league_id,widget",
     ).execute()
     return now
+
+
+def _load_my_roster(sb, league_id: str, my_team_id: str,
+                    map_columns: str = "fantrax_id,full_name") -> tuple[str, list, dict]:
+    """The shared first step of every dashboard widget: the user's roster row
+    plus their players' id-map rows. Returns (team_name, roster_items, id_map)
+    where id_map is {fantrax_id: row with `map_columns`}. Raises 404 when the
+    league has no synced roster. Blocking — call from a worker thread."""
+    roster_result = (
+        sb.table("rosters")
+        .select("roster_items,team_name")
+        .eq("league_id", league_id)
+        .eq("fantrax_team_id", my_team_id)
+        .limit(1)
+        .execute()
+    )
+    if not roster_result.data:
+        raise HTTPException(status_code=404, detail="No roster found. Sync your league first.")
+    roster_row = roster_result.data[0]
+    roster_items = roster_row.get("roster_items", [])
+    team_name = roster_row.get("team_name", "Your Team")
+
+    fantrax_ids = [item.get("id") for item in roster_items if item.get("id")]
+    id_map: dict[str, dict] = {}
+    if fantrax_ids:
+        map_result = (
+            sb.table("player_id_map")
+            .select(map_columns)
+            .in_("fantrax_id", fantrax_ids)
+            .execute()
+        )
+        id_map = {r["fantrax_id"]: r for r in (map_result.data or [])}
+    return team_name, roster_items, id_map
+
+
+def _weak_categories_context(sb, league_id: str) -> tuple[dict, list[str]]:
+    """Category ranks plus the categories ranked 7th or worse — the strategic
+    context that keeps widget prompts prioritizing what actually helps."""
+    category_ranks = _load_category_ranks(sb, league_id)
+    weak_cats = [
+        cat for cat, rank in category_ranks.items()
+        if isinstance(rank, int) and rank >= 7
+    ]
+    return category_ranks, weak_cats
 
 
 def _today_line() -> str:
@@ -1733,7 +1777,7 @@ def _nfl_start_sit(sb, body) -> dict:
         except Exception:
             pass
     structured["alerts"] = out_alerts + structured.get("alerts", [])
-    seen = {a["name"]: a for a in structured["alerts"] if a.get("name")}
+    seen = {(a["name"], a.get("status")): a for a in structured["alerts"] if a.get("name")}
     structured["alerts"] = list(seen.values())
     if not structured.get("players"):  # don't cache an empty generation
         return {"content": structured, "updated_at": _now_iso()}
@@ -1797,45 +1841,36 @@ async def dashboard_news(
             if _league_sport(sb, body.league_id) == "NFL":
                 return _nfl_news(sb, body)
 
-            roster_result = (
-                sb.table("rosters")
-                .select("roster_items,team_name")
-                .eq("league_id", body.league_id)
-                .eq("fantrax_team_id", body.my_team_id)
-                .limit(1)
-                .execute()
+            team_name, roster_items, id_map = _load_my_roster(
+                sb, body.league_id, body.my_team_id
             )
-            if not roster_result.data:
-                raise HTTPException(status_code=404, detail="No roster found. Sync your league first.")
-
-            roster_row = roster_result.data[0]
-            roster_items = roster_row.get("roster_items", [])
-            team_name = roster_row.get("team_name", "Your Team")
-
-            fantrax_ids = [item.get("id") for item in roster_items if item.get("id")]
-            name_result = (
-                sb.table("player_id_map")
-                .select("fantrax_id,full_name")
-                .in_("fantrax_id", fantrax_ids)
-                .execute()
-            )
-            name_map = {r["fantrax_id"]: r["full_name"] for r in (name_result.data or [])}
 
             player_lines = []
             for item in roster_items:
                 fid = item.get("id", "")
-                name = name_map.get(fid) or item.get("name", fid)
+                name = (id_map.get(fid) or {}).get("full_name") or item.get("name", fid)
                 pos = item.get("position", "")
                 status = item.get("status", "")
-                player_lines.append(f"- {name} ({pos}, {status})")
+                sal = item.get("salary", 0)
+                contract = (item.get("contract") or {}).get("name", "?")
+                player_lines.append(f"- {name} ({pos}, {status}, ${sal}, contract {contract})")
 
-            prompt = f"""You are a fantasy baseball analyst. Use web search to find the latest injury and performance news for the following players.
+            # Strategic context: which categories this team is weak in, so the
+            # model prioritizes news that actually moves this team's needle.
+            _, weak_cats = _weak_categories_context(sb, body.league_id)
+            weak_line = (
+                f"\nThis team's weakest categories: {', '.join(weak_cats)}. "
+                "Prioritize news about players who affect those categories, and IL returns."
+                if weak_cats else ""
+            )
+
+            prompt = f"""You are a fantasy baseball analyst for a dynasty contract league. Use web search to find the latest injury and performance news for the following players.
 {_today_line()}
 
 Team: {team_name}
-Roster:
+Roster (name (position, roster status, salary, contract year)):
 {chr(10).join(player_lines)}
-
+{weak_line}
 Search for and summarize recent news (last 2 weeks) for each player. Focus on: IL placements, returns from IL, lineup changes, role changes, injury updates, and anything else affecting fantasy value. Skip players with nothing to report. Format as a bulleted list with the player name in bold at the start of each item.
 
 Do not include any preamble, introduction, or horizontal rules (---). Do not say "Based on my research" or similar. Start directly with the first player bullet point."""
@@ -1916,32 +1951,14 @@ async def dashboard_start_sit(
 def _build_start_sit_mlb(sb, body) -> dict:
     """Generate the MLB start/sit widget (blocking — runs in a worker thread)."""
     try:
-        roster_result = (
-            sb.table("rosters")
-            .select("roster_items,team_name")
-            .eq("league_id", body.league_id)
-            .eq("fantrax_team_id", body.my_team_id)
-            .limit(1)
-            .execute()
+        team_name, roster_items, id_map = _load_my_roster(
+            sb, body.league_id, body.my_team_id,
+            map_columns="fantrax_id,full_name,mlb_team,roster_status,il_type",
         )
-        if not roster_result.data:
-            raise HTTPException(status_code=404, detail="No roster found. Sync your league first.")
-
-        roster_row = roster_result.data[0]
-        roster_items = roster_row.get("roster_items", [])
-        team_name = roster_row.get("team_name", "Your Team")
-
-        fantrax_ids = [item.get("id") for item in roster_items if item.get("id")]
-        name_result = (
-            sb.table("player_id_map")
-            .select("fantrax_id,full_name,mlb_team,roster_status,il_type")
-            .in_("fantrax_id", fantrax_ids)
-            .execute()
-        )
-        name_map = {r["fantrax_id"]: r["full_name"] for r in (name_result.data or [])}
-        team_map = {r["fantrax_id"]: r.get("mlb_team", "") for r in (name_result.data or [])}
-        status_map = {r["fantrax_id"]: r.get("roster_status") for r in (name_result.data or [])}
-        il_type_map = {r["fantrax_id"]: r.get("il_type") for r in (name_result.data or [])}
+        name_map = {fid: r["full_name"] for fid, r in id_map.items()}
+        team_map = {fid: r.get("mlb_team", "") for fid, r in id_map.items()}
+        status_map = {fid: r.get("roster_status") for fid, r in id_map.items()}
+        il_type_map = {fid: r.get("il_type") for fid, r in id_map.items()}
 
         # Build data-grounded alerts — no AI needed for these
         il_alerts = []
@@ -2080,10 +2097,12 @@ Rules:
         # Final alerts order: IL → MiLB → edge-case IL → DTD/return-timeline from AI
         structured["alerts"] = il_alerts + milb_alerts + edge_il_alerts + structured.get("alerts", [])
 
-        # Deduplicate by name — last occurrence wins (AI detail is richer than fallback)
+        # Deduplicate by (name, status) — last occurrence wins (AI detail is
+        # richer than fallback). Keying on name alone dropped a second, genuinely
+        # different alert for the same player (e.g. Fantrax IL + an AI DTD note).
         seen = {}
         for alert in structured["alerts"]:
-            seen[alert["name"]] = alert
+            seen[(alert.get("name"), alert.get("status"))] = alert
         structured["alerts"] = list(seen.values())
 
         # A generation with no start/sit recs means the model returned no parseable
@@ -2159,13 +2178,30 @@ async def dashboard_waiver(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _season_stat_line(season: dict, player_type: str) -> str:
+    """Compact current-season line for a waiver-pool player, from cached stats."""
+    if not season:
+        return "no current-season MLB stats"
+    if player_type == "hitter":
+        return (
+            f"{season.get('avg', '?')} AVG, {season.get('home_runs', '?')} HR, "
+            f"{season.get('rbi', '?')} RBI, {season.get('runs', '?')} R, "
+            f"{season.get('stolen_bases', '?')} SB, {season.get('ops', '?')} OPS"
+        )
+    return (
+        f"{season.get('era', '?')} ERA, {season.get('whip', '?')} WHIP, "
+        f"{season.get('strikeouts', '?')} K, {season.get('saves', '?')} SV, "
+        f"{season.get('quality_starts', '?')} QS"
+    )
+
+
 def _build_waiver_mlb(sb, body) -> dict:
     """Generate the MLB waiver widget (blocking — runs in a worker thread)."""
     try:
         # Collect all claimed fantrax IDs across every team's roster
         all_rosters_result = (
             sb.table("rosters")
-            .select("fantrax_team_id,roster_items")
+            .select("fantrax_team_id,roster_items,salary_cap")
             .eq("league_id", body.league_id)
             .execute()
         )
@@ -2182,7 +2218,7 @@ def _build_waiver_mlb(sb, body) -> dict:
         # Query unclaimed hitters from player_id_map
         unclaimed_hitters_result = (
             sb.table("player_id_map")
-            .select("fantrax_id,full_name,mlb_team,player_type")
+            .select("fantrax_id,full_name,mlb_team,player_type,mlb_id")
             .eq("player_type", "hitter")
             .not_.in_("fantrax_id", claimed_list)
             .order("full_name")
@@ -2193,18 +2229,43 @@ def _build_waiver_mlb(sb, body) -> dict:
         # Query unclaimed pitchers from player_id_map
         unclaimed_pitchers_result = (
             sb.table("player_id_map")
-            .select("fantrax_id,full_name,mlb_team,player_type")
+            .select("fantrax_id,full_name,mlb_team,player_type,mlb_id")
             .eq("player_type", "pitcher")
             .not_.in_("fantrax_id", claimed_list)
             .order("full_name")
             .limit(100)
             .execute()
         )
+        pool_hitters = unclaimed_hitters_result.data or []
+        pool_pitchers = unclaimed_pitchers_result.data or []
 
-        unclaimed_lines = [
-            f"- {r['full_name']} ({r.get('mlb_team', '?')}, {r['player_type']})"
-            for r in (unclaimed_hitters_result.data or []) + (unclaimed_pitchers_result.data or [])
-        ]
+        # Ground the pool in real season stats (cache-only read — no API
+        # fan-out). Without numbers the model had to web-search every name it
+        # considered, which was slow and hallucination-prone.
+        pool_mlb_ids = [r["mlb_id"] for r in pool_hitters + pool_pitchers if r.get("mlb_id")]
+        pool_stats = get_cached_stats_bulk(pool_mlb_ids)
+
+        def pool_line(r: dict) -> str:
+            season = (pool_stats.get(r.get("mlb_id")) or {}).get("season_stats") or {}
+            return (
+                f"- {r['full_name']} ({r.get('mlb_team', '?')}, {r['player_type']}) | "
+                f"{_season_stat_line(season, r['player_type'])}"
+            )
+
+        def stat_sort(rows: list[dict], key: str, reverse: bool) -> list[dict]:
+            """Players with stats first (best first), no-stat players after."""
+            def sort_key(r):
+                season = (pool_stats.get(r.get("mlb_id")) or {}).get("season_stats") or {}
+                try:
+                    return (0, (-1 if reverse else 1) * float(season.get(key)))
+                except (TypeError, ValueError):
+                    return (1, 0.0)
+            return sorted(rows, key=sort_key)
+
+        unclaimed_lines = (
+            [pool_line(r) for r in stat_sort(pool_hitters, "ops", reverse=True)]
+            + [pool_line(r) for r in stat_sort(pool_pitchers, "era", reverse=False)]
+        )
 
         # Get my roster for context
         my_roster = next(
@@ -2229,6 +2290,18 @@ def _build_waiver_mlb(sb, body) -> dict:
             pos = item.get("position", "")
             my_roster_lines.append(f"- {name} ({pos})")
 
+        # Cap space: recommendations must be affordable.
+        cap_used = sum(
+            (item.get("salary") or 0)
+            for item in my_items
+            if (item.get("status") or "").upper() in ("ACTIVE", "RESERVE", "INJURED_RESERVE")
+        )
+        cap_limit = my_roster.get("salary_cap")
+        cap_line = (
+            f"My salary cap: ${cap_limit} total, ${max(cap_limit - cap_used, 0)} remaining."
+            if isinstance(cap_limit, (int, float)) else ""
+        )
+
         # Get league context for weaknesses
         league_result = (
             sb.table("leagues")
@@ -2250,34 +2323,34 @@ def _build_waiver_mlb(sb, body) -> dict:
             context_lines.append(f"Season goals: {league_data['goals']}")
 
         # Load category ranks — primary source for identifying weaknesses
-        category_ranks = _load_category_ranks(sb, body.league_id)
+        category_ranks, weak_cats = _weak_categories_context(sb, body.league_id)
         if category_ranks:
             ranks_str = ", ".join(f"{cat}:{rank}" for cat, rank in category_ranks.items())
             context_lines.append(f"Category ranks (1=best, {num_teams}=worst): {ranks_str}")
-            weak_cats = [cat for cat, rank in category_ranks.items() if isinstance(rank, int) and rank >= 7]
             if weak_cats:
                 context_lines.append(f"Weakest categories (priority targets): {', '.join(weak_cats)}")
 
         unclaimed_section = "\n".join(unclaimed_lines) if unclaimed_lines else "No unclaimed player data available."
 
-        prompt = f"""You are a fantasy baseball analyst for a dynasty contract league. Use web search to evaluate and recommend waiver wire pickups.
+        prompt = f"""You are a fantasy baseball analyst for a dynasty contract league. Recommend waiver wire pickups from the pool below.
 {_today_line()}
 
 League: {league_name} ({num_teams} teams)
 {chr(10).join(context_lines) if context_lines else ""}
+{cap_line}
 
 My current roster:
 {chr(10).join(my_roster_lines) if my_roster_lines else "No roster data."}
 
-Available waiver pool (unclaimed in this league):
+Available waiver pool (unclaimed in this league, with current-season stats where available; hitters sorted by OPS, pitchers by ERA):
 {unclaimed_section}
 
-From the unclaimed pool above, identify the best 4-5 players to target right now. Use web search to check their current performance, role, and injury status. For each recommendation include:
+From the unclaimed pool above, identify the best 4-5 players to target right now. The stat lines are real current-season numbers — use them to shortlist, then use web search only to verify role, health, and playing time for your top candidates (not to research the whole pool). For each recommendation include:
 - Player name, team, position
-- Why they're a good pickup right now
+- Why they're a good pickup right now (cite their stat line)
 - Short-term and dynasty value assessment
 
-Prioritize players who address the team's weakest categories (high rank numbers) if possible.
+Prioritize players who address the team's weakest categories (high rank numbers), and keep recommendations affordable within the remaining cap space.
 
 Do not include any preamble or introduction. Start directly with the first player recommendation."""
 
@@ -2344,27 +2417,10 @@ async def _build_minors_mlb(sb, body) -> dict:
     """Generate the minors widget — async because the per-prospect MiLB stat
     fetches fan out concurrently."""
     try:
-        roster_result = await asyncio.to_thread(
-            lambda: sb.table("rosters")
-            .select("roster_items")
-            .eq("league_id", body.league_id)
-            .eq("fantrax_team_id", body.my_team_id)
-            .limit(1)
-            .execute()
+        _, roster_items, id_map = await asyncio.to_thread(
+            _load_my_roster, sb, body.league_id, body.my_team_id,
+            "fantrax_id,full_name,mlb_id,player_type,roster_status",
         )
-        if not roster_result.data:
-            raise HTTPException(status_code=404, detail="No roster found. Sync your league first.")
-
-        roster_items = roster_result.data[0].get("roster_items", [])
-        fantrax_ids = [item.get("id") for item in roster_items if item.get("id")]
-
-        map_result = await asyncio.to_thread(
-            lambda: sb.table("player_id_map")
-            .select("fantrax_id,full_name,mlb_id,player_type,roster_status")
-            .in_("fantrax_id", fantrax_ids)
-            .execute()
-        )
-        id_map = {r["fantrax_id"]: r for r in (map_result.data or [])}
 
         # MiLB players: player_id_map.roster_status == "Minors" is canonical;
         # fall back to the Fantrax roster status for not-yet-enriched prospects.
