@@ -11,24 +11,28 @@ export type WhatsNewEntry = {
 };
 
 export const WHATS_NEW: WhatsNewEntry = {
-  id: "2026-07-09",
-  date: "July 9, 2026",
+  id: "2026-07-15",
+  date: "July 15, 2026",
   items: [
     {
-      title: "Add / Drop Analyzer",
-      body: "New on the Waivers page (baseball & football). Tell it who you're adding — off IL, from waivers, or in a lopsided trade — and it ranks who to drop to make room.",
+      title: "Pull to refresh",
+      body: "Drag down from the top of any page to refresh — just like every other app on your phone.",
     },
     {
-      title: "Trade History",
-      body: "The Trade page has a History tab now. Every trade you analyze is saved with its verdict and full write-up, so you can look back at past advice.",
+      title: "Smarter waiver picks",
+      body: "Waiver Spotlight now works from real season stat lines for every available player, plus your remaining cap space — recommendations are sharper, faster, and always affordable.",
     },
     {
-      title: "Out-of-credits alerts",
-      body: "If your Anthropic key runs out of credits, you'll get a clear heads-up instead of features quietly failing to load.",
+      title: "News that knows your team",
+      body: "Player news now prioritizes your weakest categories and factors in each player's salary and contract year, instead of treating all 40 guys the same.",
     },
     {
-      title: "Sharper suggestions",
-      body: "Player valuation got an overhaul under the hood — better-balanced trade packages and smarter drop rankings.",
+      title: "Faster and steadier everywhere",
+      body: "A big under-the-hood pass: the app no longer stalls while a widget generates, syncs finish in seconds instead of half a minute, and double-tapping refresh can't bill your API key twice.",
+    },
+    {
+      title: "Little things",
+      body: "Live progress while category ranks auto-calculate, a Show/Hide toggle on your API key, retry buttons on trade errors, and bigger tap targets on mobile.",
     },
   ],
 };
