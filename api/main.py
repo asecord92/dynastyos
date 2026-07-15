@@ -834,11 +834,29 @@ def _today_line() -> str:
 
 
 def _extract_text(response: anthropic.types.Message) -> str:
-    text = "\n".join(
-        block.text
-        for block in response.content
-        if hasattr(block, "text") and block.type == "text"
-    )
+    # With web search enabled the model narrates BETWEEN tool calls ("Let me
+    # dig deeper…", "Good data. Kim has been placed on IL…"). Those interleaved
+    # text blocks are research process, not answer — the real response is the
+    # text after the LAST tool block. The phrase filter below only catches
+    # known preamble openers, so it can't be the primary defense.
+    blocks = response.content
+    last_tool = -1
+    for i, block in enumerate(blocks):
+        if getattr(block, "type", "") != "text":
+            last_tool = i
+
+    def joined(from_index: int) -> str:
+        return "\n".join(
+            block.text
+            for block in blocks[from_index:]
+            if hasattr(block, "text") and block.type == "text"
+        )
+
+    text = joined(last_tool + 1)
+    if not text.strip():
+        # Truncated response with nothing after the final search — better to
+        # show the narration than nothing at all.
+        text = joined(0)
     lines = text.split("\n")
     cleaned = []
     for line in lines:
@@ -2356,7 +2374,9 @@ From the unclaimed pool above, identify the best 4-5 players to target right now
 
 Prioritize players who address the team's weakest categories (high rank numbers), and keep recommendations affordable within the remaining cap space.
 
-Do not include any preamble or introduction. Start directly with the first player recommendation."""
+Finish with a **Priority order** section: one short line per player, in the order to add them, each naming the category it fixes — a scannable list, not a paragraph.
+
+Do not narrate your research process. Do not include any preamble or introduction. Start directly with the first player recommendation."""
 
         ai = get_ai_client_for_league(sb, body.league_id)
         response = ai.messages.create(
