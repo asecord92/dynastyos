@@ -426,6 +426,87 @@ def _trend_from(recent, season, threshold: float, higher_is_better: bool) -> str
     return "steady"
 
 
+# Completed seasons never change, so prior-season lines cache in-process for
+# the life of the deploy — one yearByYear call per player, ever.
+_prior_seasons_cache: dict[tuple[int, str], list[dict]] = {}
+
+
+async def get_prior_seasons(mlb_id: int, player_type: str, n: int = 2) -> list[dict]:
+    """Compact lines for the last `n` completed MLB seasons, most recent first.
+    Gives dynasty tools a career baseline so a proven producer having a down
+    season isn't valued like a scrub. Returns [] for players with no MLB track
+    record (prospects) or on fetch failure — failures are not cached."""
+    key = (mlb_id, player_type)
+    if key in _prior_seasons_cache:
+        return _prior_seasons_cache[key]
+
+    current = datetime.now().year
+    group = "hitting" if player_type == "hitter" else "pitching"
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await _get_with_retry(
+                client, f"{MLB_STATS_BASE}/people/{mlb_id}/stats",
+                params={"stats": "yearByYear", "group": group},
+            )
+        splits = _splits(resp)
+    except Exception as e:
+        print(f"[stats] Error fetching prior seasons for {mlb_id}: {e}")
+        return []
+
+    # A traded season appears as one split per team plus (usually) a combined
+    # row without a team — prefer that, else keep the row with the most games.
+    by_year: dict[int, dict] = {}
+    for s in splits:
+        try:
+            yr = int(s.get("season"))
+        except (TypeError, ValueError):
+            continue
+        if yr >= current:
+            continue
+        stat = s.get("stat", {})
+        existing = by_year.get(yr)
+        if existing is not None:
+            if "team" not in s:
+                by_year[yr] = {"stat": stat, "combined": True}
+            elif not existing.get("combined"):
+                old_g = existing["stat"].get("gamesPlayed") or existing["stat"].get("gamesStarted") or 0
+                new_g = stat.get("gamesPlayed") or stat.get("gamesStarted") or 0
+                if new_g > old_g:
+                    by_year[yr] = {"stat": stat}
+        else:
+            by_year[yr] = {"stat": stat, "combined": "team" not in s}
+
+    out: list[dict] = []
+    for yr in sorted(by_year, reverse=True)[:n]:
+        stat = by_year[yr]["stat"]
+        if player_type == "hitter":
+            out.append({
+                "season": yr,
+                "games": stat.get("gamesPlayed"),
+                "home_runs": stat.get("homeRuns"),
+                "runs": stat.get("runs"),
+                "rbi": stat.get("rbi"),
+                "stolen_bases": stat.get("stolenBases"),
+                "avg": stat.get("avg"),
+                "obp": stat.get("obp"),
+                "ops": stat.get("ops"),
+            })
+        else:
+            out.append({
+                "season": yr,
+                "innings_pitched": stat.get("inningsPitched"),
+                "era": stat.get("era"),
+                "whip": stat.get("whip"),
+                "strikeouts": stat.get("strikeOuts"),
+                "saves": stat.get("saves"),
+                "wins": stat.get("wins"),
+                "games_started": stat.get("gamesStarted"),
+            })
+
+    _prior_seasons_cache[key] = out
+    return out
+
+
 async def get_player_stats(mlb_id: int, player_type: str) -> dict | None:
     """
     Main entry point. Returns stats for a player, using cache if fresh.
