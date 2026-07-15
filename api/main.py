@@ -833,6 +833,20 @@ def _today_line() -> str:
     )
 
 
+# Delimiter the free-text widget prompts (news, waiver) are instructed to emit
+# before their final answer. Needed because the model bridges its last search
+# into the answer within a single text block ("This confirms Yates is the
+# closer. I have enough to finalize…"), so block-level cuts alone can't
+# separate narration from answer.
+_ANSWER_MARKER = "===ANSWER==="
+
+_ANSWER_MARKER_INSTRUCTION = (
+    f"When your research is complete, output the line {_ANSWER_MARKER} on its own, "
+    "then your final answer. Everything before that line is discarded — keep all "
+    "research commentary before it and never reference your research process after it."
+)
+
+
 def _extract_text(response: anthropic.types.Message) -> str:
     # With web search enabled the model narrates BETWEEN tool calls ("Let me
     # dig deeper…", "Good data. Kim has been placed on IL…"). Those interleaved
@@ -857,6 +871,12 @@ def _extract_text(response: anthropic.types.Message) -> str:
         # Truncated response with nothing after the final search — better to
         # show the narration than nothing at all.
         text = joined(0)
+
+    # Strongest cut: prompts that use _ANSWER_MARKER_INSTRUCTION delimit the
+    # answer explicitly; drop everything up to and including the marker.
+    marker_at = text.find(_ANSWER_MARKER)
+    if marker_at != -1:
+        text = text[marker_at + len(_ANSWER_MARKER):]
     lines = text.split("\n")
     cleaned = []
     for line in lines:
@@ -1890,7 +1910,7 @@ Roster (name (position, roster status, salary, contract year)):
 {weak_line}
 Search for and summarize recent news (last 2 weeks) for each player. Focus on: IL placements, returns from IL, lineup changes, role changes, injury updates, and anything else affecting fantasy value. Skip players with nothing to report. Format as a bulleted list with the player name in bold at the start of each item.
 
-Do not include any preamble, introduction, or horizontal rules (---). Do not say "Based on my research" or similar. Start directly with the first player bullet point."""
+{_ANSWER_MARKER_INSTRUCTION} After the marker: no preamble, no horizontal rules (---) — start directly with the first player bullet point."""
 
             ai = get_ai_client_for_league(sb, body.league_id)
             response = ai.messages.create(
@@ -2376,7 +2396,7 @@ Prioritize players who address the team's weakest categories (high rank numbers)
 
 Finish with a **Priority order** section: one short line per player, in the order to add them, each naming the category it fixes — a scannable list, not a paragraph.
 
-Do not narrate your research process. Do not include any preamble or introduction. Start directly with the first player recommendation."""
+{_ANSWER_MARKER_INSTRUCTION} After the marker: no preamble — start directly with the first player recommendation."""
 
         ai = get_ai_client_for_league(sb, body.league_id)
         response = ai.messages.create(
