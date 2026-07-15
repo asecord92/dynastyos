@@ -5,7 +5,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 from .supabase_client import get_supabase
-from .mlb_stats_client import get_player_stats, get_milb_player_summary
+from .mlb_stats_client import get_player_stats, get_milb_player_summary, get_prior_seasons
 from .rules import LeagueRules, ContractRules, load_rules
 from .player_value import production_ratings, assign_values
 
@@ -1017,9 +1017,15 @@ async def build_add_drop_context(
         mlb_id = mapped.get("mlb_id")
         ptype = mapped.get("player_type") or "hitter"
         season = {}
+        priors: list = []
         if mlb_id:
             async with sem:
                 stats = await get_player_stats(mlb_id, ptype)
+                # Career baseline for established players — dynasty value is a
+                # track record, not two months of box scores. Prospects (minors
+                # slot) have no MLB history to fetch.
+                if _slot(item) == "active":
+                    priors = await get_prior_seasons(mlb_id, ptype)
             season = (stats or {}).get("season_stats", {})
         return {
             "fantrax_id": item["id"],
@@ -1034,6 +1040,7 @@ async def build_add_drop_context(
             "il_type": mapped.get("il_type") or "",
             "slot": _slot(item),
             "season": season,
+            "priors": priors,
         }
 
     drop_assets = list(await asyncio.gather(*[build_asset(it) for it in drop_items]))
@@ -1114,6 +1121,26 @@ def build_add_drop_prompt(context: dict[str, Any]) -> str:
 
     incoming_lines = "\n".join(f"  {p['name']} | {p['position']}" for p in incoming) or "  (none)"
 
+    def _prior_line(p: dict) -> str:
+        priors = p.get("priors") or []
+        if not priors:
+            return "no prior MLB seasons"
+        parts_ = []
+        for yr in priors:
+            if p.get("player_type") == "pitcher":
+                parts_.append(
+                    f"{yr['season']}: {yr.get('innings_pitched', '?')}IP "
+                    f"{yr.get('era', '?')}ERA {yr.get('whip', '?')}WHIP "
+                    f"{yr.get('strikeouts', '?')}K {yr.get('saves', '?')}SV"
+                )
+            else:
+                parts_.append(
+                    f"{yr['season']}: {yr.get('games', '?')}G {yr.get('home_runs', '?')}HR "
+                    f"{yr.get('stolen_bases', '?')}SB {yr.get('avg', '?')}/{yr.get('obp', '?')}"
+                    f"/{yr.get('ops', '?')}"
+                )
+        return "; ".join(parts_)
+
     drop_lines = []
     for p in drops:
         status = p["status"] or p["roster_status"] or "active"
@@ -1121,7 +1148,8 @@ def build_add_drop_prompt(context: dict[str, Any]) -> str:
         drop_lines.append(
             f"  {p['fantrax_id']} | {p['name']} | {p['position']} | {_age_str(p.get('age'))} | "
             f"${p['salary']} | {p['contract']} yr | {status}{il} | "
-            f"talent={_fmt_num(p.get('talent'))} | value={_fmt_num(p.get('value'))}"
+            f"talent={_fmt_num(p.get('talent'))} | value={_fmt_num(p.get('value'))} | "
+            f"career: {_prior_line(p)}"
         )
     roster_block = "\n".join(drop_lines) or "  (none)"
 
@@ -1165,19 +1193,30 @@ def build_add_drop_prompt(context: dict[str, Any]) -> str:
     parts += [
         "",
         "Each drop candidate carries talent (0-100 production percentile, cost-blind) and value "
-        "(talent adjusted for salary/contract). Lower = more expendable, all else equal.",
+        "(talent adjusted for salary/contract). Both reflect THIS SEASON ONLY — weigh them "
+        "against the career lines, not in isolation.",
         slot_note,
         "",
-        "Drop candidates (id | player | pos | age | $salary | contract yr | status | talent | value):",
+        "Drop candidates (id | player | pos | age | $salary | contract yr | status | talent | "
+        "value | last two completed MLB seasons):",
         roster_block,
         "",
+        "Dynasty valuation rules — this league keeps players year over year:",
+        "- A player with a strong career line who is underperforming early in a contract "
+        "(years 1-2) is usually a HOLD, not a cut — dropping him sells an asset at its floor. "
+        "Cutting a proven star over a cold season is almost always wrong unless age or a serious "
+        "injury says the decline is real.",
+        "- A career-marginal player is expendable even during a decent stretch; a cheap top "
+        "prospect is a core asset, not a throwaway.",
+        "- Age plus trajectory across the career lines beats a few months of results. Positional "
+        "scarcity matters (an elite catcher is far harder to replace than a corner bat).",
+        "",
         f"{ask} to make this work. Rank them from most to least droppable. For EACH, give a "
-        "one-line rationale weighing: talent/production, positional redundancy RELATIVE TO who's "
-        "coming in (never drop the manager's only player at a position the incoming players don't "
-        "cover), impact on weak categories (don't gut a category they're already thin in), and "
-        "salary/contract (prefer shedding overpriced or expiring players; protect cheap, "
-        "cost-controlled young talent — in a dynasty league a cheap top prospect is a core asset, "
-        "not a throwaway). Prefer dropping replacement-level veterans and redundant depth first.",
+        "one-line rationale weighing: career track record vs current production, positional "
+        "redundancy RELATIVE TO who's coming in (never drop the manager's only player at a "
+        "position the incoming players don't cover), impact on weak categories (don't gut a "
+        "category they're already thin in), and salary/contract. Prefer dropping "
+        "replacement-level veterans and redundant depth first.",
         "",
         "Format: one short summary sentence, then a numbered list — "
         "'1. **Player Name** (pos, $salary, contract yr) — rationale'. Recommend ONLY players "
