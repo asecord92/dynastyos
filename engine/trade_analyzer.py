@@ -970,16 +970,45 @@ async def build_add_drop_context(
 
     incoming_ids = [inc["id"] for inc in incoming if inc.get("id")]
 
-    # Drop candidates: my roster minus what's already leaving, minus any incoming
-    # player already on my roster (activating them is the whole point).
-    exclude = set(outgoing_ids) | set(incoming_ids)
-    drop_items = [item for item in my_items if item.get("id") not in exclude]
-
     # Resolve my roster + incoming rostered players in one batched pass.
     resolve_ids = [item["id"] for item in my_items] + incoming_ids
     id_map: dict[str, dict] = {
         row["fantrax_id"]: row for row in await _db(lambda: _select_id_map(sb, resolve_ids))
     }
+
+    # Slot mechanics: minor-league and IL players don't occupy countable roster
+    # spots in Fantrax contract leagues, so cutting them frees NOTHING for an
+    # active-roster add. Minors players only enter the drop pool when an
+    # incoming player would take a minors slot; IL players never do.
+    def _slot(item: dict) -> str:
+        s = (item.get("status") or "").upper()
+        if s == "MINORS":
+            return "minors"
+        if s == "INJURED_RESERVE":
+            return "il"
+        return "active"
+
+    def _incoming_slot(inc: dict) -> str:
+        fid = inc.get("id")
+        if not fid:
+            return "active"  # free-text waiver adds land on the active roster
+        if _slot(item_by_id.get(fid, {})) == "minors":
+            return "minors"
+        if (id_map.get(fid, {}).get("roster_status") or "") == "Minors":
+            return "minors"
+        return "active"
+
+    need_minors_slot = any(_incoming_slot(inc) == "minors" for inc in incoming)
+
+    # Drop candidates: my roster minus what's already leaving, minus any incoming
+    # player already on my roster (activating them is the whole point), limited
+    # to players whose slot type the additions actually need.
+    exclude = set(outgoing_ids) | set(incoming_ids)
+    drop_items = [
+        item for item in my_items
+        if item.get("id") not in exclude
+        and (_slot(item) == "active" or (need_minors_slot and _slot(item) == "minors"))
+    ]
 
     sem = asyncio.Semaphore(12)
 
@@ -1003,6 +1032,7 @@ async def build_add_drop_context(
             "status": item.get("status", ""),
             "roster_status": mapped.get("roster_status") or "",
             "il_type": mapped.get("il_type") or "",
+            "slot": _slot(item),
             "season": season,
         }
 
@@ -1063,6 +1093,7 @@ async def build_add_drop_context(
         "incoming": incoming_resolved,
         "outgoing": outgoing_named,
         "spots_needed": max(0, len(incoming) - len(outgoing_ids)),
+        "minors_in_pool": need_minors_slot,
         "category_ranks": category_ranks,
     }
 
@@ -1117,10 +1148,25 @@ def build_add_drop_prompt(context: dict[str, Any]) -> str:
     ]
     if cap:
         parts.append(f"Salary cap: ${cap}")
+    slot_note = (
+        "Only players who actually occupy the roster spots being cleared are listed — "
+        "IL and minor-league stashes don't count against the active roster, so cutting "
+        "them frees nothing and they've been excluded."
+    )
+    if context.get("minors_in_pool"):
+        slot_note = (
+            "An incoming player needs a MINORS slot, so minor-league stashes appear in the "
+            "list (status MINORS) — only weigh those against each other for the minors spot. "
+            "IL players don't count against the roster and have been excluded. For minors "
+            "players, ignore the production numbers entirely (prospects have no MLB stats) — "
+            "judge them on age, prospect pedigree, and how close they are to contributing."
+        )
+
     parts += [
         "",
         "Each drop candidate carries talent (0-100 production percentile, cost-blind) and value "
         "(talent adjusted for salary/contract). Lower = more expendable, all else equal.",
+        slot_note,
         "",
         "Drop candidates (id | player | pos | age | $salary | contract yr | status | talent | value):",
         roster_block,
@@ -1130,10 +1176,12 @@ def build_add_drop_prompt(context: dict[str, Any]) -> str:
         "coming in (never drop the manager's only player at a position the incoming players don't "
         "cover), impact on weak categories (don't gut a category they're already thin in), and "
         "salary/contract (prefer shedding overpriced or expiring players; protect cheap, "
-        "cost-controlled young talent). Prefer dropping IL/bench stashes and redundant depth first.",
+        "cost-controlled young talent — in a dynasty league a cheap top prospect is a core asset, "
+        "not a throwaway). Prefer dropping replacement-level veterans and redundant depth first.",
         "",
         "Format: one short summary sentence, then a numbered list — "
         "'1. **Player Name** (pos, $salary, contract yr) — rationale'. Recommend ONLY players "
-        "from the drop candidates list above; never invent players or stats.",
+        "from the drop candidates list above; never invent players or stats. Never quote the raw "
+        "talent/value numbers — translate them into plain-language judgments.",
     ]
     return "\n".join(parts)
