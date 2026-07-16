@@ -27,6 +27,7 @@ Branch → PR → CI green → **squash-merge to main** → **Vercel** (frontend
 - `AppNav` = desktop top bar **+ mobile bottom tab bar** (`lg:hidden`). `useLeague` (selected league in localStorage + URL). `useDashboardWidget` (shared fetch hook + `authedFetch`) — reuse it for any cached widget. `lib/format.tsx` owns `timeAgo` + `MarkdownContent` — don't re-inline them.
 - AI streams (trade analyze/finder, add/drop) carry an `AbortController` aborted on unmount/league switch, with loading cleared via a controller-identity guard; `PullToRefresh` (in the `(app)` layout) reloads on a top-of-page pull.
 - Dashboard widgets: `StartSitPanel` (has a **Minors** tab → `MinorsPanel`), `CategoryRanksWidget` (manual entry **+ "Auto" compute**), `InjuryTicker`, `NewsWidget`, `WaiverWidget`.
+- `/roster` is the **Cap Planner** (replaced the old roster page 2026-07-16): `lib/capPlanner.ts` (pure contract math mirroring `engine/rules.py` — keep the two in sync), `lib/useLeagueRules.ts` (client-side `leagues.rules` fetch with backend-matching defaults), `components/CapPlanner.tsx`. Reads the sync snapshot + rules, projects next season per-player (extend/option/cut what-ifs) and auction budget. Old `CapCards`/`DecisionQueueTable`/`CapReliefTool`/`RosterTable`/`useRosterFilterSort` were deleted with it.
 - Tailwind v4. Mobile: bottom tab bar, `viewport-fit=cover` for safe areas, icons generated via `next/og` (`app/apple-icon.tsx`, `app/icon.tsx`).
 
 ## Gotchas (hard-won)
@@ -53,7 +54,7 @@ Branch → PR → CI green → **squash-merge to main** → **Vercel** (frontend
 
 ## Roadmap / not done
 - Dark theme **shipped** — a "command center" dark theme (canvas `#0a0c11`, `bg-gray-50` cards, Inter, violet accent). Implemented by inverting Tailwind's gray ramp in `web/app/globals.css` `@theme` (gray-50..300 = dark surfaces, 400..900 = light text; `red/amber/green-50` are dark tints). The original Navy/Lora spec was superseded.
-- **Agreed next-features order** (re-ranked by value 2026-07-15): 1) contract/cap planner page, 2) daily digest via the `/cron/refresh-widgets` warmer (needs scheduled trigger + push/email), 3) rank trends over time (auto-compute on sync + `category_rank_history` + sparklines), 4) trade outcome tracking on `trade_history`.
+- **Agreed next-features order** (re-ranked by value 2026-07-15): 1) contract/cap planner page — **shipped 2026-07-16** (the `/roster` rebuild), 2) daily digest via the `/cron/refresh-widgets` warmer (needs scheduled trigger + push/email), 3) rank trends over time (auto-compute on sync + `category_rank_history` + sparklines), 4) trade outcome tracking on `trade_history`.
 - RLS audited 2026-07-14 (`supabase/RLS_AUDIT.sql`): all 10 tables have RLS on; `leagues`/`rosters`/`snapshots` are owner-scoped for authenticated users; `user_secrets`/`app_events`/`trade_history` are service-role only; `player_id_map`/`player_stats`/`fantrax_players` are intentionally public-read. Base-table schemas are captured in `20260715_base_schema_documentation.sql` (no-op documentation migration).
 - Frontend lint stays advisory in CI — 26 pre-existing errors (several `react-hooks` rewrites) to clear before enforcing.
 - Deeper usage analytics (per-call token spend / time-series) on top of the admin dashboard's `app_events`.

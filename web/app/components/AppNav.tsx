@@ -29,7 +29,7 @@ const MOBILE_TABS: { href: string; label: string; icon: React.ReactNode }[] = [
   },
   {
     href: "/roster",
-    label: "Roster",
+    label: "Cap",
     icon: (
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <line x1="8" y1="6" x2="21" y2="6" /><line x1="8" y1="12" x2="21" y2="12" /><line x1="8" y1="18" x2="21" y2="18" />
@@ -255,7 +255,7 @@ export function AppNav() {
         <nav className="hidden lg:flex items-center justify-center gap-1 text-sm">
           {[
             { href: "/", label: "Dashboard" },
-            { href: "/roster", label: "Roster" },
+            { href: "/roster", label: "Cap Planner" },
             { href: "/waivers", label: "Waivers" },
             { href: "/trade", label: "Trade" },
           ].map((item) => {
