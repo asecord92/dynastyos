@@ -41,14 +41,14 @@ Branch → PR → CI green → **squash-merge to main** → **Vercel** (frontend
 ## League
 "Inglorious Bashers" — `fantrax_league_id = nb5ox442mglfjmdp`, team `h0kjoqh8mglfjmji`. The Supabase league UUID changes if the league is disconnected/reconnected.
 
-**Contract rules** (nailed down with Adam 2026-07-15; encoded in `engine/rules.py` + `_contract_block`):
+**Contract rules** (nailed down with Adam 2026-07-15/16, label scheme + offseason confirmed with commish/leaguemate; encoded in `engine/rules.py` + `_contract_block`):
 - Salary flat at draft price years 1–2. Option/extend/cut decided in the **offseason after year 2**.
 - EXTEND: under $15 → **exactly $15** (not salary+4); at/over $15 → +$4. Then +$4/yr forever, max **$75** (stays there). Salary never decreases.
 - OPTION: +$1 for one final year, then **auto-dropped** to auction (anyone, incl. former owner, can re-bid — it's a known strategy). CUT: anytime, no dead cap.
-- **Contract-year labels:** the commish relabels extended players straight to "4th yr", so **"3rd yr" = optioned lame duck (expiring rental)**; the decision queue flags 2nd-year players. *(Label scheme per Adam's recollection — confirm with commish.)*
-- Roster: 24 Act / 6 Res / 12 IR / 12 Minors. **Act+Res+IR salaries all count vs the $450 in-season cap; Minors don't.**
-- Trades: salary + contract year travel unchanged (no retention). Waiver adds: contract year 1 at bid price ($1 min); a player dropped mid-contract keeps his contract year when claimed (salary-on-claim TBD).
-- **Open questions:** offseason cap semantics (how the $335 interacts with keepers/IL at auction — Adam checking with his friend); salary of a claimed mid-contract player (bid vs inherited).
+- **Contract-year labels (commish-confirmed):** extended players are relabeled straight to "4th yr", so **"3rd yr" = optioned lame duck (expiring rental)**; the decision queue flags 2nd-year players.
+- Roster: 24 Act / 6 Res / 12 IR / 12 Minors. **Act+Res+IR salaries count vs the cap in BOTH seasons; Minors never do.**
+- **Season cap cycle:** offseason cap is **$335** — rosters must get under it *before* the auction draft (cuts / options expiring / trades). The remainder is the auction budget, and a team needs ≥$1 per empty roster spot ($1 min bid). **After the draft the cap rises to $450** so teams can absorb salary in trades. Teams projected over $335 must shed salary — a trade-leverage signal the AI prompt calls out.
+- Trades: salary + contract year travel unchanged (no retention). Waiver adds: contract year 1 at bid price ($1 min); a player dropped mid-contract keeps his contract **year** but re-enters at the claiming **bid price**.
 
 ## Roadmap / not done
 - Dark theme **shipped** — a "command center" dark theme (canvas `#0a0c11`, `bg-gray-50` cards, Inter, violet accent). Implemented by inverting Tailwind's gray ramp in `web/app/globals.css` `@theme` (gray-50..300 = dark surfaces, 400..900 = light text; `red/amber/green-50` are dark tints). The original Navy/Lora spec was superseded.

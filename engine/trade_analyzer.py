@@ -73,7 +73,9 @@ def _trajectory_example(draft: int, c: ContractRules) -> str:
     )
 
 
-def _contract_block(c: ContractRules) -> str:
+def _contract_block(rules: LeagueRules) -> str:
+    c = rules.contract
+    in_cap, off_cap = _money(rules.in_season_cap), _money(rules.offseason_cap)
     raise_, floor, option, cap = (
         _money(c.extend_raise), _money(c.extend_floor),
         _money(c.option_raise), _money(c.extend_cap),
@@ -95,7 +97,20 @@ def _contract_block(c: ContractRules) -> str:
   the option/extend decision after year 2.
 - Trades: salary and contract year travel with the player unchanged — no salary retention or splitting.
 - Waiver/FA adds enter on contract year 1 at their winning bid price ($1 minimum); a player dropped
-  mid-contract keeps his existing contract year when claimed.
+  mid-contract keeps his existing contract YEAR when claimed, but at the claiming bid price, not
+  his old salary.
+
+Season cap cycle:
+- In-season the cap is ${in_cap}. In the offseason it drops to ${off_cap}: every team's active, reserve,
+  and IR salaries (minors don't count) must get under ${off_cap} BEFORE the auction draft — via cuts,
+  optioned contracts expiring, and trades.
+- Whatever a team has left under ${off_cap} is its auction budget, and it needs at least $1 of budget
+  for every roster spot it has to fill at the draft ($1 minimum bid).
+- After the draft the cap rises back to ${in_cap}, creating room to absorb salary in trades.
+- Strategic lever: a team projected to be OVER ${off_cap} after the season must shed salary in the
+  offseason. Expensive extended contracts get harder to hold, cheap contracts get more valuable to
+  them, and they may sell stars at a discount. Factor a team's offseason cap crunch (or surplus)
+  into what they'd realistically accept.
 
 Extension trajectory examples:
 {examples}
@@ -129,7 +144,8 @@ def build_system_prompt(rules: LeagueRules | None = None, sport: str = "MLB") ->
         f"- Hitting categories: {', '.join(rules.scoring.hitting)}",
         f"- Pitching categories: {', '.join(rules.scoring.pitching)}",
         f"- In-season salary cap: ${_money(rules.in_season_cap)}",
-        f"- Offseason auction budget: ${_money(rules.offseason_cap)}",
+        f"- Offseason cap: ${_money(rules.offseason_cap)} (rosters must fit under it before the "
+        "auction draft; the remainder is the team's auction budget)",
     ]
     if rules.slots is not None:
         s = rules.slots
@@ -137,12 +153,13 @@ def build_system_prompt(rules: LeagueRules | None = None, sport: str = "MLB") ->
             f"- Roster slots: {s.active} active, {s.reserve} reserve, {s.ir} IR, {s.minors} minors"
         )
         fmt.append(
-            "- Active, reserve, AND IR salaries all count against the in-season cap; minors salaries do not"
+            "- Active, reserve, AND IR salaries all count against the cap (in-season and offseason); "
+            "minors salaries never do"
         )
     parts.append("\n".join(fmt))
 
     if rules.contract is not None:
-        parts.append(_contract_block(rules.contract))
+        parts.append(_contract_block(rules))
 
     return "\n\n".join(parts)
 
