@@ -251,7 +251,7 @@ export function LeagueRulesEditor({ leagueId }: { leagueId: string }) {
           <input className={inputCls} value={inSeasonCap} onChange={(e) => setInSeasonCap(e.target.value)} inputMode="numeric" />
         </div>
         <div className="space-y-2">
-          <label className={labelCls}>Offseason budget</label>
+          <label className={labelCls}>Offseason cap</label>
           <input className={inputCls} value={offseasonCap} onChange={(e) => setOffseasonCap(e.target.value)} inputMode="numeric" />
         </div>
       </div>
