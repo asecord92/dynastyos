@@ -1,4 +1,5 @@
 import asyncio
+import time
 import traceback
 import os
 import re
@@ -284,55 +285,156 @@ def _ai_http_error(exc: BaseException) -> HTTPException | None:
     return HTTPException(status_code=_AI_ERROR_STATUS[code], detail=code)
 
 
+# --- AI usage metering --------------------------------------------------------
+# Every Anthropic response carries exact token/web-search counts; we persist
+# them per call in `ai_usage` (see 20260716_ai_usage.sql — no prompt content,
+# just meters). Best-effort: a logging failure must never break a real request.
+# The table may predate its migration being applied — remember that and stop
+# trying instead of erroring on every call.
+_AI_USAGE_TABLE_MISSING = False
+
+
+def _usage_counts(usage) -> dict:
+    """Flatten an Anthropic Usage object (or None) into our counter columns."""
+    def num(attr: str, obj=usage) -> int:
+        try:
+            return int(getattr(obj, attr, 0) or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    server_tools = getattr(usage, "server_tool_use", None) if usage else None
+    return {
+        "input_tokens": num("input_tokens"),
+        "output_tokens": num("output_tokens"),
+        "cache_read_tokens": num("cache_read_input_tokens"),
+        "cache_creation_tokens": num("cache_creation_input_tokens"),
+        "web_searches": num("web_search_requests", server_tools) if server_tools else 0,
+    }
+
+
+def _log_ai_usage(ctx: dict | None, model, usage, duration_ms: int, ok: bool, error: str | None = None):
+    """Insert one ai_usage row. Called from worker threads / threadpool stream
+    generators, so the blocking insert is fine."""
+    global _AI_USAGE_TABLE_MISSING
+    if ctx is None or _AI_USAGE_TABLE_MISSING:
+        return
+    try:
+        get_supabase().table("ai_usage").insert({
+            "league_id": ctx.get("league_id"),
+            "user_id": ctx.get("user_id"),
+            "tool": ctx.get("tool") or "unknown",
+            "model": model,
+            **_usage_counts(usage),
+            "duration_ms": duration_ms,
+            "ok": ok,
+            "error": str(error)[:300] if error else None,
+        }).execute()
+    except Exception as e:
+        if "ai_usage" in str(e) and ("does not exist" in str(e) or "PGRST205" in str(e)):
+            _AI_USAGE_TABLE_MISSING = True  # migration not applied yet — go quiet
+        else:
+            traceback.print_exc()
+
+
+class _LoggedStreamManager:
+    """Wraps the SDK's MessageStreamManager so usage is logged when the stream
+    context exits — from the accumulated message snapshot, which is populated
+    even if the client disconnected mid-stream (partial counts beat none)."""
+
+    def __init__(self, manager, ctx: dict | None, model):
+        self._manager = manager
+        self._ctx = ctx
+        self._model = model
+        self._t0 = time.monotonic()
+        self._stream = None
+
+    def __enter__(self):
+        self._stream = self._manager.__enter__()
+        return self._stream
+
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            snapshot = getattr(self._stream, "current_message_snapshot", None)
+            _log_ai_usage(
+                self._ctx,
+                self._model,
+                getattr(snapshot, "usage", None),
+                duration_ms=int((time.monotonic() - self._t0) * 1000),
+                ok=exc is None,
+                error=(_ai_error_code(exc) or str(exc)) if exc else None,
+            )
+        except Exception:
+            traceback.print_exc()
+        return self._manager.__exit__(exc_type, exc, tb)
+
+
 class _MessagesProxy:
     """Wraps `client.messages` so non-streaming `.create()` calls translate
     Anthropic key/billing errors into our HTTPExceptions (caught by each
-    endpoint's `except HTTPException: raise`). `.stream()` passes through — the
-    streaming trade endpoints handle their own errors, since a mid-stream failure
-    can't change an already-committed HTTP status."""
+    endpoint's `except HTTPException: raise`), and so every call — streaming or
+    not — meters its token/web-search usage into `ai_usage`. Stream errors still
+    surface to the endpoints' own handlers, since a mid-stream failure can't
+    change an already-committed HTTP status."""
 
-    def __init__(self, inner):
+    def __init__(self, inner, ctx: dict | None = None):
         self._inner = inner
+        self._ctx = ctx
 
     def create(self, *args, **kwargs):
+        t0 = time.monotonic()
         try:
-            return self._inner.create(*args, **kwargs)
+            resp = self._inner.create(*args, **kwargs)
         except anthropic.APIStatusError as e:
+            _log_ai_usage(
+                self._ctx, kwargs.get("model"), None,
+                duration_ms=int((time.monotonic() - t0) * 1000),
+                ok=False, error=_ai_error_code(e) or str(e),
+            )
             raise (_ai_http_error(e) or e)
+        _log_ai_usage(
+            self._ctx, kwargs.get("model"), getattr(resp, "usage", None),
+            duration_ms=int((time.monotonic() - t0) * 1000), ok=True,
+        )
+        return resp
 
     def stream(self, *args, **kwargs):
-        return self._inner.stream(*args, **kwargs)
+        return _LoggedStreamManager(
+            self._inner.stream(*args, **kwargs), self._ctx, kwargs.get("model")
+        )
 
     def __getattr__(self, name):
         return getattr(self._inner, name)
 
 
 class _AIClientProxy:
-    def __init__(self, inner):
+    def __init__(self, inner, ctx: dict | None = None):
         self._inner = inner
+        self._ctx = ctx
 
     @property
     def messages(self):
-        return _MessagesProxy(self._inner.messages)
+        return _MessagesProxy(self._inner.messages, self._ctx)
 
     def __getattr__(self, name):
         return getattr(self._inner, name)
 
 
-def get_ai_client_for_league(sb, league_id: str) -> anthropic.Anthropic:
+def get_ai_client_for_league(sb, league_id: str, tool: str | None = None) -> anthropic.Anthropic:
     """Anthropic client keyed to the league owner's stored key. Raises 402
     (NoApiKeyError) when the owner hasn't set one — AI features stay off until
     they bring their own key. Works on the background cron path too: it resolves
     the owner from the league row, not from a logged-in user. The returned client
-    translates key/billing errors (see `_MessagesProxy`)."""
-    key = _get_user_api_key(sb, _league_owner(sb, league_id))
+    translates key/billing errors and meters usage under `tool` (see
+    `_MessagesProxy`)."""
+    owner = _league_owner(sb, league_id)
+    key = _get_user_api_key(sb, owner)
     if not key:
         raise NoApiKeyError()
     client = _ai_client_cache.get(key)
     if client is None:
         client = anthropic.Anthropic(api_key=key)
         _ai_client_cache[key] = client
-    return _AIClientProxy(client)
+    return _AIClientProxy(client, {"league_id": league_id, "user_id": owner, "tool": tool})
 
 
 class ApiKeyRequest(BaseModel):
@@ -1495,7 +1597,7 @@ async def trade_analyze(
             prompt = build_trade_prompt(context)
             system_prompt = build_system_prompt(context["rules"], context["sport"])
 
-        ai = get_ai_client_for_league(get_supabase(), body.league_id)
+        ai = get_ai_client_for_league(get_supabase(), body.league_id, tool="trade_analyze")
 
         # ndjson protocol (same as /trade/finder): an immediate `meta` event
         # commits the response before Opus starts thinking — adaptive thinking
@@ -1622,7 +1724,7 @@ async def waivers_add_drop(
             )
             prompt = build_add_drop_prompt(context)
             system_prompt = build_system_prompt(context["rules"], context["sport"])
-        ai = get_ai_client_for_league(sb, body.league_id)
+        ai = get_ai_client_for_league(sb, body.league_id, tool="add_drop")
 
         # ndjson protocol — same as /trade/analyze: immediate `meta` event so the
         # proxy sees bytes before Opus finishes thinking; errors stream as events.
@@ -1731,7 +1833,7 @@ async def trade_finder(
         parse_assets = context.get("my_assets", [])
         prompt = build_finder_prompt(context)
         system_prompt = build_system_prompt(context["rules"], context["sport"])
-    ai = get_ai_client_for_league(get_supabase(), body.league_id)
+    ai = get_ai_client_for_league(get_supabase(), body.league_id, tool="trade_finder")
 
     def event(obj: dict) -> str:
         return _json.dumps(obj) + "\n"
@@ -1800,7 +1902,7 @@ def _nfl_start_sit(sb, body) -> dict:
         {"name": it.get("name"), "status": it.get("injury_status"), "detail": f"Listed {it.get('injury_status')}"}
         for it in items if it.get("injury_status")
     ]
-    ai = get_ai_client_for_league(sb, body.league_id)
+    ai = get_ai_client_for_league(sb, body.league_id, tool="start_sit")
     response = ai.messages.create(
         model=MODEL_DASHBOARD, max_tokens=5000, thinking=_NO_THINKING, tools=_WEB_SEARCH,
         messages=[{"role": "user", "content": nfl_start_sit_prompt(team_name, items)}],
@@ -1825,7 +1927,7 @@ def _nfl_news(sb, body) -> dict:
     team_name, items = nfl_my_roster(sb, body.league_id, body.my_team_id)
     if not items:
         return {"content": "Sync your league to see news.", "updated_at": _now_iso()}
-    ai = get_ai_client_for_league(sb, body.league_id)
+    ai = get_ai_client_for_league(sb, body.league_id, tool="news")
     response = ai.messages.create(
         model=MODEL_DASHBOARD, max_tokens=3000, thinking=_NO_THINKING, tools=_WEB_SEARCH,
         messages=[{"role": "user", "content": nfl_news_prompt(team_name, items)}],
@@ -1841,7 +1943,7 @@ def _nfl_waiver(sb, body) -> dict:
     fmt_key = f"pts_{((league.get('rules') or {}).get('scoring_format') or 'half_ppr')}"
     team_name, _items = nfl_my_roster(sb, body.league_id, body.my_team_id)
     fas = nfl_waiver_pool(sb, body.league_id, fmt_key)
-    ai = get_ai_client_for_league(sb, body.league_id)
+    ai = get_ai_client_for_league(sb, body.league_id, tool="waiver")
     response = ai.messages.create(
         model=MODEL_DASHBOARD, max_tokens=3000, thinking=_NO_THINKING, tools=_WEB_SEARCH,
         messages=[{"role": "user", "content": nfl_waiver_prompt(team_name or "Your Team", fas)}],
@@ -1912,7 +2014,7 @@ Search for and summarize recent news (last 2 weeks) for each player. Focus on: I
 
 {_ANSWER_MARKER_INSTRUCTION} After the marker: no preamble, no horizontal rules (---) — start directly with the first player bullet point."""
 
-            ai = get_ai_client_for_league(sb, body.league_id)
+            ai = get_ai_client_for_league(sb, body.league_id, tool="news")
             response = ai.messages.create(
                 model=MODEL_DASHBOARD,
                 max_tokens=3000,
@@ -2105,7 +2207,7 @@ Rules:
 - alerts: include DTD players and the IL players you researched above (status = IL type, detail = injury + expected return you found). Do not re-list MiLB players.
 - Include every player from the Active/Reserve roster above in the players array"""
 
-        ai = get_ai_client_for_league(sb, body.league_id)
+        ai = get_ai_client_for_league(sb, body.league_id, tool="start_sit")
         response = ai.messages.create(
             model=MODEL_DASHBOARD,
             max_tokens=5000,
@@ -2398,7 +2500,7 @@ Finish with a **Priority order** section: one short line per player, in the orde
 
 {_ANSWER_MARKER_INSTRUCTION} After the marker: no preamble — start directly with the first player recommendation."""
 
-        ai = get_ai_client_for_league(sb, body.league_id)
+        ai = get_ai_client_for_league(sb, body.league_id, tool="waiver")
         response = ai.messages.create(
             model=MODEL_DASHBOARD,
             max_tokens=5000,
