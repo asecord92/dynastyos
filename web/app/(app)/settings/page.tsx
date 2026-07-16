@@ -6,6 +6,7 @@ import { supabase } from "../../lib/supabaseClient";
 import { useLeague } from "../../lib/useLeague";
 import { UploadAnalyze } from "../../components/UploadAnalyze";
 import { LeagueRulesEditor } from "../../components/LeagueRulesEditor";
+import { DigestToggle } from "../../components/DigestToggle";
 import { ApiKeySection } from "../../components/settings/ApiKeySection";
 import { authedFetch } from "../../lib/useDashboardWidget";
 import type { AnalyzeResult } from "../../lib/types";
@@ -683,6 +684,19 @@ export default function SettingsPage() {
             </p>
           </div>
           <LeagueRulesEditor leagueId={leagueId} />
+        </div>
+      )}
+
+      {/* Daily Digest */}
+      {leagueId && (
+        <div className="grid grid-cols-1 md:grid-cols-[200px_1fr] gap-4 md:gap-8 py-8 border-t border-gray-200">
+          <div>
+            <div className="text-xs font-semibold uppercase tracking-widest text-gray-400">Daily Digest</div>
+            <p className="text-sm text-gray-400 mt-2 leading-relaxed">
+              Your team&apos;s morning brief, by email.
+            </p>
+          </div>
+          <DigestToggle leagueId={leagueId} />
         </div>
       )}
 

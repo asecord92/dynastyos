@@ -15,6 +15,10 @@ export const WHATS_NEW: WhatsNewEntry = {
   date: "July 16, 2026",
   items: [
     {
+      title: "Your morning digest",
+      body: "Every day around 9 AM PT, DynastyOS emails you a brief for your team: a punchy AI-written lead, today's start/sit calls, the news that matters, and the waiver move to make. Turn it off any time in Settings.",
+    },
+    {
       title: "The Roster page is now the Cap Planner",
       body: "Every player grouped by contract situation with live what-ifs: toggle extend/option/cut on your 2nd-years and keep/cut on everyone else, and watch next season's committed salary, your room under the $335 offseason cap, and your real auction budget (after $1 holds for open spots) update instantly.",
     },

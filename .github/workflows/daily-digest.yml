@@ -1,0 +1,30 @@
+# Morning digest: warm the AI widgets, then email each opted-in league owner.
+# Schedule is UTC — 16:00 UTC = 9:00 AM PDT (8:00 AM in winter PST; GitHub cron
+# can also drift a few minutes at busy times, both fine for a morning email).
+#
+# Secrets: API_URL (Railway backend base URL, no trailing slash) and
+# CRON_SECRET (must match the backend's CRON_SECRET env var).
+name: Daily Digest
+
+on:
+  schedule:
+    - cron: "0 16 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Warm widgets
+        run: |
+          curl -sS --fail-with-body --max-time 570 -X POST \
+            "$API_URL/cron/refresh-widgets" \
+            -H "x-cron-secret: $CRON_SECRET"
+      - name: Send digest
+        run: |
+          curl -sS --fail-with-body --max-time 570 -X POST \
+            "$API_URL/cron/daily-digest" \
+            -H "x-cron-secret: $CRON_SECRET"
+    env:
+      API_URL: ${{ secrets.API_URL }}
+      CRON_SECRET: ${{ secrets.CRON_SECRET }}
