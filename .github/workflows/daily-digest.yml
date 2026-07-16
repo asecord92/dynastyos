@@ -1,4 +1,8 @@
-# Morning digest: warm the AI widgets, then email each opted-in league owner.
+# Morning digest: one fast call — the backend warms the widgets and sends the
+# emails as a background job (a live HTTP request would be cut by Railway's
+# ~5-minute edge timeout; the first run died exactly that way). The run's
+# outcome lands in app_events, visible on the admin page.
+#
 # Schedule is UTC — 16:00 UTC = 9:00 AM PDT (8:00 AM in winter PST; GitHub cron
 # can also drift a few minutes at busy times, both fine for a morning email).
 #
@@ -15,14 +19,9 @@ jobs:
   digest:
     runs-on: ubuntu-latest
     steps:
-      - name: Warm widgets
+      - name: Trigger digest
         run: |
-          curl -sS --fail-with-body --max-time 570 -X POST \
-            "$API_URL/cron/refresh-widgets" \
-            -H "x-cron-secret: $CRON_SECRET"
-      - name: Send digest
-        run: |
-          curl -sS --fail-with-body --max-time 570 -X POST \
+          curl -sS --fail-with-body --max-time 60 -X POST \
             "$API_URL/cron/daily-digest" \
             -H "x-cron-secret: $CRON_SECRET"
     env:
