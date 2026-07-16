@@ -11,8 +11,8 @@ export type WhatsNewEntry = {
 };
 
 export const WHATS_NEW: WhatsNewEntry = {
-  id: "2026-07-15",
-  date: "July 15, 2026",
+  id: "2026-07-16",
+  date: "July 16, 2026",
   items: [
     {
       title: "The Roster page is now the Cap Planner",
@@ -20,31 +20,15 @@ export const WHATS_NEW: WhatsNewEntry = {
     },
     {
       title: "The app knows your real contract rules now",
-      body: "Extensions under $15 jump to exactly $15, the max is $75, and a 3rd-year player is understood for what he is — an optioned rental in his final season. Every trade and add/drop recommendation now prices contracts correctly.",
+      body: "Extensions under $15 jump to exactly $15, the max is $75, a 3rd-year player is understood for what he is — an optioned rental in his final season — and prospects in minors slots don't burn contract years. Every trade and add/drop recommendation now prices contracts correctly.",
+    },
+    {
+      title: "It thinks about the offseason too",
+      body: "The AI knows the full cap cycle: get under $335 before the draft, whatever's left is your auction budget, then $450 in-season. It'll even spot when a rival is projected over the number and has to dump salary.",
     },
     {
       title: "Honest cap math",
-      body: "IL salaries count against your in-season cap (as the league actually plays it), and the Decision Queue now flags the right players: 2nd-years facing this offseason's extend-or-option call, plus your expiring optioned guys.",
-    },
-    {
-      title: "Pull to refresh",
-      body: "Drag down from the top of any page to refresh — just like every other app on your phone.",
-    },
-    {
-      title: "Smarter waiver picks",
-      body: "Waiver Spotlight now works from real season stat lines for every available player, plus your remaining cap space — recommendations are sharper, faster, and always affordable.",
-    },
-    {
-      title: "News that knows your team",
-      body: "Player news now prioritizes your weakest categories and factors in each player's salary and contract year, instead of treating all 40 guys the same.",
-    },
-    {
-      title: "Faster and steadier everywhere",
-      body: "A big under-the-hood pass: the app no longer stalls while a widget generates, syncs finish in seconds instead of half a minute, and double-tapping refresh can't bill your API key twice.",
-    },
-    {
-      title: "Little things",
-      body: "Live progress while category ranks auto-calculate, a Show/Hide toggle on your API key, retry buttons on trade errors, and bigger tap targets on mobile.",
+      body: "IL salaries count against your in-season cap (as the league actually plays it), so the numbers on the Cap Planner match reality.",
     },
   ],
 };
