@@ -1,10 +1,14 @@
 import asyncio
+import html as _html
+import smtplib
 import time
 import traceback
 import os
 import re
 import json as _json
 import tempfile
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from fastapi import FastAPI, UploadFile, File, Query, HTTPException, BackgroundTasks, Depends, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
@@ -1065,6 +1069,250 @@ async def cron_refresh_widgets(x_cron_secret: str = Header(default="")):
             except Exception as e:
                 print(f"[cron] refresh failed {league_id}:{widget}: {e}")
     return {"refreshed": refreshed, "count": len(refreshed)}
+
+
+# --- Daily digest email ---------------------------------------------------------
+# Assembled from the already-cached widgets (kept warm by /cron/refresh-widgets,
+# which the workflow calls first) plus one small no-search AI call for "The
+# Lead" — a punchy morning brief in the trade advisor's voice. Sent via Gmail
+# SMTP (GMAIL_ADDRESS + GMAIL_APP_PASSWORD env). Per-league opt-out via
+# leagues.digest_enabled; recipients are each league owner's auth email.
+
+# Reading the cache for the digest: anything generated this morning (or still
+# within the widget TTL) qualifies — we never trigger a generation from here.
+_DIGEST_CACHE_WINDOW = timedelta(hours=6)
+
+
+def _md_lite_html(text: str) -> str:
+    """Tiny markdown-to-HTML for email bodies: **bold**, bullet lines, paragraphs.
+    Everything is HTML-escaped first — widget content is model output."""
+    out: list[str] = []
+    in_list = False
+    for raw_line in (text or "").splitlines():
+        line = _html.escape(raw_line.strip())
+        line = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", line)
+        is_bullet = line.startswith(("- ", "* ", "• "))
+        if is_bullet:
+            if not in_list:
+                out.append('<ul style="margin:6px 0 12px;padding-left:20px;">')
+                in_list = True
+            out.append(f'<li style="margin:4px 0;">{line[2:].strip()}</li>')
+        else:
+            if in_list:
+                out.append("</ul>")
+                in_list = False
+            if line:
+                out.append(f'<p style="margin:6px 0;">{line}</p>')
+    if in_list:
+        out.append("</ul>")
+    return "\n".join(out)
+
+
+def _digest_start_sit_text(raw: str) -> str:
+    """Condense the cached start_sit JSON into a few readable lines."""
+    try:
+        content = _json.loads(raw)
+    except Exception:
+        return ""
+    by_rec: dict[str, list[str]] = {}
+    for p in content.get("players") or []:
+        rec = (p.get("recommendation") or "").lower()
+        if p.get("name"):
+            by_rec.setdefault(rec, []).append(p["name"])
+    lines = [
+        f"**{label}:** {', '.join(names)}"
+        for label, key in (("Start", "start"), ("Monitor", "monitor"), ("Sit", "sit"))
+        if (names := by_rec.get(key))
+    ]
+    for a in (content.get("alerts") or [])[:6]:
+        if a.get("name"):
+            status = f" ({a['status']})" if a.get("status") else ""
+            detail = f" — {a['detail']}" if a.get("detail") else ""
+            lines.append(f"- {a['name']}{status}{detail}")
+    return "\n".join(lines)
+
+
+def _digest_waiver_text(raw: str) -> str:
+    """Prefer the scannable Priority order section; fall back to a trimmed body."""
+    m = re.search(r"\*\*Priority order\*\*[:\s]*", raw or "", re.IGNORECASE)
+    if m:
+        return raw[m.start():][:1500]
+    return (raw or "")[:1500]
+
+
+def _digest_lead(sb, league_id: str, sport: str, sections: dict[str, str], standings_line: str) -> str | None:
+    """One small no-web-search AI call that turns the cached intel into 'The
+    Lead'. Returns None (digest still sends, stitched-only) if the owner has no
+    key or the call fails — the lead is garnish, not load-bearing."""
+    intel = "\n\n".join(f"## {title}\n{body[:2500]}" for title, body in sections.items() if body)
+    if standings_line:
+        intel = f"## Standings\n{standings_line}\n\n{intel}"
+    if not intel:
+        return None
+    sport_word = "football" if sport == "NFL" else "baseball"
+    prompt = f"""You write "The Lead" of a dynasty {sport_word} team's morning email digest. You are sharp,
+opinionated, and direct — a trusted advisor, not a newsletter bot. {_today_line()}
+
+Below is this morning's intel for the team (already generated — do not invent anything beyond it).
+
+{intel}
+
+Write The Lead: 3-5 punchy markdown bullets, about 100 words TOTAL. Pick only what actually matters
+today — the one news item that changes something, a borderline lineup call with your verdict, the #1
+waiver move and why, the standings picture only if it's notable. No preamble, no headers, no
+sign-off — start directly with the first bullet."""
+    try:
+        ai = get_ai_client_for_league(sb, league_id, tool="digest")
+        response = ai.messages.create(
+            model=MODEL_DASHBOARD,
+            max_tokens=800,
+            thinking=_NO_THINKING,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        lead = _extract_text(response).strip()
+        return lead or None
+    except Exception as e:
+        print(f"[digest] lead generation failed for {league_id}: {e}")
+        return None
+
+
+def _digest_email_bodies(league_name: str, sport: str, lead: str | None,
+                         sections: dict[str, str], standings_line: str) -> tuple[str, str, str]:
+    """(subject, html, plain-text) for one league's digest."""
+    try:
+        from zoneinfo import ZoneInfo
+        today = datetime.now(ZoneInfo("America/Los_Angeles"))
+    except Exception:
+        today = datetime.now(timezone.utc)
+    emoji = "🏈" if sport == "NFL" else "⚾"
+    subject = f"{emoji} {league_name} Daily — {today.strftime('%A, %B %d')}"
+
+    html_parts = [
+        '<div style="max-width:600px;margin:0 auto;font-family:-apple-system,Segoe UI,Roboto,sans-serif;color:#1a1a1a;font-size:15px;line-height:1.5;padding:16px;">',
+        f'<h2 style="margin:0 0 2px;">{emoji} {_html.escape(league_name)} Daily</h2>',
+        f'<div style="color:#777;font-size:13px;margin-bottom:14px;">{today.strftime("%A, %B %d, %Y")}'
+        + (f" · {_html.escape(standings_line)}" if standings_line else "") + "</div>",
+    ]
+    text_parts = [f"{league_name} Daily — {today.strftime('%A, %B %d, %Y')}"]
+    if standings_line:
+        text_parts.append(standings_line)
+
+    if lead:
+        html_parts.append(
+            '<div style="background:#f4f1fb;border-left:4px solid #7c3aed;border-radius:8px;padding:10px 14px;margin-bottom:16px;">'
+            + _md_lite_html(lead) + "</div>"
+        )
+        text_parts += ["", "THE LEAD", lead]
+
+    for title, body in sections.items():
+        if not body:
+            continue
+        html_parts.append(
+            f'<h3 style="margin:18px 0 4px;border-bottom:1px solid #e5e5e5;padding-bottom:4px;">{_html.escape(title)}</h3>'
+        )
+        html_parts.append(_md_lite_html(body))
+        text_parts += ["", title.upper(), body]
+
+    html_parts.append(
+        '<div style="color:#999;font-size:12px;margin-top:22px;border-top:1px solid #e5e5e5;padding-top:10px;">'
+        "Sent by DynastyOS. Turn the daily digest off in Settings.</div></div>"
+    )
+    text_parts += ["", "Sent by DynastyOS. Turn the daily digest off in Settings."]
+    return subject, "\n".join(html_parts), "\n".join(text_parts)
+
+
+def _send_email_gmail(to_addr: str, subject: str, html: str, text: str) -> None:
+    sender = os.getenv("GMAIL_ADDRESS")
+    password = os.getenv("GMAIL_APP_PASSWORD")
+    if not sender or not password:
+        raise RuntimeError("GMAIL_ADDRESS / GMAIL_APP_PASSWORD not configured")
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = f"DynastyOS <{sender}>"
+    msg["To"] = to_addr
+    msg.attach(MIMEText(text, "plain"))
+    msg.attach(MIMEText(html, "html"))
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=30) as smtp:
+        smtp.login(sender, password)
+        smtp.sendmail(sender, [to_addr], msg.as_string())
+
+
+def _owner_email(sb, user_id: str | None) -> str | None:
+    if not user_id:
+        return None
+    try:
+        res = sb.auth.admin.get_user_by_id(user_id)
+        return getattr(getattr(res, "user", res), "email", None)
+    except Exception:
+        return None
+
+
+def _send_league_digest(sb, league: dict) -> str:
+    """Assemble + send one league's digest. Blocking — run in a worker thread.
+    Returns a short status string for the cron response."""
+    league_id = league.get("id")
+    if league.get("digest_enabled") is False:  # missing column/value = opted in
+        return "opted_out"
+    email = _owner_email(sb, league.get("owner_user_id"))
+    if not email:
+        return "no_email"
+
+    sections: dict[str, str] = {}
+    row = _check_cache(sb, league_id, "start_sit", force=False, max_age=_DIGEST_CACHE_WINDOW)
+    if row:
+        sections["Today's Calls"] = _digest_start_sit_text(row["content"])
+    row = _check_cache(sb, league_id, "news", force=False, max_age=_DIGEST_CACHE_WINDOW)
+    if row:
+        sections["News"] = (row["content"] or "")[:3000]
+    row = _check_cache(sb, league_id, "waiver", force=False, max_age=_DIGEST_CACHE_WINDOW)
+    if row:
+        sections["Waiver Watch"] = _digest_waiver_text(row["content"])
+    if not any(sections.values()):
+        return "no_content"  # dormant league (warmer skipped it too) — nothing to say
+
+    sport = league.get("sport") or "MLB"
+    standings_line = ""
+    if league.get("fantrax_league_id") and league.get("fantrax_team_id"):
+        try:
+            s = _build_standings(league["fantrax_league_id"], league["fantrax_team_id"])
+            if s.get("rank"):
+                standings_line = f"{s['record']}, #{s['rank']} of {s['total_teams']}"
+        except Exception:
+            pass
+
+    lead = _digest_lead(sb, league_id, sport, sections, standings_line)
+    subject, html_body, text_body = _digest_email_bodies(
+        league.get("name") or "Your League", sport, lead, sections, standings_line
+    )
+    _send_email_gmail(email, subject, html_body, text_body)
+    return "sent"
+
+
+@app.post("/cron/daily-digest")
+async def cron_daily_digest(x_cron_secret: str = Header(default="")):
+    """Machine-triggered morning digest, one email per opted-in league. The
+    workflow calls /cron/refresh-widgets first so the cache is warm; this
+    endpoint never generates widgets itself. Best-effort per league."""
+    secret = os.getenv("CRON_SECRET")
+    if not secret or x_cron_secret != secret:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    sb = get_supabase()
+    leagues = (await asyncio.to_thread(
+        lambda: sb.table("leagues").select("*").execute()
+    )).data or []
+
+    results: dict[str, str] = {}
+    for lg in leagues:
+        if not lg.get("id"):
+            continue
+        try:
+            results[lg["id"]] = await asyncio.to_thread(_send_league_digest, sb, lg)
+        except Exception as e:
+            print(f"[digest] failed for {lg.get('id')}: {e}")
+            results[lg["id"]] = f"error: {e}"
+    sent = sum(1 for v in results.values() if v == "sent")
+    return {"sent": sent, "results": results}
 
 
 def _build_standings(fantrax_league_id: str, my_team_id: str) -> dict:
