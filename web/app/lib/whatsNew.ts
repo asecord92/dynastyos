@@ -15,6 +15,10 @@ export const WHATS_NEW: WhatsNewEntry = {
   date: "July 15, 2026",
   items: [
     {
+      title: "The Roster page is now the Cap Planner",
+      body: "Every player grouped by contract situation with live what-ifs: toggle extend/option/cut on your 2nd-years and keep/cut on everyone else, and watch next season's committed salary, your room under the $335 offseason cap, and your real auction budget (after $1 holds for open spots) update instantly.",
+    },
+    {
       title: "The app knows your real contract rules now",
       body: "Extensions under $15 jump to exactly $15, the max is $75, and a 3rd-year player is understood for what he is — an optioned rental in his final season. Every trade and add/drop recommendation now prices contracts correctly.",
     },
