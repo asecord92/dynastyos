@@ -15,6 +15,14 @@ export const WHATS_NEW: WhatsNewEntry = {
   date: "July 15, 2026",
   items: [
     {
+      title: "The app knows your real contract rules now",
+      body: "Extensions under $15 jump to exactly $15, the max is $75, and a 3rd-year player is understood for what he is — an optioned rental in his final season. Every trade and add/drop recommendation now prices contracts correctly.",
+    },
+    {
+      title: "Honest cap math",
+      body: "IL salaries count against your in-season cap (as the league actually plays it), and the Decision Queue now flags the right players: 2nd-years facing this offseason's extend-or-option call, plus your expiring optioned guys.",
+    },
+    {
       title: "Pull to refresh",
       body: "Drag down from the top of any page to refresh — just like every other app on your phone.",
     },

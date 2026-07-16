@@ -4,11 +4,17 @@ import { useEffect, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
 
 type Contract = {
-  year2_raise?: number;
   option_raise?: number;
   extend_raise?: number;
   extend_floor?: number;
   extend_cap?: number;
+};
+
+type Slots = {
+  active?: number;
+  reserve?: number;
+  ir?: number;
+  minors?: number;
 };
 
 type Rules = {
@@ -18,6 +24,7 @@ type Rules = {
   offseason_cap?: number;
   scoring?: { hitting?: string[]; pitching?: string[] };
   contract?: Contract | null;
+  slots?: Slots | null;
   // Football (Sleeper) — auto-detected, read-only
   scoring_format?: string;
   superflex?: boolean;
@@ -45,11 +52,16 @@ function lineupSummary(positions: string[]): string {
 const DEFAULT_HITTING = ["R", "HR", "RBI", "SB", "OBP"];
 const DEFAULT_PITCHING = ["QS", "SV", "K", "ERA", "WHIP"];
 const DEFAULT_CONTRACT: Required<Contract> = {
-  year2_raise: 1,
   option_raise: 1,
   extend_raise: 4,
   extend_floor: 15,
-  extend_cap: 70,
+  extend_cap: 75,
+};
+const DEFAULT_SLOTS: Required<Slots> = {
+  active: 24,
+  reserve: 6,
+  ir: 12,
+  minors: 12,
 };
 
 function numStr(v: number | undefined, fallback: number): string {
@@ -81,11 +93,14 @@ export function LeagueRulesEditor({ leagueId }: { leagueId: string }) {
   const [hitting, setHitting] = useState("");
   const [pitching, setPitching] = useState("");
   const [isContract, setIsContract] = useState(true);
-  const [year2, setYear2] = useState("");
   const [option, setOption] = useState("");
   const [extend, setExtend] = useState("");
   const [floor, setFloor] = useState("");
   const [capMax, setCapMax] = useState("");
+  const [slotsActive, setSlotsActive] = useState("");
+  const [slotsReserve, setSlotsReserve] = useState("");
+  const [slotsIr, setSlotsIr] = useState("");
+  const [slotsMinors, setSlotsMinors] = useState("");
 
   useEffect(() => {
     if (!leagueId) return;
@@ -113,11 +128,15 @@ export function LeagueRulesEditor({ leagueId }: { leagueId: string }) {
       const on = c ? true : c === null ? false : sp === "MLB";
       setIsContract(on);
       const cc = c ?? DEFAULT_CONTRACT;
-      setYear2(numStr(cc.year2_raise, DEFAULT_CONTRACT.year2_raise));
       setOption(numStr(cc.option_raise, DEFAULT_CONTRACT.option_raise));
       setExtend(numStr(cc.extend_raise, DEFAULT_CONTRACT.extend_raise));
       setFloor(numStr(cc.extend_floor, DEFAULT_CONTRACT.extend_floor));
       setCapMax(numStr(cc.extend_cap, DEFAULT_CONTRACT.extend_cap));
+      const sl = r.slots ?? DEFAULT_SLOTS;
+      setSlotsActive(numStr(sl.active, DEFAULT_SLOTS.active));
+      setSlotsReserve(numStr(sl.reserve, DEFAULT_SLOTS.reserve));
+      setSlotsIr(numStr(sl.ir, DEFAULT_SLOTS.ir));
+      setSlotsMinors(numStr(sl.minors, DEFAULT_SLOTS.minors));
       setLoaded(true);
     })();
     return () => {
@@ -137,13 +156,18 @@ export function LeagueRulesEditor({ leagueId }: { leagueId: string }) {
       scoring: { hitting: toList(hitting), pitching: toList(pitching) },
       contract: isContract
         ? {
-            year2_raise: toNum(year2),
             option_raise: toNum(option),
             extend_raise: toNum(extend),
             extend_floor: toNum(floor),
             extend_cap: toNum(capMax),
           }
         : null,
+      slots: {
+        active: toNum(slotsActive),
+        reserve: toNum(slotsReserve),
+        ir: toNum(slotsIr),
+        minors: toNum(slotsMinors),
+      },
     };
     const { error } = await supabase
       .from("leagues")
@@ -242,33 +266,60 @@ export function LeagueRulesEditor({ leagueId }: { leagueId: string }) {
       </div>
 
       <div className="space-y-3 border-t border-gray-100 pt-4">
+        <span className={labelCls}>Roster slots</span>
+        <div className="grid grid-cols-4 gap-3">
+          <div className="space-y-2">
+            <label className={labelCls}>Active</label>
+            <input className={inputCls} value={slotsActive} onChange={(e) => setSlotsActive(e.target.value)} inputMode="numeric" />
+          </div>
+          <div className="space-y-2">
+            <label className={labelCls}>Reserve</label>
+            <input className={inputCls} value={slotsReserve} onChange={(e) => setSlotsReserve(e.target.value)} inputMode="numeric" />
+          </div>
+          <div className="space-y-2">
+            <label className={labelCls}>IR</label>
+            <input className={inputCls} value={slotsIr} onChange={(e) => setSlotsIr(e.target.value)} inputMode="numeric" />
+          </div>
+          <div className="space-y-2">
+            <label className={labelCls}>Minors</label>
+            <input className={inputCls} value={slotsMinors} onChange={(e) => setSlotsMinors(e.target.value)} inputMode="numeric" />
+          </div>
+        </div>
+        <p className="text-xs text-gray-400">
+          Active, reserve, and IL salaries count against the in-season cap; minors don&apos;t.
+        </p>
+      </div>
+
+      <div className="space-y-3 border-t border-gray-100 pt-4">
         <label className="flex items-center gap-2 text-sm text-gray-700">
           <input type="checkbox" checked={isContract} onChange={(e) => setIsContract(e.target.checked)} />
           Contract league (dynasty salary trajectory)
         </label>
         {isContract && (
-          <div className="grid grid-cols-3 gap-3">
-            <div className="space-y-2">
-              <label className={labelCls}>Yr-2 raise</label>
-              <input className={inputCls} value={year2} onChange={(e) => setYear2(e.target.value)} inputMode="numeric" />
+          <>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="space-y-2">
+                <label className={labelCls}>Option raise</label>
+                <input className={inputCls} value={option} onChange={(e) => setOption(e.target.value)} inputMode="numeric" />
+              </div>
+              <div className="space-y-2">
+                <label className={labelCls}>Extend raise</label>
+                <input className={inputCls} value={extend} onChange={(e) => setExtend(e.target.value)} inputMode="numeric" />
+              </div>
+              <div className="space-y-2">
+                <label className={labelCls}>Extend floor</label>
+                <input className={inputCls} value={floor} onChange={(e) => setFloor(e.target.value)} inputMode="numeric" />
+              </div>
+              <div className="space-y-2">
+                <label className={labelCls}>Max salary</label>
+                <input className={inputCls} value={capMax} onChange={(e) => setCapMax(e.target.value)} inputMode="numeric" />
+              </div>
             </div>
-            <div className="space-y-2">
-              <label className={labelCls}>Option raise</label>
-              <input className={inputCls} value={option} onChange={(e) => setOption(e.target.value)} inputMode="numeric" />
-            </div>
-            <div className="space-y-2">
-              <label className={labelCls}>Extend raise</label>
-              <input className={inputCls} value={extend} onChange={(e) => setExtend(e.target.value)} inputMode="numeric" />
-            </div>
-            <div className="space-y-2">
-              <label className={labelCls}>Extend floor</label>
-              <input className={inputCls} value={floor} onChange={(e) => setFloor(e.target.value)} inputMode="numeric" />
-            </div>
-            <div className="space-y-2">
-              <label className={labelCls}>Extend cap (max)</label>
-              <input className={inputCls} value={capMax} onChange={(e) => setCapMax(e.target.value)} inputMode="numeric" />
-            </div>
-          </div>
+            <p className="text-xs text-gray-400">
+              Salary is flat for years 1&ndash;2; the option/extend decision comes after year 2.
+              Extending an under-floor salary sets it to exactly the floor.
+            </p>
+          </>
         )}
       </div>
 

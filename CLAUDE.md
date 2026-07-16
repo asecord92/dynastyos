@@ -41,9 +41,18 @@ Branch → PR → CI green → **squash-merge to main** → **Vercel** (frontend
 ## League
 "Inglorious Bashers" — `fantrax_league_id = nb5ox442mglfjmdp`, team `h0kjoqh8mglfjmji`. The Supabase league UUID changes if the league is disconnected/reconnected.
 
+**Contract rules** (nailed down with Adam 2026-07-15; encoded in `engine/rules.py` + `_contract_block`):
+- Salary flat at draft price years 1–2. Option/extend/cut decided in the **offseason after year 2**.
+- EXTEND: under $15 → **exactly $15** (not salary+4); at/over $15 → +$4. Then +$4/yr forever, max **$75** (stays there). Salary never decreases.
+- OPTION: +$1 for one final year, then **auto-dropped** to auction (anyone, incl. former owner, can re-bid — it's a known strategy). CUT: anytime, no dead cap.
+- **Contract-year labels:** the commish relabels extended players straight to "4th yr", so **"3rd yr" = optioned lame duck (expiring rental)**; the decision queue flags 2nd-year players. *(Label scheme per Adam's recollection — confirm with commish.)*
+- Roster: 24 Act / 6 Res / 12 IR / 12 Minors. **Act+Res+IR salaries all count vs the $450 in-season cap; Minors don't.**
+- Trades: salary + contract year travel unchanged (no retention). Waiver adds: contract year 1 at bid price ($1 min); a player dropped mid-contract keeps his contract year when claimed (salary-on-claim TBD).
+- **Open questions:** offseason cap semantics (how the $335 interacts with keepers/IL at auction — Adam checking with his friend); salary of a claimed mid-contract player (bid vs inherited).
+
 ## Roadmap / not done
 - Dark theme **shipped** — a "command center" dark theme (canvas `#0a0c11`, `bg-gray-50` cards, Inter, violet accent). Implemented by inverting Tailwind's gray ramp in `web/app/globals.css` `@theme` (gray-50..300 = dark surfaces, 400..900 = light text; `red/amber/green-50` are dark tints). The original Navy/Lora spec was superseded.
-- **Agreed next-features order** (July 2026 audit): 1) rank trends over time (auto-compute on sync + `category_rank_history` + sparklines), 2) contract/cap planner page, 3) daily digest via the `/cron/refresh-widgets` warmer (needs scheduled trigger + push/email), 4) trade outcome tracking on `trade_history`.
+- **Agreed next-features order** (re-ranked by value 2026-07-15): 1) contract/cap planner page, 2) daily digest via the `/cron/refresh-widgets` warmer (needs scheduled trigger + push/email), 3) rank trends over time (auto-compute on sync + `category_rank_history` + sparklines), 4) trade outcome tracking on `trade_history`.
 - RLS audited 2026-07-14 (`supabase/RLS_AUDIT.sql`): all 10 tables have RLS on; `leagues`/`rosters`/`snapshots` are owner-scoped for authenticated users; `user_secrets`/`app_events`/`trade_history` are service-role only; `player_id_map`/`player_stats`/`fantrax_players` are intentionally public-read. Base-table schemas are captured in `20260715_base_schema_documentation.sql` (no-op documentation migration).
 - Frontend lint stays advisory in CI — 26 pre-existing errors (several `react-hooks` rewrites) to clear before enforcing.
 - Deeper usage analytics (per-call token spend / time-series) on top of the admin dashboard's `app_events`.

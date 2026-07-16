@@ -93,7 +93,7 @@ export function CapReliefTool({ data }: { data: AnalyzeResult }) {
           <div>
             <h1 className="text-2xl font-semibold">Cap Relief</h1>
             <p className="text-sm text-gray-700">
-              Select Act/Res players as cuts and see live cap impact.
+              Select cap-counting players as cuts and see live cap impact.
             </p>
           </div>
 
@@ -225,8 +225,8 @@ export function CapReliefTool({ data }: { data: AnalyzeResult }) {
         </div>
 
         <div className="text-xs text-gray-600">
-          Only <span className="font-medium">Act</span> /{" "}
-          <span className="font-medium">Res</span> are included here.
+          Act, Res, and IL players all count against the cap and are included here;
+          Minors players are excluded.
         </div>
       </div>
     </div>
