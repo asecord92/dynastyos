@@ -8,7 +8,7 @@ STATUS_MAP = {
     "ACTIVE": "Act",
     "RESERVE": "Res",
     "MINORS": "Min",
-    "INJURED_RESERVE": "Res",  # treat IR as reserve for cap purposes
+    "INJURED_RESERVE": "IR",
 }
 
 
@@ -45,35 +45,49 @@ def map_roster_to_analyze_result(
             "contract": contract_name,
             })
 
-    # Cap math — same logic as roster_analyzer.py
+    # Cap math — same logic as roster_analyzer.py: Act + Res + IR all count
+    # against the in-season cap; only Minors doesn't.
     active_cap_used = sum(
-        r["salary"] for r in roster if r["status"] in ("Act", "Res")
+        r["salary"] for r in roster if r["status"] != "Min"
     )
     cap_remaining = salary_cap - active_cap_used
 
-    # Decision queue — 3rd year contracts
+    # Decision queue — 2nd-year contracts face the option/extend/cut decision
+    # in the offseason after this season. A player still labeled "3rd year" was
+    # OPTIONED (the commish relabels extended players to 4th year), so he's an
+    # expiring rental that auto-drops after the season — surfaced as such.
     decision_queue = []
+    expiring = []
     for r in roster:
-        if "3rd" not in r["contract"]:
-            continue
-        rec, rationale = recommend_contract_action(
-            status=r["status"],
-            salary=r["salary"],
-            cap_remaining=cap_remaining,
-        )
-        decision_queue.append({
+        base = {
             "player": r["player"],
             "status": r["status"],
             "salary": r["salary"],
             "contract": r["contract"],
-            "recommendation": rec,
-            "rationale": rationale,
             "cap_relief_if_cut": r["salary"],
             "cap_remaining_if_cut": round(cap_remaining + r["salary"], 2),
-        })
+        }
+        if "2nd" in r["contract"]:
+            rec, rationale = recommend_contract_action(
+                status=r["status"],
+                salary=r["salary"],
+                cap_remaining=cap_remaining,
+                contract=rules.contract,
+            )
+            decision_queue.append({**base, "recommendation": rec, "rationale": rationale})
+        elif "3rd" in r["contract"]:
+            expiring.append({
+                **base,
+                "recommendation": "expiring",
+                "rationale": [
+                    "Optioned — final year; auto-drops to the auction pool after the season",
+                ],
+            })
 
-    # Sort decision queue by salary desc
+    # Sort each group by salary desc; pending decisions first, expiring after.
     decision_queue.sort(key=lambda x: x["salary"], reverse=True)
+    expiring.sort(key=lambda x: x["salary"], reverse=True)
+    decision_queue.extend(expiring)
 
     # Sort roster by status then salary desc
     roster.sort(key=lambda x: (x["status"], -x["salary"]))

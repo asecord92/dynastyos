@@ -51,18 +51,25 @@ def _money(v: float) -> str:
     return str(int(v)) if float(v).is_integer() else str(v)
 
 
+def extension_salary(salary: float, c: ContractRules) -> float:
+    """Year-3 salary if the player is extended: under the floor jumps to
+    exactly the floor (a $12 player becomes $15, not $16); at or above the
+    floor it's +extend_raise."""
+    return c.extend_floor if salary < c.extend_floor else salary + c.extend_raise
+
+
 def _trajectory_example(draft: int, c: ContractRules) -> str:
     """Compute an extension salary path for a given draft price from the rule
     numbers, so the example stays accurate for any league's contract terms."""
     raise_ = int(c.extend_raise)
     cap = int(c.extend_cap)
-    y3 = max(draft + raise_, int(c.extend_floor))
+    y3 = int(extension_salary(draft, c))
     y4 = min(y3 + raise_, cap)
     y5 = min(y4 + raise_, cap)
-    floor_note = " (floor)" if y3 == int(c.extend_floor) else ""
+    floor_note = " (floor)" if y3 == int(c.extend_floor) and draft < c.extend_floor else ""
     return (
-        f"- Player drafted at ${draft}, extended in year 3 → ${y3}{floor_note}, "
-        f"year 4 → ${y4}, year 5 → ${y5}."
+        f"- Player drafted at ${draft}, extended → ${y3}{floor_note} in year 3, "
+        f"${y4} in year 4, ${y5} in year 5."
     )
 
 
@@ -71,26 +78,38 @@ def _contract_block(c: ContractRules) -> str:
         _money(c.extend_raise), _money(c.extend_floor),
         _money(c.option_raise), _money(c.extend_cap),
     )
-    examples = "\n".join(_trajectory_example(d, c) for d in (5, 12, 20))
+    examples = "\n".join(_trajectory_example(d, c) for d in (5, 18, int(c.extend_cap) - 5))
     return f"""Dynasty contract rules:
-- 1st and 2nd year contracts: salary does not change from draft price
-- 3rd year is the decision point:
-  - EXTEND: salary increases by ${raise_} (floor of ${floor}). Player stays on your roster long-term.
-  - OPTION: salary increases by ${option}. Player is dropped to the auction pool at end of season — you lose them entirely.
-  - CUT: available at any time, any contract year. Player goes to free agency immediately.
-- 4th year and beyond (extended players only): salary increases by ${raise_} every year, maximum ${cap}.
-- No limit on contract years as long as you keep extending.
+- Years 1 and 2: salary stays flat at the draft/acquisition price.
+- After year 2 (in the offseason) the owner must decide:
+  - EXTEND: if salary is under ${floor} it becomes exactly ${floor} (a $12 player jumps to ${floor}, not $16);
+    at or above ${floor} it increases by ${raise_}. Player stays on the roster long-term.
+  - OPTION: salary increases by ${option} for one final year, then the player is AUTOMATICALLY dropped
+    to the auction pool. Anyone — including the former owner — can bid on him there.
+  - CUT: available at any time, any contract year. Player goes to free agency immediately. No dead cap.
+- Extended players: +${raise_} every subsequent year, hard maximum ${cap} (salary stays at ${cap} after that).
+  No limit on contract years as long as you keep paying the raises. Salary never goes down.
+- READ THE CONTRACT YEAR LABELS CAREFULLY: extended players are relabeled to 4th year, so a player
+  showing "3rd year" has been OPTIONED — he is an expiring rental who leaves at season's end. A
+  "4th year or later" player is locked in on the extension trajectory. "1st/2nd year" players face
+  the option/extend decision after year 2.
+- Trades: salary and contract year travel with the player unchanged — no salary retention or splitting.
+- Waiver/FA adds enter on contract year 1 at their winning bid price ($1 minimum); a player dropped
+  mid-contract keeps his existing contract year when claimed.
 
 Extension trajectory examples:
 {examples}
-Any player drafted under ${floor} follows the same floor trajectory once extended. +${raise_}/year applies from year 4 onward.
 
 Contract valuation framework — this is critical:
-- 1st and 2nd year players are at their draft price. Their future cost is unknown until the 3rd year decision.
-- A player's salary on a 4th+ year contract reflects cumulative ${raise_} raises since their extension point.
-- The core dynasty question on any trade: is this player's current salary above or below what they would
-  realistically go for at auction? If you can cut a $35 player and re-sign them for $20, you've gained
-  $15 in cap space — but you risk losing them entirely or paying more. Contract assets (cheap, locked-in
+- 1st and 2nd year players are at their draft price. Their future cost is unknown until the decision
+  after year 2 — but the ${floor} floor means extending a cheap player is expensive: a $3 breakout
+  costs ${floor}/year to keep. Price that into what a "cheap" 1st/2nd year player is really worth.
+- A "3rd year" (optioned) player is a rental: he contributes this season only, then goes to auction.
+  Value him like an expiring contract, not a dynasty asset.
+- A player's salary on a 4th+ year contract reflects cumulative ${raise_} raises since his extension.
+- The core dynasty question on any trade: is this player's current salary above or below what he would
+  realistically go for at auction? If you can cut a $35 player and re-buy him for $20, you've gained
+  $15 in cap space — but you risk losing him entirely or paying more. Contract assets (cheap, locked-in
   players on long extensions) are extremely valuable. Overpaid aging players on late contracts are liabilities.
 - Always consider: would you rather have this player at this salary, or take your chances at auction?"""
 
@@ -112,6 +131,14 @@ def build_system_prompt(rules: LeagueRules | None = None, sport: str = "MLB") ->
         f"- In-season salary cap: ${_money(rules.in_season_cap)}",
         f"- Offseason auction budget: ${_money(rules.offseason_cap)}",
     ]
+    if rules.slots is not None:
+        s = rules.slots
+        fmt.append(
+            f"- Roster slots: {s.active} active, {s.reserve} reserve, {s.ir} IR, {s.minors} minors"
+        )
+        fmt.append(
+            "- Active, reserve, AND IR salaries all count against the in-season cap; minors salaries do not"
+        )
     parts.append("\n".join(fmt))
 
     if rules.contract is not None:

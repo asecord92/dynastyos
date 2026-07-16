@@ -4,49 +4,48 @@ from typing import Dict, Any, List
 
 import pandas as pd
 
-from .rules import LeagueRules
+from .rules import ContractRules, LeagueRules
 
-def recommend_contract_action(status: str, salary: float, cap_remaining: float):
-    s = (status or "").strip().lower()
+def recommend_contract_action(
+    status: str,
+    salary: float,
+    cap_remaining: float,
+    contract: ContractRules | None = None,
+):
+    """Salary-only lean for a 2nd-year player's upcoming option/extend/cut
+    decision. This can't see production (the AI tools do real valuation), so it
+    frames the economics of each path and leans on cap pressure + the extension
+    floor: extending under-floor players jumps them to exactly the floor, which
+    makes 'cheap keeps' expensive."""
+    c = contract or ContractRules()
     sal = float(salary or 0)
 
-    # cap pressure
+    extend_cost = int(c.extend_floor if sal < c.extend_floor else sal + c.extend_raise)
+    option_cost = int(sal + c.option_raise)
     pressure = "high" if cap_remaining < 0 else "medium" if cap_remaining < 20 else "low"
 
-    rationale = []
-    recommendation = "option"
+    rationale = [
+        f"Extend → ${extend_cost}/yr (then +${int(c.extend_raise)}/yr); "
+        f"option → ${option_cost} for one final year, then he's auctioned"
+    ]
 
-    if sal <= 2:
-        recommendation = "extend" if s == "act" else "option"
-        rationale.append("Low salary (cheap keep)")
-        if s != "act":
-            rationale.append("Not active; option preserves flexibility")
-        return recommendation, rationale
+    if sal < c.extend_floor - c.extend_raise:
+        # Extension jumps him to the floor — only worth it for a core piece.
+        rationale.append(
+            f"Under ${int(c.extend_floor)}: extending jumps him to the floor — "
+            "only extend if he's a core piece; otherwise the cheap option year wins"
+        )
+        return "option", rationale
 
-    if s == "res" and sal >= 4:
-        recommendation = "cut" if pressure in ["high", "medium"] else "option"
-        rationale.append("Reserve status with mid/high salary")
-        if recommendation == "cut":
-            rationale.append("Cap pressure makes cutting attractive")
-        return recommendation, rationale
+    if pressure == "high":
+        rationale.append("Over the cap; cutting or optioning frees meaningful space")
+        return ("cut" if sal >= 10 else "option"), rationale
 
-    if sal >= 10:
-        recommendation = "cut" if pressure == "high" else "option"
-        rationale.append("High salary; avoid locking in")
-        if recommendation == "cut":
-            rationale.append("Over cap; prioritize relief")
-        return recommendation, rationale
-
-    recommendation = "option"
-    rationale.append("Mid-range salary; option keeps flexibility")
-    if pressure == "low" and s == "act" and sal <= 5:
-        recommendation = "extend"
-        rationale.append("Active + reasonable salary")
-    if pressure == "high" and sal >= 6:
-        recommendation = "cut"
-        rationale.append("Over cap; cutting frees meaningful space")
-
-    return recommendation, rationale
+    rationale.append(
+        f"At ${int(sal)} the floor doesn't bite — extending costs the normal "
+        f"+${int(c.extend_raise)} raise, so keep him if he's producing"
+    )
+    return "extend", rationale
 
 def _detect_header_rows(lines: List[str]) -> List[int]:
     """
@@ -122,13 +121,17 @@ def analyze_roster_from_csv(
     else:
         cap_limit = rules.in_season_cap
 
-    # Cap math: Act + Res count; Min does not
-    active_mask = df["Status"].isin(["Act", "Res"])
-    active_cap_used = float(df.loc[active_mask, "Salary"].sum())
+    # Cap math: everything except Minors counts (Act + Res + IL all hit the
+    # in-season cap in this league; minors salaries don't).
+    cap_mask = ~df["Status"].str.startswith("Min")
+    active_cap_used = float(df.loc[cap_mask, "Salary"].sum())
     cap_remaining = float(cap_limit - active_cap_used)
 
-    # Decision queue: 3rd-year contracts
-    decision_df = df[df["Contract"].str.contains("3rd", case=False, na=False)][
+    # Decision queue: 2nd-year contracts face the option/extend/cut decision in
+    # the offseason after this season. (A player still labeled "3rd year" was
+    # OPTIONED — the commish relabels extended players to 4th year — so he's an
+    # expiring rental with no decision left; auto-drops after the season.)
+    decision_df = df[df["Contract"].str.contains("2nd", case=False, na=False)][
         ["Player", "Status", "Salary", "Contract"]
     ].sort_values(by="Salary", ascending=False)
 
@@ -137,7 +140,8 @@ def analyze_roster_from_csv(
         rec, rationale = recommend_contract_action(
             status=row.get("Status", ""),
             salary=row.get("Salary", 0),
-            cap_remaining=cap_remaining
+            cap_remaining=cap_remaining,
+            contract=rules.contract,
         )
         sal = float(row.get("Salary", 0) or 0)
 
@@ -149,6 +153,28 @@ def analyze_roster_from_csv(
                 "contract": row.get("Contract", ""),
                 "recommendation": rec,
                 "rationale": rationale,
+                "cap_relief_if_cut": sal,
+                "cap_remaining_if_cut": round(cap_remaining + sal, 2),
+            }
+        )
+
+    # Optioned players (labeled 3rd year) leave at season's end — surface them
+    # in the queue as expiring so the roster page tells the whole story.
+    expiring_df = df[df["Contract"].str.contains("3rd", case=False, na=False)][
+        ["Player", "Status", "Salary", "Contract"]
+    ].sort_values(by="Salary", ascending=False)
+    for _, row in expiring_df.iterrows():
+        sal = float(row.get("Salary", 0) or 0)
+        decision_records.append(
+            {
+                "player": row.get("Player", ""),
+                "status": row.get("Status", ""),
+                "salary": sal,
+                "contract": row.get("Contract", ""),
+                "recommendation": "expiring",
+                "rationale": [
+                    "Optioned — final year; auto-drops to the auction pool after the season",
+                ],
                 "cap_relief_if_cut": sal,
                 "cap_remaining_if_cut": round(cap_remaining + sal, 2),
             }

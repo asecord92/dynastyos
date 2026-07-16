@@ -15,8 +15,8 @@ export function isMinors(status?: string) {
 }
 
 export function isCapCounting(status?: string) {
-  const s = (status ?? "").toUpperCase();
-  return s === "ACT" || s === "RES";
+  // Act + Res + IL all count against the in-season cap; only Minors doesn't.
+  return !isMinors(status);
 }
 
 export function rowKey(p: RosterRow) {
