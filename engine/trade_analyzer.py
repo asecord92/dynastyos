@@ -83,12 +83,17 @@ def _contract_block(rules: LeagueRules) -> str:
     examples = "\n".join(_trajectory_example(d, c) for d in (5, 18, int(c.extend_cap) - 5))
     return f"""Dynasty contract rules:
 - Years 1 and 2: salary stays flat at the draft/acquisition price.
+- The contract clock only runs on the major-league roster: a prospect stashed in a minors slot does
+  NOT burn contract years — his clock starts when he joins the active roster. A stashed prospect is
+  a frozen asset whose cheap years haven't started yet; value that highly.
 - After year 2 (in the offseason) the owner must decide:
   - EXTEND: if salary is under ${floor} it becomes exactly ${floor} (a $12 player jumps to ${floor}, not $16);
     at or above ${floor} it increases by ${raise_}. Player stays on the roster long-term.
   - OPTION: salary increases by ${option} for one final year, then the player is AUTOMATICALLY dropped
     to the auction pool. Anyone — including the former owner — can bid on him there.
   - CUT: available at any time, any contract year. Player goes to free agency immediately. No dead cap.
+- There are NO early extensions: the option/extend decision happens only at the after-year-2 window.
+  A year-1 breakout cannot be locked in ahead of schedule — he plays out year 2 first.
 - Extended players: +${raise_} every subsequent year, hard maximum ${cap} (salary stays at ${cap} after that).
   No limit on contract years as long as you keep paying the raises. Salary never goes down.
 - READ THE CONTRACT YEAR LABELS CAREFULLY: extended players are relabeled to 4th year, so a player
@@ -105,7 +110,9 @@ Season cap cycle:
   and IR salaries (minors don't count) must get under ${off_cap} BEFORE the auction draft — via cuts,
   optioned contracts expiring, and trades.
 - Whatever a team has left under ${off_cap} is its auction budget, and it needs at least $1 of budget
-  for every roster spot it has to fill at the draft ($1 minimum bid).
+  for every OPEN roster spot it has to fill at the draft ($1 minimum bid) — majors AND minors slots
+  are both filled at the auction, and all winning bids draw from the same budget (even though a
+  player placed in a minors slot doesn't count against the cap afterward).
 - After the draft the cap rises back to ${in_cap}, creating room to absorb salary in trades.
 - Strategic lever: a team projected to be OVER ${off_cap} after the season must shed salary in the
   offseason. Expensive extended contracts get harder to hold, cheap contracts get more valuable to
