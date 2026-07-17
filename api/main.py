@@ -2077,6 +2077,115 @@ def _league_sport(sb, league_id: str) -> str:
         return "MLB"
 
 
+# --- AI stream keepalive protocol ---------------------------------------------
+# The three AI streams (/trade/analyze, /trade/finder, /waivers/add-drop) die
+# whenever the connection sits silent too long: the Vercel proxy kills a
+# response with no first byte after ~30s, and mobile browsers / cell networks
+# kill idle mid-stream connections (worst with the screen locked). So the
+# ndjson protocol guarantees a byte at least every _STATUS_INTERVAL_S seconds:
+# `meta` commits the stream instantly, context building pings while it runs on
+# the event loop, and thinking/web-search phases emit throttled `status` events
+# that double as progress UX. Frontends render `status.label`; unknown event
+# types are ignored, so older clients degrade gracefully.
+_STATUS_INTERVAL_S = 8.0
+
+
+def _ndjson(obj: dict) -> str:
+    return _json.dumps(obj) + "\n"
+
+
+def _prep_lines(fut, label: str):
+    """Wait on a run_coroutine_threadsafe future from inside a (threadpooled)
+    sync stream generator, yielding a keepalive `status` line every interval.
+    The caller takes fut.result() afterwards; call sites run in Starlette's
+    threadpool so blocking here never touches the event loop."""
+    while True:
+        try:
+            fut.exception(timeout=_STATUS_INTERVAL_S)  # waits; doesn't raise the result
+            return
+        except TimeoutError:
+            yield _ndjson({"type": "status", "label": label})
+
+
+class _FenceHoldback:
+    """Stateful text filter for the finder stream: pass prose through, but hold
+    back everything from the ```json fence on (the machine-readable packages),
+    with a 2-char lookbehind so a fence split across deltas never leaks."""
+
+    def __init__(self):
+        self.joined = ""
+        self.emitted = 0
+        self.stopped = False
+
+    def __call__(self, delta: str) -> str:
+        self.joined += delta
+        if self.stopped:
+            return ""
+        fence = self.joined.find("```")
+        if fence != -1:
+            out = self.joined[self.emitted:fence] if fence > self.emitted else ""
+            self.emitted = fence
+            self.stopped = True
+            return out
+        safe = len(self.joined) - 2  # lookbehind: never emit a partial fence
+        if safe > self.emitted:
+            out = self.joined[self.emitted:safe]
+            self.emitted = safe
+            return out
+        return ""
+
+
+def _ai_ndjson_lines(ai, *, status_label: str, text_mapper=None, collect=None,
+                     failed=None, done_event=True, **stream_kwargs):
+    """Iterate one Anthropic stream as ndjson lines. Answer text becomes `text`
+    deltas (through text_mapper when given); everything else — thinking deltas,
+    web-search activity — becomes throttled `status` keepalives, since those
+    phases produce no answer text for minutes at a time. Sync generator: it runs
+    in Starlette's threadpool, keeping the sync SDK off the event loop, and the
+    metering wrapper (_LoggedStreamManager) logs usage on context exit exactly
+    as before. `collect` accumulates the full raw text for post-processing;
+    `failed` (a list) is appended to on error so callers can skip finalization."""
+    last = time.monotonic()
+
+    def line(obj: dict) -> str:
+        nonlocal last
+        last = time.monotonic()
+        return _ndjson(obj)
+
+    try:
+        # Mark the phase transition immediately — otherwise the last prep status
+        # ("Pulling live stats…") lingers on screen into the thinking phase.
+        yield line({"type": "status", "label": status_label})
+        with ai.messages.stream(**stream_kwargs) as s:
+            for ev in s:
+                etype = getattr(ev, "type", "")
+                if etype == "text":
+                    delta = getattr(ev, "text", "") or ""
+                    if collect is not None:
+                        collect.append(delta)
+                    out = text_mapper(delta) if text_mapper else delta
+                    if out:
+                        yield line({"type": "text", "delta": out})
+                elif etype == "content_block_start" and getattr(
+                    getattr(ev, "content_block", None), "type", ""
+                ) == "server_tool_use":
+                    yield line({"type": "status", "label": "Searching the web…"})
+                elif time.monotonic() - last >= _STATUS_INTERVAL_S:
+                    yield line({"type": "status", "label": status_label})
+        if done_event:
+            yield _ndjson({"type": "done"})
+    except anthropic.APIStatusError as e:
+        traceback.print_exc()
+        if failed is not None:
+            failed.append(e)
+        yield _ndjson({"type": "error", "detail": _ai_error_code(e) or str(e)})
+    except Exception as e:
+        traceback.print_exc()
+        if failed is not None:
+            failed.append(e)
+        yield _ndjson({"type": "error", "detail": str(e)})
+
+
 @app.post("/trade/analyze")
 async def trade_analyze(
     body: TradeAnalyzeRequest,
@@ -2086,14 +2195,20 @@ async def trade_analyze(
         require_league_owner(get_supabase(), user, body.league_id)
         offering = [x.strip() for x in body.offering_ids.split(",") if x.strip()]
         receiving = [x.strip() for x in body.receiving_ids.split(",") if x.strip()]
+        sport = _league_sport(get_supabase(), body.league_id)
+        # The key lookup stays before the stream so a missing key is still a
+        # clean 402 the frontend routes to the "add your key" card.
+        ai = get_ai_client_for_league(get_supabase(), body.league_id, tool="trade_analyze")
 
-        if _league_sport(get_supabase(), body.league_id) == "NFL":
-            context = await build_nfl_trade_context(
-                body.league_id, body.my_team_id, body.opponent_team_id, offering, receiving
-            )
-            prompt = build_nfl_trade_prompt(context)
-            system_prompt = build_nfl_system_prompt(context["rules"])
-        else:
+        async def _prep() -> tuple[str, str]:
+            """The slow part — live stat fetches for every player in the trade.
+            Runs on the event loop while the stream generator pings keepalives,
+            so a slow MLB Stats night can no longer starve the first byte."""
+            if sport == "NFL":
+                context = await build_nfl_trade_context(
+                    body.league_id, body.my_team_id, body.opponent_team_id, offering, receiving
+                )
+                return build_nfl_trade_prompt(context), build_nfl_system_prompt(context["rules"])
             context = await build_trade_context(
                 league_id=body.league_id,
                 my_team_id=body.my_team_id,
@@ -2101,39 +2216,33 @@ async def trade_analyze(
                 offering_ids=offering,
                 receiving_ids=receiving,
             )
-            prompt = build_trade_prompt(context)
-            system_prompt = build_system_prompt(context["rules"], context["sport"])
+            return build_trade_prompt(context), build_system_prompt(context["rules"], context["sport"])
 
-        ai = get_ai_client_for_league(get_supabase(), body.league_id, tool="trade_analyze")
-
-        # ndjson protocol (same as /trade/finder): an immediate `meta` event
-        # commits the response before Opus starts thinking — adaptive thinking
-        # can take tens of seconds before the first text token, which would
-        # otherwise trip the Vercel proxy timeout. AI/key errors stream as
-        # stable-code `error` events the frontend routes to the global banner.
-        def event(obj: dict) -> str:
-            return _json.dumps(obj) + "\n"
+        loop = asyncio.get_running_loop()
 
         def stream():
-            yield event({"type": "meta"})
+            yield _ndjson({"type": "meta"})  # first byte in milliseconds
+            fut = asyncio.run_coroutine_threadsafe(_prep(), loop)
             try:
-                with ai.messages.stream(
-                    model=MODEL_TRADE,
-                    max_tokens=8000,
-                    thinking=_ADAPTIVE_THINKING,
-                    tools=_TRADE_WEB_SEARCH,
-                    system=system_prompt,
-                    messages=[{"role": "user", "content": prompt}],
-                ) as s:
-                    for text in s.text_stream:
-                        yield event({"type": "text", "delta": text})
-                yield event({"type": "done"})
-            except anthropic.APIStatusError as e:
-                traceback.print_exc()
-                yield event({"type": "error", "detail": _ai_error_code(e) or str(e)})
+                yield from _prep_lines(fut, "Pulling live stats and contracts…")
+                prompt, system_prompt = fut.result()
+            except GeneratorExit:
+                fut.cancel()  # client disconnected — stop the stat fetches
+                raise
             except Exception as e:
                 traceback.print_exc()
-                yield event({"type": "error", "detail": str(e)})
+                yield _ndjson({"type": "error", "detail": str(e)})
+                return
+            yield from _ai_ndjson_lines(
+                ai,
+                status_label="Weighing the deal…",
+                model=MODEL_TRADE,
+                max_tokens=8000,
+                thinking=_ADAPTIVE_THINKING,
+                tools=_TRADE_WEB_SEARCH,
+                system=system_prompt,
+                messages=[{"role": "user", "content": prompt}],
+            )
 
         return StreamingResponse(stream(), media_type="application/x-ndjson")
 
@@ -2213,50 +2322,52 @@ async def waivers_add_drop(
             raise HTTPException(status_code=400, detail="Add at least one incoming player.")
 
         incoming = [inc.model_dump() for inc in body.incoming]
-        if _league_sport(sb, body.league_id) == "NFL":
-            context = await build_nfl_add_drop_context(
-                league_id=body.league_id,
-                my_team_id=body.my_team_id,
-                incoming=incoming,
-                outgoing_ids=body.outgoing_ids,
-            )
-            prompt = build_nfl_add_drop_prompt(context)
-            system_prompt = build_nfl_system_prompt(context["rules"])
-        else:
+        sport = _league_sport(sb, body.league_id)
+        ai = get_ai_client_for_league(sb, body.league_id, tool="add_drop")
+
+        async def _prep() -> tuple[str, str]:
+            if sport == "NFL":
+                context = await build_nfl_add_drop_context(
+                    league_id=body.league_id,
+                    my_team_id=body.my_team_id,
+                    incoming=incoming,
+                    outgoing_ids=body.outgoing_ids,
+                )
+                return build_nfl_add_drop_prompt(context), build_nfl_system_prompt(context["rules"])
             context = await build_add_drop_context(
                 league_id=body.league_id,
                 my_team_id=body.my_team_id,
                 incoming=incoming,
                 outgoing_ids=body.outgoing_ids,
             )
-            prompt = build_add_drop_prompt(context)
-            system_prompt = build_system_prompt(context["rules"], context["sport"])
-        ai = get_ai_client_for_league(sb, body.league_id, tool="add_drop")
+            return build_add_drop_prompt(context), build_system_prompt(context["rules"], context["sport"])
 
-        # ndjson protocol — same as /trade/analyze: immediate `meta` event so the
-        # proxy sees bytes before Opus finishes thinking; errors stream as events.
-        def event(obj: dict) -> str:
-            return _json.dumps(obj) + "\n"
+        loop = asyncio.get_running_loop()
 
+        # ndjson protocol — same as /trade/analyze: immediate `meta`, keepalive
+        # `status` events through context build and thinking, errors as events.
         def stream():
-            yield event({"type": "meta"})
+            yield _ndjson({"type": "meta"})
+            fut = asyncio.run_coroutine_threadsafe(_prep(), loop)
             try:
-                with ai.messages.stream(
-                    model=MODEL_TRADE,
-                    max_tokens=6000,
-                    thinking=_ADAPTIVE_THINKING,
-                    system=system_prompt,
-                    messages=[{"role": "user", "content": prompt}],
-                ) as s:
-                    for text in s.text_stream:
-                        yield event({"type": "text", "delta": text})
-                yield event({"type": "done"})
-            except anthropic.APIStatusError as e:
-                traceback.print_exc()
-                yield event({"type": "error", "detail": _ai_error_code(e) or str(e)})
+                yield from _prep_lines(fut, "Sizing up your roster…")
+                prompt, system_prompt = fut.result()
+            except GeneratorExit:
+                fut.cancel()
+                raise
             except Exception as e:
                 traceback.print_exc()
-                yield event({"type": "error", "detail": str(e)})
+                yield _ndjson({"type": "error", "detail": str(e)})
+                return
+            yield from _ai_ndjson_lines(
+                ai,
+                status_label="Ranking the drop candidates…",
+                model=MODEL_TRADE,
+                max_tokens=6000,
+                thinking=_ADAPTIVE_THINKING,
+                system=system_prompt,
+                messages=[{"role": "user", "content": prompt}],
+            )
 
         return StreamingResponse(stream(), media_type="application/x-ndjson")
 
@@ -2274,124 +2385,117 @@ async def trade_finder(
     body: TradeFinderRequest,
     user: dict = Depends(get_current_user),
 ):
-    """Category-first Trade Finder. Streams newline-delimited JSON: a `meta` event
-    with the ranked targets first (so the UI shows them immediately, before the
-    slow Opus call), then `text` events as the recommendation streams, then a
-    final `packages` event with the parsed, validated offers."""
-    # Build context up front so input errors surface as a normal HTTP status
-    # (not mid-stream). This is also where the candidate ranking is computed.
-    # The finder's `target_category` field carries an NFL position for football.
+    """Category-first Trade Finder. Streams newline-delimited JSON: a bare `meta`
+    handshake first (commits the response instantly), keepalive `status` events
+    while the league scan runs, a `candidates` event with the ranked targets,
+    then `text` events as the recommendation streams, then a final `packages`
+    event with the parsed, validated offers. Input errors surface as `error`
+    events since the scan now runs after the stream has committed.
+    The finder's `target_category` field carries an NFL position for football."""
     require_league_owner(get_supabase(), user, body.league_id)
     sport = _league_sport(get_supabase(), body.league_id)
-    try:
+    ai = get_ai_client_for_league(get_supabase(), body.league_id, tool="trade_finder")
+
+    async def _prep() -> dict:
+        """The league-wide roster + stats scan — the heaviest context build of
+        the three AI streams — plus all the sport-specific derivation."""
         if sport == "NFL":
             context = await build_nfl_finder_context(
                 body.league_id, body.my_team_id, target_position=body.target_category
             )
-        else:
-            context = await build_finder_context(
-                league_id=body.league_id,
-                my_team_id=body.my_team_id,
-                target_category=body.target_category,
-            )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
-
-    if sport == "NFL":
-        target_label = context["target_position"]
-        candidates = [
-            {
-                "fantrax_id": c["id"],
-                "name": c["name"],
-                "position": c.get("position"),
-                "team": c.get("team"),
-                "owner_team_id": c["owner_team_id"],
-                "owner_team_name": c["owner_team_name"],
-                "stat_value": c.get("points"),
-                "value": c.get("value"),
+            return {
+                "target_label": context["target_position"],
+                "candidates": [
+                    {
+                        "fantrax_id": c["id"],
+                        "name": c["name"],
+                        "position": c.get("position"),
+                        "team": c.get("team"),
+                        "owner_team_id": c["owner_team_id"],
+                        "owner_team_name": c["owner_team_name"],
+                        "stat_value": c.get("points"),
+                        "value": c.get("value"),
+                    }
+                    for c in context["candidates"]
+                ],
+                # parse_finder_response keys on `fantrax_id`; football assets/candidates use `id`.
+                "parse_candidates": [{**c, "fantrax_id": c["id"]} for c in context["candidates"]],
+                "parse_assets": [{**a, "fantrax_id": a["id"]} for a in context["my_assets"]],
+                "prompt": build_nfl_finder_prompt(context),
+                "system_prompt": build_nfl_system_prompt(context["rules"]),
             }
-            for c in context["candidates"]
-        ]
-        # parse_finder_response keys on `fantrax_id`; football assets/candidates use `id`.
-        parse_candidates = [{**c, "fantrax_id": c["id"]} for c in context["candidates"]]
-        parse_assets = [{**a, "fantrax_id": a["id"]} for a in context["my_assets"]]
-        prompt = build_nfl_finder_prompt(context)
-        system_prompt = build_nfl_system_prompt(context["rules"])
-    else:
-        target_label = context["target_category"]
-        candidates = [
-            {
-                "fantrax_id": c["fantrax_id"],
-                "name": c["name"],
-                "position": c["position"],
-                "salary": c["salary"],
-                "contract": c["contract"],
-                "owner_team_id": c["owner_team_id"],
-                "owner_team_name": c["owner_team_name"],
-                "stat_value": c["stat_value"],
-                "value": c.get("value"),
-            }
-            for c in context["candidates"]
-        ]
-        parse_candidates = context["candidates"]
-        parse_assets = context.get("my_assets", [])
-        prompt = build_finder_prompt(context)
-        system_prompt = build_system_prompt(context["rules"], context["sport"])
-    ai = get_ai_client_for_league(get_supabase(), body.league_id, tool="trade_finder")
+        context = await build_finder_context(
+            league_id=body.league_id,
+            my_team_id=body.my_team_id,
+            target_category=body.target_category,
+        )
+        return {
+            "target_label": context["target_category"],
+            "candidates": [
+                {
+                    "fantrax_id": c["fantrax_id"],
+                    "name": c["name"],
+                    "position": c["position"],
+                    "salary": c["salary"],
+                    "contract": c["contract"],
+                    "owner_team_id": c["owner_team_id"],
+                    "owner_team_name": c["owner_team_name"],
+                    "stat_value": c["stat_value"],
+                    "value": c.get("value"),
+                }
+                for c in context["candidates"]
+            ],
+            "parse_candidates": context["candidates"],
+            "parse_assets": context.get("my_assets", []),
+            "prompt": build_finder_prompt(context),
+            "system_prompt": build_system_prompt(context["rules"], context["sport"]),
+        }
 
-    def event(obj: dict) -> str:
-        return _json.dumps(obj) + "\n"
+    loop = asyncio.get_running_loop()
 
     def stream():
-        # Targets are ready before the AI call — send them first.
-        yield event({
-            "type": "meta",
-            "target_category": target_label,
-            "candidates": candidates,
-        })
-        full: list[str] = []
-        emitted = 0  # chars of the prose already streamed
-        stopped = False  # once the ```json fence starts, hold back the rest
+        yield _ndjson({"type": "meta"})  # bare handshake — first byte instantly
+        fut = asyncio.run_coroutine_threadsafe(_prep(), loop)
         try:
-            with ai.messages.stream(
-                model=MODEL_TRADE,
-                max_tokens=8000,
-                thinking=_ADAPTIVE_THINKING,
-                system=system_prompt,
-                messages=[{"role": "user", "content": prompt}],
-            ) as s:
-                for text in s.text_stream:
-                    full.append(text)
-                    if stopped:
-                        continue
-                    joined = "".join(full)
-                    fence = joined.find("```")
-                    if fence != -1:
-                        if fence > emitted:
-                            yield event({"type": "text", "delta": joined[emitted:fence]})
-                        emitted = fence
-                        stopped = True  # the rest is the JSON package block
-                    else:
-                        # Hold back a 2-char lookbehind so a fence split across
-                        # deltas is never shown to the user.
-                        safe = len(joined) - 2
-                        if safe > emitted:
-                            yield event({"type": "text", "delta": joined[emitted:safe]})
-                            emitted = safe
-            raw = "".join(full)
-            analysis, packages = parse_finder_response(raw, parse_candidates, parse_assets)
-            yield event({"type": "packages", "packages": packages, "analysis": analysis})
-        except anthropic.APIStatusError as e:
-            # Emit a stable code (out_of_credits / invalid_api_key / rate_limited)
-            # the frontend routes to the global banner; else the raw message.
-            traceback.print_exc()
-            yield event({"type": "error", "detail": _ai_error_code(e) or str(e)})
+            yield from _prep_lines(fut, "Scanning rosters and season stats…")
+            prep = fut.result()
+        except GeneratorExit:
+            fut.cancel()
+            raise
         except Exception as e:
             traceback.print_exc()
-            yield event({"type": "error", "detail": str(e)})
+            yield _ndjson({"type": "error", "detail": str(e)})
+            return
+        # Targets are ready before the AI call — send them first.
+        yield _ndjson({
+            "type": "candidates",
+            "target_category": prep["target_label"],
+            "candidates": prep["candidates"],
+        })
+        full: list[str] = []
+        failed: list = []
+        yield from _ai_ndjson_lines(
+            ai,
+            status_label="Building trade packages…",
+            text_mapper=_FenceHoldback(),  # hold back the ```json package block
+            collect=full,
+            failed=failed,
+            done_event=False,
+            model=MODEL_TRADE,
+            max_tokens=8000,
+            thinking=_ADAPTIVE_THINKING,
+            system=prep["system_prompt"],
+            messages=[{"role": "user", "content": prep["prompt"]}],
+        )
+        if not failed:
+            try:
+                analysis, packages = parse_finder_response(
+                    "".join(full), prep["parse_candidates"], prep["parse_assets"]
+                )
+                yield _ndjson({"type": "packages", "packages": packages, "analysis": analysis})
+            except Exception as e:
+                traceback.print_exc()
+                yield _ndjson({"type": "error", "detail": str(e)})
 
     return StreamingResponse(stream(), media_type="application/x-ndjson")
 
