@@ -1039,8 +1039,15 @@ async def cron_refresh_widgets(x_cron_secret: str = Header(default="")):
     secret = os.getenv("CRON_SECRET")
     if not secret or x_cron_secret != secret:
         raise HTTPException(status_code=401, detail="Unauthorized")
+    refreshed = await _warm_stale_widgets(get_supabase())
+    return {"refreshed": refreshed, "count": len(refreshed)}
 
-    sb = get_supabase()
+
+async def _warm_stale_widgets(sb) -> list[str]:
+    """Regenerate every near-expiry cached widget (the warmer's core). Can run
+    for many minutes across leagues — callers over HTTP must background it or
+    Railway's edge cuts the request around the 5-minute mark (which is exactly
+    how the first digest run died)."""
     leagues = (await asyncio.to_thread(
         lambda: sb.table("leagues").select("id, fantrax_team_id").execute()
     )).data or []
@@ -1068,7 +1075,7 @@ async def cron_refresh_widgets(x_cron_secret: str = Header(default="")):
                 refreshed.append(f"{league_id}:{widget}")
             except Exception as e:
                 print(f"[cron] refresh failed {league_id}:{widget}: {e}")
-    return {"refreshed": refreshed, "count": len(refreshed)}
+    return refreshed
 
 
 # --- Daily digest email ---------------------------------------------------------
@@ -1288,16 +1295,18 @@ def _send_league_digest(sb, league: dict) -> str:
     return "sent"
 
 
-@app.post("/cron/daily-digest")
-async def cron_daily_digest(x_cron_secret: str = Header(default="")):
-    """Machine-triggered morning digest, one email per opted-in league. The
-    workflow calls /cron/refresh-widgets first so the cache is warm; this
-    endpoint never generates widgets itself. Best-effort per league."""
-    secret = os.getenv("CRON_SECRET")
-    if not secret or x_cron_secret != secret:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-
+async def _daily_digest_job():
+    """Warm the widget caches, then assemble + email each opted-in league's
+    digest. Runs as a background task — the whole pipeline takes minutes, far
+    past Railway's ~5-minute edge timeout for a live HTTP request. The outcome
+    is summarized to app_events so the admin page shows how each run went."""
     sb = get_supabase()
+    try:
+        refreshed = await _warm_stale_widgets(sb)
+        print(f"[digest] warmed {len(refreshed)} widgets")
+    except Exception:
+        traceback.print_exc()  # digest still sends from whatever cache exists
+
     leagues = (await asyncio.to_thread(
         lambda: sb.table("leagues").select("*").execute()
     )).data or []
@@ -1312,7 +1321,26 @@ async def cron_daily_digest(x_cron_secret: str = Header(default="")):
             print(f"[digest] failed for {lg.get('id')}: {e}")
             results[lg["id"]] = f"error: {e}"
     sent = sum(1 for v in results.values() if v == "sent")
-    return {"sent": sent, "results": results}
+    print(f"[digest] done: sent={sent} results={results}")
+    await asyncio.to_thread(
+        _log_event,
+        kind="digest",
+        level="info" if sent or not results else "warning",
+        status=200,
+        message=_json.dumps({"sent": sent, "results": results}),
+    )
+
+
+@app.post("/cron/daily-digest")
+async def cron_daily_digest(background_tasks: BackgroundTasks, x_cron_secret: str = Header(default="")):
+    """Machine-triggered morning digest: warms the widgets, then emails each
+    opted-in league owner. Responds immediately and runs the pipeline as a
+    background task; the run's outcome lands in app_events (admin page)."""
+    secret = os.getenv("CRON_SECRET")
+    if not secret or x_cron_secret != secret:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    background_tasks.add_task(_daily_digest_job)
+    return {"started": True}
 
 
 def _build_standings(fantrax_league_id: str, my_team_id: str) -> dict:
