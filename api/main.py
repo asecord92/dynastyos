@@ -1301,42 +1301,92 @@ sign-off — start directly with the first bullet."""
         return None
 
 
-def _digest_email_bodies(league_name: str, sport: str, lead: str | None,
-                         sections: dict[str, str], standings_line: str) -> tuple[str, str, str]:
-    """(subject, html, plain-text) for one league's digest."""
+# When several leagues share one email, each section gets trimmed harder — the
+# combined email should read like a newspaper (leads up top, compact sections
+# below), with the app holding the full content.
+_MULTI_SECTION_CAP = 1400
+
+_LEAD_BOX = (
+    '<div style="background:#f4f1fb;border-left:4px solid #7c3aed;border-radius:8px;'
+    'padding:10px 14px;margin-bottom:16px;">'
+)
+
+
+def _sport_emoji(sport: str) -> str:
+    return "🏈" if sport == "NFL" else "⚾"
+
+
+def _digest_email_bodies(parts: list[dict]) -> tuple[str, str, str]:
+    """(subject, html, plain-text) for one recipient's digest. Each part is one
+    league's content ({league_name, sport, sections, standings_line, lead}).
+    A single league renders as before; multiple leagues share one email in
+    newspaper form — every league's Lead up top, capped sections below."""
     try:
         from zoneinfo import ZoneInfo
         today = datetime.now(ZoneInfo("America/Los_Angeles"))
     except Exception:
         today = datetime.now(timezone.utc)
-    emoji = "🏈" if sport == "NFL" else "⚾"
-    subject = f"{emoji} {league_name} Daily — {today.strftime('%A, %B %d')}"
+    multi = len(parts) > 1
+
+    if multi:
+        subject = f"🗞️ Your DynastyOS Daily — {today.strftime('%A, %B %d')}"
+        header = "🗞️ DynastyOS Daily"
+        header_sub = today.strftime("%A, %B %d, %Y")
+    else:
+        p = parts[0]
+        emoji = _sport_emoji(p["sport"])
+        subject = f"{emoji} {p['league_name']} Daily — {today.strftime('%A, %B %d')}"
+        header = f"{emoji} {_html.escape(p['league_name'])} Daily"
+        header_sub = today.strftime("%A, %B %d, %Y") + (
+            f" · {_html.escape(p['standings_line'])}" if p["standings_line"] else ""
+        )
 
     html_parts = [
         '<div style="max-width:600px;margin:0 auto;font-family:-apple-system,Segoe UI,Roboto,sans-serif;color:#1a1a1a;font-size:15px;line-height:1.5;padding:16px;">',
-        f'<h2 style="margin:0 0 2px;">{emoji} {_html.escape(league_name)} Daily</h2>',
-        f'<div style="color:#777;font-size:13px;margin-bottom:14px;">{today.strftime("%A, %B %d, %Y")}'
-        + (f" · {_html.escape(standings_line)}" if standings_line else "") + "</div>",
+        f'<h2 style="margin:0 0 2px;">{header}</h2>',
+        f'<div style="color:#777;font-size:13px;margin-bottom:14px;">{header_sub}</div>',
     ]
-    text_parts = [f"{league_name} Daily — {today.strftime('%A, %B %d, %Y')}"]
-    if standings_line:
-        text_parts.append(standings_line)
+    text_parts = [f"{subject.split(' — ')[0]} — {today.strftime('%A, %B %d, %Y')}"]
 
-    if lead:
-        html_parts.append(
-            '<div style="background:#f4f1fb;border-left:4px solid #7c3aed;border-radius:8px;padding:10px 14px;margin-bottom:16px;">'
-            + _md_lite_html(lead) + "</div>"
-        )
-        text_parts += ["", "THE LEAD", lead]
+    def league_label(p: dict) -> str:
+        label = f"{_sport_emoji(p['sport'])} {p['league_name']}"
+        if p["standings_line"]:
+            label += f" · {p['standings_line']}"
+        return label
 
-    for title, body in sections.items():
-        if not body:
+    # The Lead — for a combined email, every league's bullets sit up top so the
+    # whole morning read is the first screen.
+    for p in parts:
+        if not p["lead"]:
             continue
-        html_parts.append(
-            f'<h3 style="margin:18px 0 4px;border-bottom:1px solid #e5e5e5;padding-bottom:4px;">{_html.escape(title)}</h3>'
-        )
-        html_parts.append(_md_lite_html(body))
-        text_parts += ["", title.upper(), body]
+        if multi:
+            html_parts.append(
+                f'<div style="font-weight:600;margin:12px 0 4px;">{_html.escape(league_label(p))}</div>'
+            )
+            text_parts += ["", league_label(p).upper()]
+        else:
+            text_parts += ["", "THE LEAD"]
+        html_parts.append(_LEAD_BOX + _md_lite_html(p["lead"]) + "</div>")
+        text_parts.append(p["lead"])
+
+    # Below the fold — each league's sections, trimmed harder when sharing.
+    for p in parts:
+        if multi:
+            html_parts.append(
+                f'<h2 style="margin:24px 0 2px;border-bottom:2px solid #e5e5e5;padding-bottom:4px;">'
+                f'{_sport_emoji(p["sport"])} {_html.escape(p["league_name"])}</h2>'
+            )
+            text_parts += ["", "=" * 8, league_label(p).upper()]
+        for title, body in p["sections"].items():
+            if not body:
+                continue
+            if multi and len(body) > _MULTI_SECTION_CAP:
+                body = body[:_MULTI_SECTION_CAP] + "\n… more in the app."
+            html_parts.append(
+                f'<h3 style="margin:18px 0 4px;border-bottom:1px solid #e5e5e5;padding-bottom:4px;">{_html.escape(title)}</h3>'
+            )
+            html_parts.append(_md_lite_html(body))
+            text_parts += ["", title.upper(), body]
 
     html_parts.append(
         '<div style="color:#999;font-size:12px;margin-top:22px;border-top:1px solid #e5e5e5;padding-top:10px;">'
@@ -1387,15 +1437,13 @@ def _owner_email(sb, user_id: str | None) -> str | None:
         return None
 
 
-def _send_league_digest(sb, league: dict) -> str:
-    """Assemble + send one league's digest. Blocking — run in a worker thread.
-    Returns a short status string for the cron response."""
+def _league_digest_part(sb, league: dict) -> tuple[str, dict | None]:
+    """Assemble one league's digest content (including its AI lead). Returns
+    (status, part) — part is None unless status is "ready". Blocking — run in
+    a worker thread."""
     league_id = league.get("id")
     if league.get("digest_enabled") is not True:  # opt-in: only explicit True sends
-        return "opted_out"
-    email = _owner_email(sb, league.get("owner_user_id"))
-    if not email:
-        return "no_email"
+        return "opted_out", None
 
     sections: dict[str, str] = {}
     row = _check_cache(sb, league_id, "start_sit", force=False, max_age=_DIGEST_CACHE_WINDOW)
@@ -1408,7 +1456,7 @@ def _send_league_digest(sb, league: dict) -> str:
     if row:
         sections["Waiver Watch"] = _digest_waiver_text(row["content"])
     if not any(sections.values()):
-        return "no_content"  # dormant league (warmer skipped it too) — nothing to say
+        return "no_content", None  # dormant/off-season league — nothing to say
 
     sport = league.get("sport") or "MLB"
     standings_line = ""
@@ -1421,11 +1469,13 @@ def _send_league_digest(sb, league: dict) -> str:
             pass
 
     lead = _digest_lead(sb, league_id, sport, sections, standings_line)
-    subject, html_body, text_body = _digest_email_bodies(
-        league.get("name") or "Your League", sport, lead, sections, standings_line
-    )
-    _send_digest_email(email, subject, html_body, text_body)
-    return "sent"
+    return "ready", {
+        "league_name": league.get("name") or "Your League",
+        "sport": sport,
+        "sections": sections,
+        "standings_line": standings_line,
+        "lead": lead,
+    }
 
 
 async def _daily_digest_job():
@@ -1456,23 +1506,59 @@ async def _daily_digest_job():
         lambda: sb.table("leagues").select("*").execute()
     )).data or []
 
-    results: dict[str, str] = {}
+    # One email per person: group leagues by owner, assemble every opted-in
+    # league's content, and send a single combined digest per recipient.
+    by_owner: dict[str, list[dict]] = {}
     for lg in leagues:
-        if not lg.get("id"):
+        if lg.get("id"):
+            by_owner.setdefault(lg.get("owner_user_id") or "", []).append(lg)
+
+    results: dict[str, str] = {}
+    emails_sent = 0
+    for owner_id, owner_leagues in by_owner.items():
+        email = await asyncio.to_thread(_owner_email, sb, owner_id)
+        if not email:
+            # Resolve the address before assembling anything — each ready
+            # league costs a billed AI lead, pointless with nowhere to send.
+            for lg in owner_leagues:
+                results[lg["id"]] = "no_email"
             continue
+
+        parts: list[dict] = []
+        ready_ids: list[str] = []
+        for lg in owner_leagues:
+            try:
+                status, part = await asyncio.to_thread(_league_digest_part, sb, lg)
+            except Exception as e:
+                print(f"[digest] failed for {lg['id']}: {e}")
+                results[lg["id"]] = f"error: {e}"
+                continue
+            results[lg["id"]] = status
+            if part is not None:
+                parts.append(part)
+                ready_ids.append(lg["id"])
+        if not parts:
+            continue
+
         try:
-            results[lg["id"]] = await asyncio.to_thread(_send_league_digest, sb, lg)
+            subject, html_body, text_body = _digest_email_bodies(parts)
+            await asyncio.to_thread(_send_digest_email, email, subject, html_body, text_body)
+            emails_sent += 1
+            for lid in ready_ids:
+                results[lid] = "sent"
         except Exception as e:
-            print(f"[digest] failed for {lg.get('id')}: {e}")
-            results[lg["id"]] = f"error: {e}"
+            print(f"[digest] send failed for {email}: {e}")
+            for lid in ready_ids:
+                results[lid] = f"error: {e}"
+
     sent = sum(1 for v in results.values() if v == "sent")
-    print(f"[digest] done: sent={sent} results={results}")
+    print(f"[digest] done: emails={emails_sent} leagues_sent={sent} results={results}")
     await asyncio.to_thread(
         _log_event,
         kind="digest",
         level="info" if sent or not results else "warning",
         status=200,
-        message=_json.dumps({"sent": sent, "results": results}),
+        message=_json.dumps({"emails": emails_sent, "sent": sent, "results": results}),
     )
 
 
