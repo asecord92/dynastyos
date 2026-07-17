@@ -1,14 +1,13 @@
 import asyncio
 import html as _html
-import smtplib
 import time
 import traceback
 import os
 import re
 import json as _json
 import tempfile
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
+
+import httpx
 from fastapi import FastAPI, UploadFile, File, Query, HTTPException, BackgroundTasks, Depends, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
@@ -1228,20 +1227,29 @@ def _digest_email_bodies(league_name: str, sport: str, lead: str | None,
     return subject, "\n".join(html_parts), "\n".join(text_parts)
 
 
-def _send_email_gmail(to_addr: str, subject: str, html: str, text: str) -> None:
-    sender = os.getenv("GMAIL_ADDRESS")
-    password = os.getenv("GMAIL_APP_PASSWORD")
-    if not sender or not password:
-        raise RuntimeError("GMAIL_ADDRESS / GMAIL_APP_PASSWORD not configured")
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"] = f"DynastyOS <{sender}>"
-    msg["To"] = to_addr
-    msg.attach(MIMEText(text, "plain"))
-    msg.attach(MIMEText(html, "html"))
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=30) as smtp:
-        smtp.login(sender, password)
-        smtp.sendmail(sender, [to_addr], msg.as_string())
+def _send_digest_email(to_addr: str, subject: str, html: str, text: str) -> None:
+    """Deliver via Brevo's HTTPS API. Railway blocks ALL outbound SMTP ports
+    (25/465/587) on Hobby plans — a classic SMTP send dies with '[Errno 101]
+    Network is unreachable' — so email must go over HTTPS from here.
+    DIGEST_FROM_EMAIL must be a Brevo-verified sender address."""
+    api_key = os.getenv("BREVO_API_KEY")
+    sender = os.getenv("DIGEST_FROM_EMAIL")
+    if not api_key or not sender:
+        raise RuntimeError("BREVO_API_KEY / DIGEST_FROM_EMAIL not configured")
+    resp = httpx.post(
+        "https://api.brevo.com/v3/smtp/email",
+        headers={"api-key": api_key, "content-type": "application/json"},
+        json={
+            "sender": {"name": "DynastyOS", "email": sender},
+            "to": [{"email": to_addr}],
+            "subject": subject,
+            "htmlContent": html,
+            "textContent": text,
+        },
+        timeout=30,
+    )
+    if resp.status_code >= 300:
+        raise RuntimeError(f"Brevo send failed ({resp.status_code}): {resp.text[:300]}")
 
 
 def _owner_email(sb, user_id: str | None) -> str | None:
@@ -1291,7 +1299,7 @@ def _send_league_digest(sb, league: dict) -> str:
     subject, html_body, text_body = _digest_email_bodies(
         league.get("name") or "Your League", sport, lead, sections, standings_line
     )
-    _send_email_gmail(email, subject, html_body, text_body)
+    _send_digest_email(email, subject, html_body, text_body)
     return "sent"
 
 
@@ -1303,13 +1311,13 @@ async def _daily_digest_job():
     sb = get_supabase()
 
     # Bail before any AI spend if the sender isn't configured — each league's
-    # digest generates a billed lead call before it would hit SMTP, so a missing
-    # env var must not cost a lead generation per league per attempt.
-    if not (os.getenv("GMAIL_ADDRESS") and os.getenv("GMAIL_APP_PASSWORD")):
-        print("[digest] aborted: GMAIL_ADDRESS / GMAIL_APP_PASSWORD not configured")
+    # digest generates a billed lead call before it would hit the email API, so
+    # a missing env var must not cost a lead generation per league per attempt.
+    if not (os.getenv("BREVO_API_KEY") and os.getenv("DIGEST_FROM_EMAIL")):
+        print("[digest] aborted: BREVO_API_KEY / DIGEST_FROM_EMAIL not configured")
         await asyncio.to_thread(
             _log_event, kind="digest", level="warning", status=500,
-            message="digest aborted: GMAIL_ADDRESS / GMAIL_APP_PASSWORD not configured",
+            message="digest aborted: BREVO_API_KEY / DIGEST_FROM_EMAIL not configured",
         )
         return
 
