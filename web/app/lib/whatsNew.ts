@@ -15,8 +15,8 @@ export const WHATS_NEW: WhatsNewEntry = {
   date: "July 16, 2026",
   items: [
     {
-      title: "Your morning digest",
-      body: "Every day around 9 AM PT, DynastyOS emails you a brief for your team: a punchy AI-written lead, today's start/sit calls, the news that matters, and the waiver move to make. Turn it off any time in Settings.",
+      title: "Your morning digest (opt-in)",
+      body: "DynastyOS can email you a daily brief for your team around 9 AM PT: a punchy AI-written lead, today's start/sit calls, the news that matters, and the waiver move to make. It's off by default — turn it on from the dashboard banner or in Settings.",
     },
     {
       title: "The Roster page is now the Cap Planner",

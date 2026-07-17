@@ -10,6 +10,7 @@ import { StatCard } from "../components/StatCard";
 import { StartSitPanel } from "../components/StartSitPanel";
 import { CategoryRanksWidget } from "../components/CategoryRanksWidget";
 import { InjuryTicker } from "../components/InjuryTicker";
+import { DigestPromo } from "../components/DigestPromo";
 import { FootballDashboard } from "../components/FootballDashboard";
 import type { Alert } from "../components/StartSitPanel";
 
@@ -142,6 +143,8 @@ export default function DashboardPage() {
   return (
     <main className="space-y-6">
       <h1 className="text-3xl font-semibold">Dashboard</h1>
+
+      {leagueId && <DigestPromo leagueId={leagueId} />}
 
       {/* New user, no leagues connected yet — give them a real first step. */}
       {!leagueId && leagues !== null && leagues.length === 0 && (
