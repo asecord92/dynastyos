@@ -1078,10 +1078,9 @@ async def _warm_stale_widgets(sb) -> list[str]:
 
 
 # --- Daily digest email ---------------------------------------------------------
-# Assembled from the already-cached widgets (kept warm by /cron/refresh-widgets,
-# which the workflow calls first) plus one small no-search AI call for "The
-# Lead" — a punchy morning brief in the trade advisor's voice. Sent via Gmail
-# SMTP (GMAIL_ADDRESS + GMAIL_APP_PASSWORD env). Per-league opt-out via
+# Assembled from the already-cached widgets plus one small no-search AI call for
+# "The Lead" — a punchy morning brief in the trade advisor's voice. Sent via the
+# Brevo HTTPS API (BREVO_API_KEY + DIGEST_FROM_EMAIL env). Opt-IN per league via
 # leagues.digest_enabled; recipients are each league owner's auth email.
 
 # Reading the cache for the digest: anything generated this morning (or still
@@ -1266,7 +1265,7 @@ def _send_league_digest(sb, league: dict) -> str:
     """Assemble + send one league's digest. Blocking — run in a worker thread.
     Returns a short status string for the cron response."""
     league_id = league.get("id")
-    if league.get("digest_enabled") is False:  # missing column/value = opted in
+    if league.get("digest_enabled") is not True:  # opt-in: only explicit True sends
         return "opted_out"
     email = _owner_email(sb, league.get("owner_user_id"))
     if not email:

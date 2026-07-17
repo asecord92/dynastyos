@@ -5,10 +5,10 @@ import { supabase } from "../lib/supabaseClient";
 
 /** Opt in/out of the morning digest email for this league. Reads and writes
  * leagues.digest_enabled (owner-scoped RLS, same pattern as LeagueRulesEditor);
- * missing column/value (migration not applied yet) is treated as opted in. */
+ * the digest is opt-in — missing column/value means off. */
 export function DigestToggle({ leagueId }: { leagueId: string }) {
   const [loaded, setLoaded] = useState(false);
-  const [enabled, setEnabled] = useState(true);
+  const [enabled, setEnabled] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
@@ -21,7 +21,7 @@ export function DigestToggle({ leagueId }: { leagueId: string }) {
         .eq("id", leagueId)
         .single();
       if (!active) return;
-      setEnabled((data as { digest_enabled?: boolean } | null)?.digest_enabled ?? true);
+      setEnabled((data as { digest_enabled?: boolean } | null)?.digest_enabled === true);
       setLoaded(true);
     })();
     return () => {
