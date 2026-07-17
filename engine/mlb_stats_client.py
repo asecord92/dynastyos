@@ -1,6 +1,6 @@
 import asyncio
 import httpx
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from .supabase_client import get_supabase
 
 MLB_STATS_BASE = "https://statsapi.mlb.com/api/v1"
@@ -542,3 +542,68 @@ async def get_player_stats(mlb_id: int, player_type: str) -> dict | None:
         "season_stats": season_stats or {},
         "recent_stats": recent_stats or {},
     }
+
+
+def _us_baseball_now() -> datetime:
+    """Now in US Eastern — MLB's 'today'. The server runs UTC, so late-evening
+    Pacific generations would otherwise fetch tomorrow's schedule as today's."""
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo("America/New_York"))
+    except Exception:  # no tzdata (some Windows setups) — EST is close enough
+        return datetime.now(timezone(timedelta(hours=-5)))
+
+
+def get_schedule_context(days: int = 2) -> str:
+    """Prompt-ready block: the real MLB schedule with announced probable
+    starters for today (+ tomorrow), from the schedule endpoint's
+    probablePitcher hydrate. This is what stops the model from inferring
+    'he last started 5 days ago, so he starts today' — which is exactly how
+    the digest claimed pitchers were starting during the All-Star break.
+
+    Sync (widget builders run in worker threads). Returns "" on total failure —
+    a schedule outage must never block a generation, the prompt just falls back
+    to making no scheduling claims."""
+    base = _us_baseball_now()
+    day_blocks: list[str] = []
+    for offset in range(days):
+        date = (base + timedelta(days=offset)).strftime("%Y-%m-%d")
+        label = ("Today" if offset == 0 else "Tomorrow") + f", {date}"
+        data = None
+        for attempt in range(2):
+            try:
+                resp = httpx.get(
+                    f"{MLB_STATS_BASE}/schedule",
+                    params={"sportId": 1, "date": date, "hydrate": "probablePitcher"},
+                    timeout=10,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                break
+            except Exception as e:
+                if attempt == 1:
+                    print(f"[schedule] fetch failed for {date}: {e}")
+        if data is None:
+            continue
+        games = [g for d in data.get("dates", []) for g in d.get("games", [])]
+        if not games:
+            day_blocks.append(f"{label}: NO MLB games scheduled.")
+            continue
+        lines = [f"{label} ({len(games)} games):"]
+        for g in games:
+            def side(key: str) -> tuple[str, str]:
+                t = g.get("teams", {}).get(key, {})
+                name = (t.get("team") or {}).get("name", "?")
+                prob = (t.get("probablePitcher") or {}).get("fullName") or "TBD"
+                return name, prob
+            away, away_p = side("away")
+            home, home_p = side("home")
+            lines.append(f"- {away} @ {home} — probables: {away_p} vs {home_p}")
+        day_blocks.append("\n".join(lines))
+    if not day_blocks:
+        return ""
+    return (
+        "MLB schedule with announced probable starters (from the MLB Stats API — authoritative):\n"
+        + "\n\n".join(day_blocks)
+        + "\n\nAny team not listed on a date has NO game that day."
+    )

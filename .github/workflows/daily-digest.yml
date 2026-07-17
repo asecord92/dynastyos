@@ -3,8 +3,11 @@
 # ~5-minute edge timeout; the first run died exactly that way). The run's
 # outcome lands in app_events, visible on the admin page.
 #
-# Schedule is UTC — 16:00 UTC = 9:00 AM PDT (8:00 AM in winter PST; GitHub cron
-# can also drift a few minutes at busy times, both fine for a morning email).
+# Schedule is UTC — 15:43 UTC = 8:43 AM PDT (7:43 AM in winter PST). Deliberately
+# EARLY and on an odd minute: GitHub cron runs queue behind everyone else's, and
+# on-the-hour slots slip badly (the 16:00 slot fired at 17:02 on 2026-07-17 — an
+# hour late). Off-peak minute + head start means typical drift still lands the
+# email near 9 AM Pacific rather than after it.
 #
 # Secrets: API_URL (Railway backend base URL, no trailing slash) and
 # CRON_SECRET (must match the backend's CRON_SECRET env var).
@@ -12,7 +15,7 @@ name: Daily Digest
 
 on:
   schedule:
-    - cron: "0 16 * * *"
+    - cron: "43 15 * * *"
   workflow_dispatch: {}
 
 jobs:
