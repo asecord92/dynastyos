@@ -1,13 +1,32 @@
 "use client";
 
 import { CapPlanner } from "../../components/CapPlanner";
+import { NFLRosterView } from "../../components/NFLRosterView";
+import { useLeague } from "../../lib/useLeague";
 import { useSnapshot } from "../../lib/useSnapshot";
 import { useLeagueRules } from "../../lib/useLeagueRules";
 import { money } from "../../lib/rosterUtils";
 
 export default function CapPlannerPage() {
+  const { sport } = useLeague();
   const { data, loading, leagueId } = useSnapshot();
   const rules = useLeagueRules(leagueId);
+
+  // Football (Sleeper) is points-based — no salaries or contracts to plan, so
+  // this tab is the roster view instead of the Cap Planner.
+  if (sport === "NFL" && leagueId) {
+    return (
+      <main className="space-y-8">
+        <header className="space-y-1">
+          <h1 className="text-3xl font-semibold">Roster</h1>
+          <p className="text-gray-700">
+            Your synced Sleeper roster — starters, bench, and injury status.
+          </p>
+        </header>
+        <NFLRosterView leagueId={leagueId} />
+      </main>
+    );
+  }
 
   return (
     <main className="space-y-8">

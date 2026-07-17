@@ -77,7 +77,11 @@ export function AppNav() {
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
-  const { leagueId, setLeague, buildHref } = useLeague();
+  const { leagueId, sport, setLeague, buildHref } = useLeague();
+  // Football leagues have no cap/contracts — the /roster tab is a plain roster
+  // view there, so the label follows the selected league's sport.
+  const rosterLabel = (short: boolean) =>
+    sport === "NFL" ? "Roster" : short ? "Cap" : "Cap Planner";
   const pathname = usePathname();
 
   const badge = useMemo(() => (email ? initials(email) : "?"), [email]);
@@ -255,7 +259,7 @@ export function AppNav() {
         <nav className="hidden lg:flex items-center justify-center gap-1 text-sm">
           {[
             { href: "/", label: "Dashboard" },
-            { href: "/roster", label: "Cap Planner" },
+            { href: "/roster", label: rosterLabel(false) },
             { href: "/waivers", label: "Waivers" },
             { href: "/trade", label: "Trade" },
           ].map((item) => {
@@ -423,7 +427,7 @@ export function AppNav() {
               }`}
             >
               {tab.icon}
-              {tab.label}
+              {tab.href === "/roster" ? rosterLabel(true) : tab.label}
             </Link>
           );
         })}
