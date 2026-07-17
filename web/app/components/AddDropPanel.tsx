@@ -69,6 +69,8 @@ export function AddDropPanel({
 
   const [loading, setLoading] = useState(false);
   const [streamText, setStreamText] = useState("");
+  // Live progress from the stream's `status` keepalives; cleared when text resumes.
+  const [aiStatus, setAiStatus] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [needsApiKey, setNeedsApiKey] = useState(false);
 
@@ -194,6 +196,7 @@ export function AddDropPanel({
     streamAbortRef.current = ac;
     setLoading(true);
     setStreamText("");
+    setAiStatus("");
     setError(null);
     setNeedsApiKey(false);
     try {
@@ -223,10 +226,13 @@ export function AddDropPanel({
       // stream early, `text` deltas carry the recommendation, and key/billing
       // errors arrive as `error` events after the 200.
       let full = "";
-      const apply = (evt: { type?: string; delta?: string; detail?: string }) => {
+      const apply = (evt: { type?: string; delta?: string; detail?: string; label?: string }) => {
         if (evt.type === "text") {
           full += evt.delta ?? "";
           setStreamText(full);
+          setAiStatus("");
+        } else if (evt.type === "status") {
+          setAiStatus(evt.label ?? "");
         } else if (evt.type === "error") {
           const issue = aiIssueFromDetail(evt.detail);
           if (issue) reportIssue(issue);
@@ -263,7 +269,10 @@ export function AddDropPanel({
     } finally {
       // Clear loading unless a newer run has taken over (its own spinner is
       // up); on abort-while-mounted this still clears, on unmount React no-ops.
-      if (streamAbortRef.current === ac) setLoading(false);
+      if (streamAbortRef.current === ac) {
+        setLoading(false);
+        setAiStatus("");
+      }
     }
   }
 
@@ -396,12 +405,17 @@ export function AddDropPanel({
       )}
 
       {loading && !streamText && (
-        <div className="text-sm text-gray-400 animate-pulse">Weighing your roster…</div>
+        <div className="text-sm text-gray-400 animate-pulse">
+          {aiStatus || "Weighing your roster…"}
+        </div>
       )}
 
       {streamText && (
         <div className="border-t border-gray-100 pt-4">
           <DropRenderer text={streamText} />
+          {loading && aiStatus && (
+            <div className="mt-2 text-xs text-gray-400 animate-pulse">{aiStatus}</div>
+          )}
         </div>
       )}
     </div>

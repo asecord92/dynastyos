@@ -55,7 +55,9 @@ type FinderResult = {
 };
 
 type FinderEvent =
-  | { type: "meta"; target_category: string; candidates: Candidate[] }
+  | { type: "meta"; target_category?: string; candidates?: Candidate[] }
+  | { type: "candidates"; target_category: string; candidates: Candidate[] }
+  | { type: "status"; label?: string }
   | { type: "text"; delta: string }
   | { type: "packages"; packages: TradePackage[]; analysis: string }
   | { type: "error"; detail: string };
@@ -190,6 +192,9 @@ export default function TradePage() {
   const [receiving, setReceiving] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [streamText, setStreamText] = useState("");
+  // Live progress from the stream's `status` keepalives ("Searching the web…");
+  // cleared whenever answer text resumes.
+  const [analyzeStatus, setAnalyzeStatus] = useState("");
   const [error, setError] = useState<string | null>(null);
   // 402 from the backend = no Anthropic key on file (BYOK). Shared across both flows.
   const [needsApiKey, setNeedsApiKey] = useState(false);
@@ -199,6 +204,7 @@ export default function TradePage() {
 
   const [mode, setMode] = useState<"build" | "find" | "history">("build");
   const [finderLoading, setFinderLoading] = useState(false);
+  const [finderStatus, setFinderStatus] = useState("");
   const [finderError, setFinderError] = useState<string | null>(null);
   const [finder, setFinder] = useState<FinderResult | null>(null);
   // Carries a prefill target across the opponent-change effect (which clears receiving).
@@ -335,6 +341,7 @@ export default function TradePage() {
     const ac = new AbortController();
     finderAbortRef.current = ac;
     setFinderLoading(true);
+    setFinderStatus("");
     setFinderError(null);
     setNeedsApiKey(false);
     setFinder(null);
@@ -361,16 +368,21 @@ export default function TradePage() {
 
       let analysisText = "";
       const apply = (evt: FinderEvent) => {
-        if (evt.type === "meta") {
-          // Targets arrive before the AI — render them and drop the spinner.
+        // Targets arrive (as `candidates`; older backends sent them on `meta`)
+        // before the AI — render them and drop the spinner. A bare `meta` is
+        // just the stream handshake.
+        if (evt.type === "candidates" || (evt.type === "meta" && evt.candidates)) {
           setFinder({
-            target_category: evt.target_category,
+            target_category: evt.target_category ?? "",
             candidates: evt.candidates ?? [],
             packages: [],
             analysis: "",
           });
           setFinderLoading(false);
+        } else if (evt.type === "status") {
+          setFinderStatus(evt.label ?? "");
         } else if (evt.type === "text") {
+          setFinderStatus("");
           analysisText += evt.delta ?? "";
           setFinder((prev) => (prev ? { ...prev, analysis: analysisText } : prev));
         } else if (evt.type === "packages") {
@@ -417,7 +429,10 @@ export default function TradePage() {
     } finally {
       // Clear loading unless a newer run has taken over (its own spinner is
       // up); on abort-while-mounted this still clears, on unmount React no-ops.
-      if (finderAbortRef.current === ac) setFinderLoading(false);
+      if (finderAbortRef.current === ac) {
+        setFinderLoading(false);
+        setFinderStatus("");
+      }
     }
   }
 
@@ -494,6 +509,7 @@ export default function TradePage() {
     analyzeAbortRef.current = ac;
     setLoading(true);
     setStreamText("");
+    setAnalyzeStatus("");
     setError(null);
     setNeedsApiKey(false);
 
@@ -527,10 +543,13 @@ export default function TradePage() {
       // and key/billing errors arrive as `error` events after the 200.
       let full = "";
       let failed = false;
-      const apply = (evt: { type?: string; delta?: string; detail?: string }) => {
+      const apply = (evt: { type?: string; delta?: string; detail?: string; label?: string }) => {
         if (evt.type === "text") {
           full += evt.delta ?? "";
           setStreamText(full);
+          setAnalyzeStatus("");
+        } else if (evt.type === "status") {
+          setAnalyzeStatus(evt.label ?? "");
         } else if (evt.type === "error") {
           failed = true;
           const issue = aiIssueFromDetail(evt.detail);
@@ -570,7 +589,10 @@ export default function TradePage() {
     } finally {
       // Clear loading unless a newer run has taken over (its own spinner is
       // up); on abort-while-mounted this still clears, on unmount React no-ops.
-      if (analyzeAbortRef.current === ac) setLoading(false);
+      if (analyzeAbortRef.current === ac) {
+        setLoading(false);
+        setAnalyzeStatus("");
+      }
     }
   }
 
@@ -686,11 +708,14 @@ export default function TradePage() {
 
             {loading && !streamText && (
               <div className="bg-gray-50 border rounded-2xl p-6 shadow-sm text-sm text-gray-400 animate-pulse">
-                Analyzing trade...
+                {analyzeStatus || "Analyzing trade..."}
               </div>
             )}
 
             {streamText && <AnalysisRenderer text={streamText} />}
+            {loading && streamText && analyzeStatus && (
+              <div className="text-xs text-gray-400 animate-pulse">{analyzeStatus}</div>
+            )}
           </div>
           </div>
           )}
@@ -750,7 +775,7 @@ export default function TradePage() {
                 )}
                 {finderLoading && (
                   <div className="bg-gray-50 border rounded-2xl p-6 shadow-sm text-sm text-gray-400 animate-pulse">
-                    Scanning the league...
+                    {finderStatus || "Scanning the league..."}
                   </div>
                 )}
                 {finder && !finderLoading && (
@@ -835,7 +860,7 @@ export default function TradePage() {
                       </div>
                     ) : (
                       <div className="bg-gray-50 border rounded-2xl p-5 shadow-sm text-sm text-gray-400 animate-pulse">
-                        Analyzing targets and building offers…
+                        {finderStatus || "Analyzing targets and building offers…"}
                       </div>
                     )}
                   </>
