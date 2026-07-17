@@ -297,7 +297,9 @@ confirmed and note the date of any news you cite. If search turns up nothing new
 confidently with the data above. Never let unverified memory of a player override the data
 provided here.
 
-Respond in exactly this format:
+Respond in exactly this format, beginning immediately with the VERDICT heading on its own
+line. Do not narrate your process — no preamble before the verdict; any searching happens
+silently first.
 
 VERDICT
 ACCEPT, DECLINE, or COUNTER — one punchy sentence on why.

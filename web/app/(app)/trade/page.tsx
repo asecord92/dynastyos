@@ -8,14 +8,18 @@ import { AnalysisRenderer } from "../../components/trade/AnalysisRenderer";
 import { TradeHistory } from "../../components/trade/TradeHistory";
 import { aiIssueFromDetail, useAiStatus } from "../../lib/aiStatus";
 import { NeedsApiKey } from "../../components/ui/NeedsApiKey";
+import { MarkdownContent } from "../../lib/format";
 
 const CATEGORIES = ["R", "HR", "RBI", "SB", "OBP", "QS", "SV", "K", "ERA", "WHIP"];
 const NFL_POSITIONS = ["QB", "RB", "WR", "TE"];
 
-/** First line of the VERDICT section (both MLB and NFL prompts emit one). */
+/** First line of the VERDICT section (both MLB and NFL prompts emit one).
+ * Case-sensitive on the caps header — prose like "…giving my verdict." must
+ * not match — and stripped of any markdown bold markers. */
 function extractVerdict(text: string): string {
-  const m = text.match(/VERDICT\s*([\s\S]*?)(?=ANALYSIS|$)/i);
-  return m ? m[1].trim().split("\n")[0].trim() : "";
+  const m = text.match(/\bVERDICT\b\s*([\s\S]*?)(?=\bANALYSIS\b|$)/);
+  if (!m) return "";
+  return m[1].replace(/\*\*/g, "").replace(/^[:\s]+/, "").split("\n")[0].trim();
 }
 
 type Candidate = {
@@ -827,13 +831,7 @@ export default function TradePage() {
                         <div className="text-xs font-semibold uppercase tracking-widest text-gray-400 mb-3">
                           Recommendation
                         </div>
-                        <div className="space-y-3">
-                          {finder.analysis.split("\n\n").map((para, i) => (
-                            <p key={i} className="text-sm text-gray-700 leading-relaxed">
-                              {para.trim()}
-                            </p>
-                          ))}
-                        </div>
+                        <MarkdownContent text={finder.analysis} />
                       </div>
                     ) : (
                       <div className="bg-gray-50 border rounded-2xl p-5 shadow-sm text-sm text-gray-400 animate-pulse">
