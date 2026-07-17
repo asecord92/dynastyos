@@ -76,7 +76,7 @@ export function TradeHistory({ leagueId }: { leagueId: string }) {
                     h.verdict
                   )}`}
                 >
-                  {h.verdict}
+                  {h.verdict.replace(/\*\*/g, "")}
                 </span>
               )}
               <div>

@@ -590,7 +590,9 @@ data above. Never let unverified memory of a player override the data provided h
 
     # Output format instructions
     format_instructions = """
-Respond in exactly this format:
+Respond in exactly this format, beginning immediately with the VERDICT heading on its own
+line. Do not narrate your process — no preamble like "I'll verify..." before the verdict;
+any searching happens silently first.
 
 VERDICT
 ACCEPT, DECLINE, or COUNTER — followed by one punchy sentence explaining why.
