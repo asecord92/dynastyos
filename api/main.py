@@ -655,6 +655,126 @@ async def admin_overview(_user: dict = Depends(require_admin)):
     }
 
 
+# --- AI usage / cost rollups ----------------------------------------------------
+# Dollar costs are computed at DISPLAY time from this pricing map, so ai_usage
+# history stays truthful when prices change. Rates are USD per MTok, from the
+# platform pricing docs (fetched 2026-07-16). Sonnet 5 runs introductory
+# pricing through 2026-08-31, so its rate is chosen per row by created_at.
+# Web search bills $10 per 1,000 searches on top of tokens.
+_WEB_SEARCH_COST = 0.01
+_SONNET5_INTRO_UNTIL = "2026-09-01"
+
+
+def _model_rates(model: str, created_at: str) -> dict:
+    m = model or ""
+    if m.startswith("claude-sonnet-5"):
+        if (created_at or "") < _SONNET5_INTRO_UNTIL:
+            return {"input": 2.0, "output": 10.0, "cache_read": 0.20, "cache_write": 2.50}
+        return {"input": 3.0, "output": 15.0, "cache_read": 0.30, "cache_write": 3.75}
+    if m.startswith("claude-haiku"):
+        return {"input": 1.0, "output": 5.0, "cache_read": 0.10, "cache_write": 1.25}
+    if m.startswith("claude-sonnet"):
+        return {"input": 3.0, "output": 15.0, "cache_read": 0.30, "cache_write": 3.75}
+    # Opus-tier, and anything unknown — don't understate a mystery model.
+    return {"input": 5.0, "output": 25.0, "cache_read": 0.50, "cache_write": 6.25}
+
+
+def _row_cost(row: dict) -> float:
+    r = _model_rates(row.get("model") or "", row.get("created_at") or "")
+    per_tok = 1 / 1_000_000
+    return (
+        (row.get("input_tokens") or 0) * r["input"] * per_tok
+        + (row.get("output_tokens") or 0) * r["output"] * per_tok
+        + (row.get("cache_read_tokens") or 0) * r["cache_read"] * per_tok
+        + (row.get("cache_creation_tokens") or 0) * r["cache_write"] * per_tok
+        + (row.get("web_searches") or 0) * _WEB_SEARCH_COST
+    )
+
+
+@app.get("/admin/usage")
+async def admin_usage(_user: dict = Depends(require_admin)):
+    """AI usage + estimated-cost rollups over the last 30 days, per tool and
+    per user. Dollars are computed here (see _row_cost), never stored. Returns
+    {available: false} until the ai_usage migration is applied."""
+    sb = get_supabase()
+    now = datetime.now(timezone.utc)
+    since_30d = (now - timedelta(days=30)).isoformat()
+
+    def _load():
+        rows = (
+            sb.table("ai_usage").select("*")
+            .gte("created_at", since_30d)
+            .order("created_at", desc=True)
+            .limit(5000)
+            .execute()
+            .data
+            or []
+        )
+        try:
+            raw_users = sb.auth.admin.list_users()
+            users = getattr(raw_users, "users", raw_users) or []
+        except Exception:
+            users = []
+        return rows, users
+
+    try:
+        rows, users = await asyncio.to_thread(_load)
+    except Exception:
+        return {"available": False}
+
+    email_by_id = {getattr(u, "id", None): getattr(u, "email", None) for u in users}
+    cutoff_7d = (now - timedelta(days=7)).isoformat()
+
+    _SUMMED = ("input_tokens", "output_tokens", "cache_read_tokens",
+               "cache_creation_tokens", "web_searches")
+
+    def bucket() -> dict:
+        b = dict.fromkeys(_SUMMED, 0)
+        b.update({"calls": 0, "errors": 0, "duration_ms": 0, "cost": 0.0,
+                  "calls_7d": 0, "cost_7d": 0.0})
+        return b
+
+    by_tool: dict[str, dict] = {}
+    by_user: dict[str, dict] = {}
+    totals = bucket()
+    for row in rows:
+        cost = _row_cost(row)
+        recent = (row.get("created_at") or "") >= cutoff_7d
+        for b in (
+            by_tool.setdefault(row.get("tool") or "unknown", bucket()),
+            by_user.setdefault(row.get("user_id") or "unknown", bucket()),
+            totals,
+        ):
+            b["calls"] += 1
+            if row.get("ok") is False:
+                b["errors"] += 1
+            for k in _SUMMED:
+                b[k] += row.get(k) or 0
+            b["duration_ms"] += row.get("duration_ms") or 0
+            b["cost"] += cost
+            if recent:
+                b["calls_7d"] += 1
+                b["cost_7d"] += cost
+
+    def finish(groups: dict[str, dict], label_key: str, label) -> list[dict]:
+        out = []
+        for key, b in groups.items():
+            b[label_key] = label(key)
+            b["avg_duration_ms"] = int(b["duration_ms"] / b["calls"]) if b["calls"] else 0
+            out.append(b)
+        out.sort(key=lambda x: x["cost"], reverse=True)
+        return out
+
+    return {
+        "available": True,
+        "generated_at": now.isoformat(),
+        "window_days": 30,
+        "totals": totals,
+        "tools": finish(by_tool, "tool", lambda k: k),
+        "users": finish(by_user, "email", lambda k: email_by_id.get(k) or k),
+    }
+
+
 class RosterSyncRequest(BaseModel):
     user_secret_id: str
     fantrax_league_id: str

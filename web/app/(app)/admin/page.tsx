@@ -40,6 +40,46 @@ type Overview = {
   recent_errors: ErrorRow[];
 };
 
+type UsageBucket = {
+  calls: number;
+  errors: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_creation_tokens: number;
+  web_searches: number;
+  duration_ms: number;
+  cost: number;
+  calls_7d: number;
+  cost_7d: number;
+  avg_duration_ms?: number;
+  tool?: string;
+  email?: string;
+};
+
+type Usage = {
+  available: boolean;
+  generated_at?: string;
+  window_days?: number;
+  totals?: UsageBucket;
+  tools?: UsageBucket[];
+  users?: UsageBucket[];
+};
+
+function usd(n: number): string {
+  if (!Number.isFinite(n) || n === 0) return "$0.00";
+  if (n < 0.01) return "<$0.01";
+  if (n < 1) return `$${n.toFixed(3)}`;
+  return `$${n.toFixed(2)}`;
+}
+
+function tok(n: number): string {
+  if (!Number.isFinite(n) || n === 0) return "0";
+  if (n < 1000) return String(n);
+  if (n < 1_000_000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}k`;
+  return `${(n / 1_000_000).toFixed(2)}M`;
+}
+
 function ago(ts: string | null): string {
   if (!ts) return "—";
   const s = Math.floor((Date.now() - new Date(ts).getTime()) / 1000);
@@ -66,6 +106,7 @@ function Stat({ label, value, sub }: { label: string; value: number; sub?: strin
 
 export default function AdminPage() {
   const [data, setData] = useState<Overview | null>(null);
+  const [usage, setUsage] = useState<Usage | null>(null);
   const [error, setError] = useState<"forbidden" | string | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -83,6 +124,12 @@ export default function AdminPage() {
         setError(e?.message ?? "Failed to load.");
       } finally {
         setLoading(false);
+      }
+      try {
+        const res = await authedFetch("/api/admin/usage");
+        if (res.ok) setUsage((await res.json()) as Usage);
+      } catch {
+        // usage section just doesn't render
       }
     })();
   }, []);
@@ -189,6 +236,105 @@ export default function AdminPage() {
           </table>
         </div>
       </div>
+
+      {usage?.available && usage.totals && (
+        <section className="space-y-3">
+          <h2 className="text-lg font-semibold">AI usage (last {usage.window_days} days)</h2>
+
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="bg-gray-50 border border-gray-200 rounded-2xl p-5 shadow-sm">
+              <div className="text-xs font-semibold uppercase tracking-widest text-gray-400">Est. cost</div>
+              <div className="text-3xl font-semibold mt-1">{usd(usage.totals.cost)}</div>
+              <div className="text-xs text-gray-400 mt-1">{usd(usage.totals.cost_7d)} this week</div>
+            </div>
+            <Stat label="AI calls" value={usage.totals.calls} sub={`${usage.totals.calls_7d} this week`} />
+            <Stat label="Web searches" value={usage.totals.web_searches} sub="$10 per 1k" />
+            <Stat
+              label="Failed calls"
+              value={usage.totals.errors}
+              sub={usage.totals.errors ? "check recent issues" : "all clear"}
+            />
+          </div>
+
+          {(usage.tools ?? []).length > 0 && (
+            <div className="bg-gray-50 border border-gray-200 rounded-2xl shadow-sm overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-xs uppercase tracking-wide text-gray-400 border-b border-gray-200">
+                      <th className="px-4 py-3 font-medium">Tool</th>
+                      <th className="px-4 py-3 font-medium">Calls</th>
+                      <th className="px-4 py-3 font-medium">In</th>
+                      <th className="px-4 py-3 font-medium">Out</th>
+                      <th className="px-4 py-3 font-medium">Searches</th>
+                      <th className="px-4 py-3 font-medium">Avg time</th>
+                      <th className="px-4 py-3 font-medium">Est. cost</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(usage.tools ?? []).map((t2) => (
+                      <tr key={t2.tool} className="border-b border-gray-100 last:border-0">
+                        <td className="px-4 py-3 font-mono text-xs text-gray-800">{t2.tool}</td>
+                        <td className="px-4 py-3 text-gray-700">
+                          {t2.calls}
+                          {t2.errors > 0 && <span className="ml-1 text-xs text-red-400">({t2.errors} failed)</span>}
+                        </td>
+                        <td className="px-4 py-3 text-gray-600">{tok(t2.input_tokens)}</td>
+                        <td className="px-4 py-3 text-gray-600">{tok(t2.output_tokens)}</td>
+                        <td className="px-4 py-3 text-gray-600">{t2.web_searches || "—"}</td>
+                        <td className="px-4 py-3 text-gray-600">
+                          {t2.avg_duration_ms ? `${(t2.avg_duration_ms / 1000).toFixed(1)}s` : "—"}
+                        </td>
+                        <td className="px-4 py-3 text-gray-800">
+                          {usd(t2.cost)}
+                          <span className="ml-1 text-xs text-gray-400">({usd(t2.cost_7d)} 7d)</span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {(usage.users ?? []).length > 0 && (
+            <div className="bg-gray-50 border border-gray-200 rounded-2xl shadow-sm overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-xs uppercase tracking-wide text-gray-400 border-b border-gray-200">
+                      <th className="px-4 py-3 font-medium">User (billed key)</th>
+                      <th className="px-4 py-3 font-medium">Calls</th>
+                      <th className="px-4 py-3 font-medium">In</th>
+                      <th className="px-4 py-3 font-medium">Out</th>
+                      <th className="px-4 py-3 font-medium">Est. cost</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(usage.users ?? []).map((u2) => (
+                      <tr key={u2.email} className="border-b border-gray-100 last:border-0">
+                        <td className="px-4 py-3 text-gray-800">{u2.email}</td>
+                        <td className="px-4 py-3 text-gray-700">{u2.calls}</td>
+                        <td className="px-4 py-3 text-gray-600">{tok(u2.input_tokens)}</td>
+                        <td className="px-4 py-3 text-gray-600">{tok(u2.output_tokens)}</td>
+                        <td className="px-4 py-3 text-gray-800">
+                          {usd(u2.cost)}
+                          <span className="ml-1 text-xs text-gray-400">({usd(u2.cost_7d)} 7d)</span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          <p className="text-xs text-gray-400">
+            Estimated from exact token counts in ai_usage, priced at current API rates (Sonnet 5
+            intro pricing applied through Aug 31). Costs bill each user&apos;s own key.
+          </p>
+        </section>
+      )}
 
       {data.recent_errors.length > 0 && (
         <section className="space-y-3">
