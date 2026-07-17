@@ -1301,6 +1301,18 @@ async def _daily_digest_job():
     past Railway's ~5-minute edge timeout for a live HTTP request. The outcome
     is summarized to app_events so the admin page shows how each run went."""
     sb = get_supabase()
+
+    # Bail before any AI spend if the sender isn't configured — each league's
+    # digest generates a billed lead call before it would hit SMTP, so a missing
+    # env var must not cost a lead generation per league per attempt.
+    if not (os.getenv("GMAIL_ADDRESS") and os.getenv("GMAIL_APP_PASSWORD")):
+        print("[digest] aborted: GMAIL_ADDRESS / GMAIL_APP_PASSWORD not configured")
+        await asyncio.to_thread(
+            _log_event, kind="digest", level="warning", status=500,
+            message="digest aborted: GMAIL_ADDRESS / GMAIL_APP_PASSWORD not configured",
+        )
+        return
+
     try:
         refreshed = await _warm_stale_widgets(sb)
         print(f"[digest] warmed {len(refreshed)} widgets")
