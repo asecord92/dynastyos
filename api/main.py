@@ -2153,6 +2153,9 @@ def _ai_ndjson_lines(ai, *, status_label: str, text_mapper=None, collect=None,
         return _ndjson(obj)
 
     try:
+        # Mark the phase transition immediately — otherwise the last prep status
+        # ("Pulling live stats…") lingers on screen into the thinking phase.
+        yield line({"type": "status", "label": status_label})
         with ai.messages.stream(**stream_kwargs) as s:
             for ev in s:
                 etype = getattr(ev, "type", "")

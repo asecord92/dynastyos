@@ -379,6 +379,7 @@ export default function TradePage() {
             analysis: "",
           });
           setFinderLoading(false);
+          setFinderStatus(""); // the scan label is stale once targets are in
         } else if (evt.type === "status") {
           setFinderStatus(evt.label ?? "");
         } else if (evt.type === "text") {
