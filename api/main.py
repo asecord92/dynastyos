@@ -1235,16 +1235,22 @@ def _send_digest_email(to_addr: str, subject: str, html: str, text: str) -> None
     sender = os.getenv("DIGEST_FROM_EMAIL")
     if not api_key or not sender:
         raise RuntimeError("BREVO_API_KEY / DIGEST_FROM_EMAIL not configured")
+    payload = {
+        "sender": {"name": "DynastyOS", "email": sender},
+        "to": [{"email": to_addr}],
+        "subject": subject,
+        "htmlContent": html,
+        "textContent": text,
+    }
+    # The sender address is send-only; route replies to a real inbox when
+    # configured so "hey, this digest is wrong" reaches the app owner.
+    reply_to = os.getenv("DIGEST_REPLY_TO")
+    if reply_to:
+        payload["replyTo"] = {"email": reply_to}
     resp = httpx.post(
         "https://api.brevo.com/v3/smtp/email",
         headers={"api-key": api_key, "content-type": "application/json"},
-        json={
-            "sender": {"name": "DynastyOS", "email": sender},
-            "to": [{"email": to_addr}],
-            "subject": subject,
-            "htmlContent": html,
-            "textContent": text,
-        },
+        json=payload,
         timeout=30,
     )
     if resp.status_code >= 300:
