@@ -49,7 +49,7 @@ from engine.nfl_widgets import (
 from engine.supabase_client import get_supabase
 from engine.fantrax_mapper import map_roster_to_analyze_result
 from engine.player_resolver import resolve_player, refresh_roster_statuses, get_existing_fantrax_ids
-from engine.mlb_stats_client import get_milb_player_summary, get_cached_stats_bulk
+from engine.mlb_stats_client import get_milb_player_summary, get_cached_stats_bulk, get_schedule_context
 from engine.category_ranks import compute_category_ranks
 from engine.trade_analyzer import (
     build_trade_context,
@@ -2789,6 +2789,16 @@ Injured (IL) players — for each, search for the injury and the expected return
 For each you can confirm, add an alert: status = the IL type, detail = one concrete sentence with the injury and expected return (e.g. "Hamstring strain, targeting a late-June return" or "Torn ACL, out for the season"). Do not invent a timeline you can't find — skip those and the roster's listed status will be shown instead.
 """
 
+        # Real schedule + announced probables, so the model never infers starts
+        # from days of rest (the All-Star-break "Skenes starts today" bug).
+        schedule_context = get_schedule_context()
+        schedule_section = f"\n{schedule_context}\n" if schedule_context else ""
+        schedule_rule = (
+            "- Scheduling claims must come ONLY from the schedule above: say a pitcher starts today/tomorrow ONLY if he is listed there as a probable starter. NEVER infer a start from days of rest or rotation order."
+            if schedule_context else
+            "- The schedule feed is unavailable — make NO claims about who is pitching today or tomorrow."
+        )
+
         prompt = f"""You are a fantasy baseball analyst for a dynasty contract league.
 {_today_line()}
 
@@ -2796,7 +2806,7 @@ Team: {team_name}
 Active/Reserve Roster (name | position | MLB team | salary):
 {chr(10).join(player_lines) if player_lines else "No active players."}
 {ranks_line}
-{il_section}
+{il_section}{schedule_section}
 The team and status shown for each player above are current as of today. Every player listed is on an active MLB roster — do NOT describe any of them as a minor leaguer, prospect, or "stash"; base your analysis only on the data above and current web-search results, not on prior-season assumptions.
 
 Use web search to check current status for this roster. Limit yourself to 3-5 searches total — a general injury report plus targeted searches for the injured (IL) players listed above. Prioritize getting a real injury + return note for the IL players over searching healthy starters individually.
@@ -2816,7 +2826,8 @@ Return ONLY a ```json code block — no other text before or after it:
 Rules:
 - recommendation must be exactly: start, monitor, or sit
 - alerts: include DTD players and the IL players you researched above (status = IL type, detail = injury + expected return you found). Do not re-list MiLB players.
-- Include every player from the Active/Reserve roster above in the players array"""
+- Include every player from the Active/Reserve roster above in the players array
+{schedule_rule}"""
 
         ai = get_ai_client_for_league(sb, body.league_id, tool="start_sit")
         response = ai.messages.create(
