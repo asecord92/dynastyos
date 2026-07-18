@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { authedFetch } from "../../lib/useDashboardWidget";
+import { useCallback, useEffect, useState } from "react";
+import { authedFetch, isTimeoutError } from "../../lib/useDashboardWidget";
 
 type UserRow = {
   user_id: string;
@@ -110,29 +110,34 @@ export default function AdminPage() {
   const [error, setError] = useState<"forbidden" | string | null>(null);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const res = await authedFetch("/api/admin/overview");
-        if (res.status === 403) {
-          setError("forbidden");
-          return;
-        }
-        if (!res.ok) throw new Error(await res.text());
-        setData((await res.json()) as Overview);
-      } catch (e: any) {
-        setError(e?.message ?? "Failed to load.");
-      } finally {
-        setLoading(false);
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await authedFetch("/api/admin/overview", {}, { timeoutMs: 15_000 });
+      if (res.status === 403) {
+        setError("forbidden");
+        return;
       }
-      try {
-        const res = await authedFetch("/api/admin/usage");
-        if (res.ok) setUsage((await res.json()) as Usage);
-      } catch {
-        // usage section just doesn't render
-      }
-    })();
+      if (!res.ok) throw new Error(await res.text());
+      setData((await res.json()) as Overview);
+    } catch (e: unknown) {
+      if (isTimeoutError(e)) setError("Loading timed out.");
+      else setError(e instanceof Error ? e.message : "Failed to load.");
+    } finally {
+      setLoading(false);
+    }
+    try {
+      const res = await authedFetch("/api/admin/usage", {}, { timeoutMs: 15_000 });
+      if (res.ok) setUsage((await res.json()) as Usage);
+    } catch {
+      // usage section just doesn't render
+    }
   }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
 
   if (loading) {
     return <main className="text-sm text-gray-500">Loading…</main>;
@@ -152,7 +157,10 @@ export default function AdminPage() {
       <main className="space-y-3">
         <h1 className="text-3xl font-semibold">Admin</h1>
         <div className="text-sm text-red-300 bg-red-50 border border-red-500/30 rounded-xl p-4">
-          {error}
+          {error}{" "}
+          <button onClick={load} className="underline font-medium">
+            Retry
+          </button>
         </div>
       </main>
     );

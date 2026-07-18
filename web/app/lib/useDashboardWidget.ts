@@ -5,18 +5,60 @@ import { supabase } from "./supabaseClient";
 import { readCache, writeCache } from "./clientCache";
 import { aiIssueFromDetail, useAiStatus } from "./aiStatus";
 
+// getSession() can hang forever (auth-lock deadlocks after a suspended tab,
+// degraded networks — the 2026-07-17 stuck-loading incident), so it gets a
+// short deadline with a localStorage fallback. Fetches get an abort deadline
+// too: generous by default because cache-miss widget generation legitimately
+// runs tens of seconds — it exists to kill true black holes, not slow work.
+// Quick reads pass a tighter timeoutMs; streaming calls bring their own signal.
+const SESSION_TIMEOUT_MS = 3_000;
+const DEFAULT_TIMEOUT_MS = 120_000;
+
+async function sessionToken(): Promise<string | undefined> {
+  const viaSdk = supabase.auth
+    .getSession()
+    .then(({ data }) => data.session?.access_token)
+    .catch(() => undefined);
+  const deadline = new Promise<undefined>((resolve) =>
+    setTimeout(() => resolve(undefined), SESSION_TIMEOUT_MS)
+  );
+  const token = await Promise.race([viaSdk, deadline]);
+  if (token) return token;
+  try {
+    // The token supabase-js persists — stale-ish is fine, the backend verifies.
+    const key = Object.keys(localStorage).find(
+      (k) => k.startsWith("sb-") && k.endsWith("-auth-token")
+    );
+    if (!key) return undefined;
+    return JSON.parse(localStorage.getItem(key) ?? "null")?.access_token ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** True when a fetch rejection came from our timeout (or an abort). */
+export function isTimeoutError(e: unknown): boolean {
+  return e instanceof DOMException && (e.name === "TimeoutError" || e.name === "AbortError");
+}
+
 /**
  * fetch() wrapper that attaches the Supabase access token and JSON headers.
  * Use for any authenticated call to the backend (GET, POST, streaming).
  */
 export async function authedFetch(
   path: string,
-  init: RequestInit = {}
+  init: RequestInit = {},
+  opts?: { timeoutMs?: number }
 ): Promise<Response> {
-  const { data } = await supabase.auth.getSession();
-  const token = data.session?.access_token;
+  const token = await sessionToken();
+  const { signal, ...rest } = init;
+  const fallbackSignal =
+    typeof AbortSignal !== "undefined" && "timeout" in AbortSignal
+      ? AbortSignal.timeout(opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS)
+      : undefined;
   return fetch(path, {
-    ...init,
+    ...rest,
+    signal: signal ?? fallbackSignal,
     headers: {
       "Content-Type": "application/json",
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -102,7 +144,8 @@ export function useDashboardWidget<T>(
         if (cacheKey) writeCache(cacheKey, json);
         onSuccessRef.current?.(json);
       } catch (e: unknown) {
-        setError(e instanceof Error ? e.message : "Something went wrong.");
+        if (isTimeoutError(e)) setError("Request timed out — try again.");
+        else setError(e instanceof Error ? e.message : "Something went wrong.");
       } finally {
         setValidating(false);
       }

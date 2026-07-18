@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { authedFetch } from "../../lib/useDashboardWidget";
+import { useCallback, useEffect, useState } from "react";
+import { authedFetch, isTimeoutError } from "../../lib/useDashboardWidget";
 import { timeAgo } from "../../lib/format";
 import { AnalysisRenderer, verdictColor } from "./AnalysisRenderer";
 
@@ -19,19 +19,36 @@ export type TradeHistoryRow = {
 export function TradeHistory({ leagueId }: { leagueId: string }) {
   const [items, setItems] = useState<TradeHistoryRow[]>([]);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  // Bumped by Retry; the effect re-runs the fetch.
+  const [attempt, setAttempt] = useState(0);
+  const retry = useCallback(() => setAttempt((n) => n + 1), []);
 
   useEffect(() => {
     if (!leagueId) return;
     let cancelled = false;
     (async () => {
       setLoading(true);
+      setError(null);
       try {
-        const res = await authedFetch(`/api/trade/history?league_id=${leagueId}`);
+        const res = await authedFetch(
+          `/api/trade/history?league_id=${leagueId}`,
+          {},
+          { timeoutMs: 15_000 }
+        );
+        if (!res.ok) throw new Error(`History unavailable (${res.status}).`);
         const json = await res.json();
         if (!cancelled) setItems(json.items ?? []);
-      } catch {
-        if (!cancelled) setItems([]);
+      } catch (e: unknown) {
+        // A failure must never masquerade as an empty history.
+        if (!cancelled) {
+          setError(
+            isTimeoutError(e)
+              ? "Loading your history timed out."
+              : "Couldn't load your history."
+          );
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -39,7 +56,7 @@ export function TradeHistory({ leagueId }: { leagueId: string }) {
     return () => {
       cancelled = true;
     };
-  }, [leagueId]);
+  }, [leagueId, attempt]);
 
   return (
     <div className="space-y-4">
@@ -48,12 +65,21 @@ export function TradeHistory({ leagueId }: { leagueId: string }) {
           Loading your recent analyses…
         </div>
       )}
-      {!loading && items.length === 0 && (
+      {!loading && error && (
+        <div className="bg-red-50 border border-red-500/30 rounded-2xl p-6 shadow-sm text-sm text-red-300">
+          {error}{" "}
+          <button onClick={retry} className="underline font-medium">
+            Retry
+          </button>
+        </div>
+      )}
+      {!loading && !error && items.length === 0 && (
         <div className="bg-gray-50 border rounded-2xl p-6 shadow-sm text-sm text-gray-400">
           No analyzed trades yet. Build a trade and hit Analyze — it&apos;ll show up here.
         </div>
       )}
       {!loading &&
+        !error &&
         items.map((h) => {
           const expanded = expandedId === h.id;
           return (
