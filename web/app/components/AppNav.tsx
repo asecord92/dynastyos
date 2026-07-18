@@ -243,9 +243,18 @@ export function AppNav() {
     <div className="border-b bg-gray-50 sticky top-0 z-40">
       <div className="w-full px-6 py-3 flex lg:grid items-center justify-between gap-3 lg:gap-4" style={{gridTemplateColumns: "1fr auto 1fr"}}>
 
-        {/* Left — Logo */}
+        {/* Left — Logo: the crown mark always (it's all a phone has room for);
+            the wordmark only from lg up, where it never truncated anyway. */}
         <div className="flex items-center gap-2 min-w-0">
-          <span className="font-bold text-lg lg:text-xl tracking-tight truncate">DynastyOS</span>
+          <div
+            className="h-8 w-8 shrink-0 rounded-lg bg-gradient-to-br from-violet-500 to-indigo-600 flex items-center justify-center ring-1 ring-white/10"
+            title="DynastyOS"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="white" aria-hidden="true">
+              <path d="M4 7 L8.5 11 L12 5 L15.5 11 L20 7 L18.5 18 L5.5 18 Z" />
+            </svg>
+          </div>
+          <span className="hidden lg:inline font-bold text-xl tracking-tight">DynastyOS</span>
           <span
             className={[
               "inline-block w-2 h-2 rounded-full flex-shrink-0",
