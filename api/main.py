@@ -1265,7 +1265,8 @@ def _digest_waiver_text(raw: str) -> str:
     return (raw or "")[:1500]
 
 
-def _digest_lead(sb, league_id: str, sport: str, sections: dict[str, str], standings_line: str) -> str | None:
+def _digest_lead(sb, league_id: str, sport: str, sections: dict[str, str], standings_line: str,
+                 prev_lead: str | None = None) -> str | None:
     """One small no-web-search AI call that turns the cached intel into 'The
     Lead'. Returns None (digest still sends, stitched-only) if the owner has no
     key or the call fails — the lead is garnish, not load-bearing."""
@@ -1275,12 +1276,22 @@ def _digest_lead(sb, league_id: str, sport: str, sections: dict[str, str], stand
     if not intel:
         return None
     sport_word = "football" if sport == "NFL" else "baseball"
+    # Give the model yesterday's lead so it stops re-sending the same brief on a
+    # quiet news day (the main "it's all the same thing daily" complaint).
+    novelty = ""
+    if prev_lead and prev_lead.strip():
+        novelty = f"""
+
+Yesterday you sent this brief — do NOT repeat these points unless there's a genuinely new development:
+{prev_lead.strip()[:1200]}
+
+If nothing meaningful has changed since yesterday, reply with exactly this one line and nothing else: "{_DIGEST_QUIET_SENTINEL.capitalize()} — nothing new since yesterday."."""
     prompt = f"""You write "The Lead" of a dynasty {sport_word} team's morning email digest. You are sharp,
 opinionated, and direct — a trusted advisor, not a newsletter bot. {_today_line()}
 
 Below is this morning's intel for the team (already generated — do not invent anything beyond it).
 
-{intel}
+{intel}{novelty}
 
 Write The Lead: 3-5 punchy markdown bullets, about 100 words TOTAL. Pick only what actually matters
 today — the one news item that changes something, a borderline lineup call with your verdict, the #1
@@ -1437,6 +1448,59 @@ def _owner_email(sb, user_id: str | None) -> str | None:
         return None
 
 
+def _nfl_digest_offseason(today: datetime | None = None) -> bool:
+    """True during the NFL dead period (roughly mid-Feb → late Aug), when there's
+    no real weekly news and the widgets recycle the same evergreen roster takes
+    daily. Football is dropped from the digest in this window and auto-resumes for
+    training camp/preseason. Uses Pacific date to match the send time."""
+    if today is None:
+        try:
+            from zoneinfo import ZoneInfo
+            today = datetime.now(ZoneInfo("America/Los_Angeles"))
+        except Exception:
+            today = datetime.now(timezone.utc)
+    md = (today.month, today.day)
+    return (2, 16) <= md <= (8, 24)
+
+
+# Dedupe: the digest remembers what it sent each league yesterday (stored as a
+# `digest_prev` cache row) and drops sections that haven't meaningfully changed,
+# so a quiet news day doesn't re-send the same brief. A league with nothing new
+# is skipped entirely; a recipient with no fresh league drops out of the send.
+_DIGEST_STALE_SIMILARITY = 0.85
+_DIGEST_QUIET_SENTINEL = "quiet day"
+
+
+def _text_similarity(a: str, b: str) -> float:
+    """Jaccard overlap of lowercased word tokens — a cheap 'is this basically the
+    same text as yesterday' signal that tolerates minor model-prose drift."""
+    ta = set(re.findall(r"\w+", (a or "").lower()))
+    tb = set(re.findall(r"\w+", (b or "").lower()))
+    if not ta and not tb:
+        return 1.0
+    if not ta or not tb:
+        return 0.0
+    return len(ta & tb) / len(ta | tb)
+
+
+def _read_prev_digest(sb, league_id: str) -> dict:
+    """Yesterday's stitched digest for this league ({sections, lead}), or {}."""
+    try:
+        result = (
+            sb.table("dashboard_cache")
+            .select("content")
+            .eq("league_id", league_id)
+            .eq("widget", "digest_prev")
+            .limit(1)
+            .execute()
+        )
+        if result.data:
+            return _json.loads(result.data[0]["content"]) or {}
+    except Exception:
+        pass
+    return {}
+
+
 def _league_digest_part(sb, league: dict) -> tuple[str, dict | None]:
     """Assemble one league's digest content (including its AI lead). Returns
     (status, part) — part is None unless status is "ready". Blocking — run in
@@ -1444,6 +1508,10 @@ def _league_digest_part(sb, league: dict) -> tuple[str, dict | None]:
     league_id = league.get("id")
     if league.get("digest_enabled") is not True:  # opt-in: only explicit True sends
         return "opted_out", None
+
+    sport = league.get("sport") or "MLB"
+    if sport == "NFL" and _nfl_digest_offseason():
+        return "offseason_skip", None
 
     sections: dict[str, str] = {}
     row = _check_cache(sb, league_id, "start_sit", force=False, max_age=_DIGEST_CACHE_WINDOW)
@@ -1458,7 +1526,6 @@ def _league_digest_part(sb, league: dict) -> tuple[str, dict | None]:
     if not any(sections.values()):
         return "no_content", None  # dormant/off-season league — nothing to say
 
-    sport = league.get("sport") or "MLB"
     standings_line = ""
     if league.get("fantrax_league_id") and league.get("fantrax_team_id"):
         try:
@@ -1468,13 +1535,32 @@ def _league_digest_part(sb, league: dict) -> tuple[str, dict | None]:
         except Exception:
             pass
 
-    lead = _digest_lead(sb, league_id, sport, sections, standings_line)
+    # Dedupe against yesterday: the lead is generated from the full sections (with
+    # yesterday's lead for context), but only sections that actually changed are
+    # shown below the fold. Persist today's full content for tomorrow either way.
+    prev = _read_prev_digest(sb, league_id)
+    prev_sections = prev.get("sections") or {}
+    fresh_sections = {
+        title: body for title, body in sections.items()
+        if body and _text_similarity(body, prev_sections.get(title, "")) < _DIGEST_STALE_SIMILARITY
+    }
+
+    lead = _digest_lead(sb, league_id, sport, sections, standings_line, prev_lead=prev.get("lead"))
+    try:
+        _upsert_cache(sb, league_id, "digest_prev", _json.dumps({"sections": sections, "lead": lead or ""}))
+    except Exception:
+        pass  # best-effort memory — a failed write just means no dedupe next run
+
+    lead_is_quiet = (lead or "").strip().lower().startswith(_DIGEST_QUIET_SENTINEL)
+    if not fresh_sections and (lead_is_quiet or not lead):
+        return "quiet", None  # nothing new since yesterday — drop from the email
+
     return "ready", {
         "league_name": league.get("name") or "Your League",
         "sport": sport,
-        "sections": sections,
+        "sections": fresh_sections,
         "standings_line": standings_line,
-        "lead": lead,
+        "lead": None if lead_is_quiet else lead,
     }
 
 
@@ -2976,10 +3062,12 @@ def _build_waiver_mlb(sb, body) -> dict:
 
         claimed_list = list(claimed_ids)
 
-        # Query unclaimed hitters from player_id_map
+        # Query unclaimed hitters from player_id_map. roster_status/il_type carry
+        # the injury signal — without them the model recommended IL players as
+        # clean adds (e.g. an injured closer offered for saves).
         unclaimed_hitters_result = (
             sb.table("player_id_map")
-            .select("fantrax_id,full_name,mlb_team,player_type,mlb_id")
+            .select("fantrax_id,full_name,mlb_team,player_type,mlb_id,roster_status,il_type")
             .eq("player_type", "hitter")
             .not_.in_("fantrax_id", claimed_list)
             .order("full_name")
@@ -2990,7 +3078,7 @@ def _build_waiver_mlb(sb, body) -> dict:
         # Query unclaimed pitchers from player_id_map
         unclaimed_pitchers_result = (
             sb.table("player_id_map")
-            .select("fantrax_id,full_name,mlb_team,player_type,mlb_id")
+            .select("fantrax_id,full_name,mlb_team,player_type,mlb_id,roster_status,il_type")
             .eq("player_type", "pitcher")
             .not_.in_("fantrax_id", claimed_list)
             .order("full_name")
@@ -3008,9 +3096,14 @@ def _build_waiver_mlb(sb, body) -> dict:
 
         def pool_line(r: dict) -> str:
             season = (pool_stats.get(r.get("mlb_id")) or {}).get("season_stats") or {}
+            # Flag injured players inline so the model never offers them as a
+            # ready-now add (roster_status is refreshed each sync).
+            flag = ""
+            if (r.get("roster_status") or "") == "IL":
+                flag = f" | ⚠ ON IL ({r.get('il_type') or 'IL'})"
             return (
                 f"- {r['full_name']} ({r.get('mlb_team', '?')}, {r['player_type']}) | "
-                f"{_season_stat_line(season, r['player_type'])}"
+                f"{_season_stat_line(season, r['player_type'])}{flag}"
             )
 
         def stat_sort(rows: list[dict], key: str, reverse: bool) -> list[dict]:
@@ -3108,13 +3201,17 @@ League: {league_name} ({num_teams} teams)
 My current roster:
 {chr(10).join(my_roster_lines) if my_roster_lines else "No roster data."}
 
-Available waiver pool (unclaimed in this league, with current-season stats where available; hitters sorted by OPS, pitchers by ERA):
+Available waiver pool (unclaimed in this league, with current-season stats where available; hitters sorted by OPS, pitchers by ERA). Lines marked "⚠ ON IL" are currently on the injured list:
 {unclaimed_section}
 
-From the unclaimed pool above, identify the best 4-5 players to target right now. The stat lines are real current-season numbers — use them to shortlist, then use web search only to verify role, health, and playing time for your top candidates (not to research the whole pool). For each recommendation include:
+From the unclaimed pool above, identify the best 4-5 players to target right now. The stat lines are real current-season numbers — use them to shortlist, then web search each of your top candidates to confirm role, health, and playing time before recommending them (not the whole pool). For each recommendation include:
 - Player name, team, position
 - Why they're a good pickup right now (cite their stat line)
 - Short-term and dynasty value assessment
+
+Hard rules:
+- Use each player's team and position exactly as given in the pool line above. Do NOT state a team, role, or health status from memory — if you can't confirm it via web search, don't assert it.
+- Never put a player who is on the IL (marked ⚠, or confirmed injured via search) in the add list — they can't help right now. You may mention a truly elite injured player separately, clearly labeled "IL stash — not active", but never as a priority add.
 
 Prioritize players who address the team's weakest categories (high rank numbers), and keep recommendations affordable within the remaining cap space.
 
