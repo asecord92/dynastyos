@@ -807,6 +807,17 @@ class TradeHistoryItem(BaseModel):
     analysis: str = ""          # full streamed recommendation
 
 
+# The lifecycle states a user can tag a recorded trade with. None = untracked.
+_TRADE_OUTCOME_STATES = {"proposed", "accepted", "rejected", "completed"}
+
+
+class TradeOutcomeUpdate(BaseModel):
+    id: str                       # trade_history row id
+    league_id: str                # for ownership check
+    status: str | None = None     # one of _TRADE_OUTCOME_STATES, or None to clear
+    note: str = ""                # optional retrospective note
+
+
 class AddDropPlayer(BaseModel):
     id: str | None = None  # fantrax id when the player is rostered; None for free text
     name: str = ""
@@ -1771,6 +1782,43 @@ async def get_category_ranks(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/league/category-ranks/history")
+async def get_category_rank_history(
+    league_id: str = Query(...),
+    limit: int = Query(12, ge=2, le=60),
+    user: dict = Depends(get_current_user),
+):
+    """Recent daily category-rank snapshots for this league, oldest→newest, for
+    the dashboard sparklines. Returns [] when history hasn't accrued yet (or the
+    table isn't migrated) so the widget just renders without trend lines."""
+    try:
+        sb = get_supabase()
+        require_league_owner(sb, user, league_id)
+        rows = (
+            sb.table("category_rank_history")
+            .select("snapshot_date,ranks,num_teams")
+            .eq("league_id", league_id)
+            .order("snapshot_date", desc=True)
+            .limit(limit)
+            .execute()
+        ).data or []
+        rows.reverse()  # chronological for plotting
+        points = [
+            {
+                "date": r["snapshot_date"],
+                "ranks": r["ranks"] if isinstance(r.get("ranks"), dict) else {},
+                "num_teams": r.get("num_teams"),
+            }
+            for r in rows
+        ]
+        return {"history": points}
+    except HTTPException:
+        raise
+    except Exception:
+        traceback.print_exc()
+        return {"history": []}  # trends are optional garnish — never 500 the dashboard
+
+
 @app.get("/dashboard/summary")
 async def dashboard_summary(
     league_id: str = Query(...),
@@ -1843,9 +1891,43 @@ async def upsert_category_ranks(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _snapshot_rank_history(sb, league_id: str, ranks: dict) -> None:
+    """Record today's computed ranks as one daily point in category_rank_history,
+    powering the dashboard sparklines. Upserted by (league_id, snapshot_date) so
+    several syncs a day update the day's point instead of spamming it. Best-effort
+    and tolerant of the table being absent (pre-migration)."""
+    if not ranks:
+        return
+    num_teams = None
+    try:
+        cnt = (
+            sb.table("rosters")
+            .select("fantrax_team_id", count="exact")
+            .eq("league_id", league_id)
+            .execute()
+        )
+        num_teams = cnt.count
+    except Exception:
+        pass
+    try:
+        today = datetime.now(timezone.utc).date().isoformat()
+        sb.table("category_rank_history").upsert(
+            {
+                "league_id": league_id,
+                "snapshot_date": today,
+                "ranks": ranks,  # jsonb column — pass the dict, not a JSON string
+                "num_teams": num_teams,
+            },
+            on_conflict="league_id,snapshot_date",
+        ).execute()
+    except Exception:
+        traceback.print_exc()  # missing table / older schema — history just won't grow
+
+
 async def _run_category_ranks_compute(league_id: str, my_team_id: str) -> None:
-    """Background task: approximate category ranks from rosters + season stats and
-    write them to the category_ranks widget. Never raises."""
+    """Background task: approximate category ranks from rosters + season stats,
+    write them to the category_ranks widget, and append a daily history point.
+    Never raises."""
     try:
         ranks = await compute_category_ranks(league_id, my_team_id)
         if not ranks:
@@ -1860,6 +1942,7 @@ async def _run_category_ranks_compute(league_id: str, my_team_id: str) -> None:
             },
             on_conflict="league_id,widget",
         ).execute()
+        _snapshot_rank_history(sb, league_id, ranks)
         print(f"[category_ranks] Computed ranks for league {league_id}: {ranks}")
     except Exception:
         traceback.print_exc()
@@ -2139,8 +2222,13 @@ async def roster_sync(
         if unresolved:
             print(f"[sync] Could not resolve {len(unresolved)} players: {unresolved}")
 
-        # Step 3.6: Resolve all OTHER league players in the background
+        # Step 3.6: Resolve all OTHER league players in the background, then
+        # auto-compute category ranks (MLB only) so the trend history gains a
+        # point every sync with no manual "Auto" click. BackgroundTasks run in
+        # order, so the compute sees a fully-resolved id map + fresh stats.
         background_tasks.add_task(resolve_all_players, rosters, player_names)
+        if sport != "NFL":
+            background_tasks.add_task(_run_category_ranks_compute, league_uuid, team_id)
 
         # Step 4: Map to AnalyzeResult shape
         result = map_roster_to_analyze_result(team_roster, player_names, rules)
@@ -2377,20 +2465,54 @@ async def list_trade_history(
     uid = user.get("sub")
     if not uid:
         return {"items": []}
+    # `status`/`outcome_*` may not exist yet (pre-migration) — fall back to the
+    # base columns so history keeps loading either way.
+    full_cols = ("id, created_at, offering, receiving, verdict, analysis, "
+                 "status, outcome_note, outcome_updated_at")
+    for cols in (full_cols, "id, created_at, offering, receiving, verdict, analysis"):
+        try:
+            rows = (
+                sb.table("trade_history")
+                .select(cols)
+                .eq("league_id", league_id)
+                .eq("user_id", uid)
+                .order("created_at", desc=True)
+                .limit(20)
+                .execute()
+            )
+            return {"items": rows.data or []}
+        except Exception:
+            continue
+    traceback.print_exc()
+    return {"items": []}
+
+
+@app.post("/trade/history/outcome")
+async def update_trade_outcome(
+    body: TradeOutcomeUpdate,
+    user: dict = Depends(get_current_user),
+):
+    """Tag a recorded trade with what actually happened (proposed / accepted /
+    rejected / completed) plus an optional retrospective note. Scoped to the
+    caller's own row."""
+    sb = get_supabase()
+    require_league_owner(sb, user, body.league_id)
+    uid = user.get("sub")
+    if not uid:
+        raise HTTPException(status_code=401, detail="Not signed in")
+    status = (body.status or "").strip().lower() or None
+    if status is not None and status not in _TRADE_OUTCOME_STATES:
+        raise HTTPException(status_code=400, detail="Invalid status")
     try:
-        rows = (
-            sb.table("trade_history")
-            .select("id, created_at, offering, receiving, verdict, analysis")
-            .eq("league_id", league_id)
-            .eq("user_id", uid)
-            .order("created_at", desc=True)
-            .limit(20)
-            .execute()
-        )
-        return {"items": rows.data or []}
-    except Exception:
+        sb.table("trade_history").update({
+            "status": status,
+            "outcome_note": (body.note or "").strip()[:2000] or None,
+            "outcome_updated_at": datetime.now(timezone.utc).isoformat(),
+        }).eq("id", body.id).eq("user_id", uid).execute()
+    except Exception as e:
         traceback.print_exc()
-        return {"items": []}
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"ok": True}
 
 
 @app.post("/waivers/add-drop")

@@ -26,6 +26,39 @@ function barWidth(rank: number): string {
   return `${Math.max(pct, 8)}%`;
 }
 
+type HistoryPoint = { date: string; ranks: Record<string, number>; num_teams: number | null };
+
+/** Tiny rank-over-time line: rank 1 (best) sits at the top, worst at the bottom. */
+function Sparkline({ values, total }: { values: number[]; total: number }) {
+  if (values.length < 2) return null;
+  const w = 52;
+  const h = 16;
+  const pad = 2;
+  const n = values.length;
+  const span = Math.max(total - 1, 1);
+  const points = values
+    .map((v, i) => {
+      const x = pad + (i * (w - 2 * pad)) / (n - 1);
+      const y = pad + ((v - 1) / span) * (h - 2 * pad);
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(" ");
+  const last = values[values.length - 1];
+  const stroke = last <= 3 ? "#6ee7b7" : last <= 7 ? "#fcd34d" : "#fda4af";
+  return (
+    <svg width={w} height={h} className="shrink-0" aria-hidden="true">
+      <polyline
+        points={points}
+        fill="none"
+        stroke={stroke}
+        strokeWidth="1.25"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 export function CategoryRanksWidget({
   leagueId,
   myTeamId,
@@ -61,6 +94,7 @@ export function CategoryRanksWidget({
   const [updatedAt, setUpdatedAt] = useState<string | null>(
     initialUpdatedAt ?? seeded?.updatedAt ?? null
   );
+  const [history, setHistory] = useState<HistoryPoint[]>([]);
 
   function cacheRanks(r: Ranks, u: string | null) {
     if (cacheKey) writeCache(cacheKey, { ranks: r, updatedAt: u });
@@ -86,6 +120,29 @@ export function CategoryRanksWidget({
   }
 
   useEffect(() => { fetchRanks(); }, [leagueId]);
+
+  async function fetchHistory() {
+    if (!leagueId) return;
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
+      const res = await fetch(`/api/league/category-ranks/history?league_id=${leagueId}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (res.ok) {
+        const json = await res.json();
+        setHistory(Array.isArray(json.history) ? json.history : []);
+      }
+    } catch {}
+  }
+
+  useEffect(() => { fetchHistory(); }, [leagueId]);
+
+  const totalTeams = history[history.length - 1]?.num_teams ?? TOTAL_TEAMS;
+  const trendFor = (cat: string): number[] =>
+    history
+      .map((h) => h.ranks?.[cat])
+      .filter((v): v is number => typeof v === "number");
 
   // Seed from the dashboard summary if it resolves first and we have nothing yet.
   useEffect(() => {
@@ -139,6 +196,7 @@ export function CategoryRanksWidget({
             setRanks(json.ranks ?? {});
             setUpdatedAt(json.updated_at);
             cacheRanks(json.ranks ?? {}, json.updated_at);
+            fetchHistory();  // a fresh compute added today's trend point
             break;
           }
         }
@@ -270,6 +328,7 @@ export function CategoryRanksWidget({
                       style={{ width: barWidth(rank) }}
                     />
                   </div>
+                  <Sparkline values={trendFor(cat)} total={totalTeams} />
                   <span
                     className={`w-6 text-xs font-semibold text-right shrink-0 ${rankTextColor(rank)}`}
                   >
@@ -278,6 +337,11 @@ export function CategoryRanksWidget({
                 </div>
               );
             })}
+            {history.length >= 2 && (
+              <p className="text-[11px] text-gray-400 pt-1">
+                Trend lines show your rank over the last {history.length} snapshots (higher = better).
+              </p>
+            )}
           </div>
         )}
       </div>
