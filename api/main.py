@@ -1951,10 +1951,25 @@ def _snapshot_rank_history(sb, league_id: str, ranks: dict) -> None:
         traceback.print_exc()  # missing table / older schema — history just won't grow
 
 
+# Leagues with a full-league rank compute currently running. Each compute fans
+# out season-stat fetches/writes for the whole league, so a roster sync and a
+# manual "Auto" firing within seconds of each other would double the concurrent
+# Supabase/MLB load — which is what triggered the HTTP/2 connection terminations
+# and the ~90s cold-cache runs. A compute already in flight makes the second a
+# no-op: the in-flight run produces fresh ranks either way. Safe without a lock
+# because the check-and-add below is synchronous (no await between them) on the
+# single-threaded event loop.
+_rank_compute_inflight: set[str] = set()
+
+
 async def _run_category_ranks_compute(league_id: str, my_team_id: str) -> None:
     """Background task: approximate category ranks from rosters + season stats,
     write them to the category_ranks widget, and append a daily history point.
-    Never raises."""
+    Single-flighted per league. Never raises."""
+    if league_id in _rank_compute_inflight:
+        print(f"[category_ranks] Compute already in flight for {league_id}; skipping duplicate")
+        return
+    _rank_compute_inflight.add(league_id)
     try:
         matrix = await compute_category_matrix(league_id)
         if not matrix:
@@ -1995,6 +2010,8 @@ async def _run_category_ranks_compute(league_id: str, my_team_id: str) -> None:
         print(f"[category_ranks] Computed ranks for league {league_id}: {ranks}")
     except Exception:
         traceback.print_exc()
+    finally:
+        _rank_compute_inflight.discard(league_id)
 
 
 @app.post("/league/category-ranks/compute")
