@@ -1964,28 +1964,34 @@ async def _run_category_ranks_compute(league_id: str, my_team_id: str) -> None:
             return
         sb = get_supabase()
         now = datetime.now(timezone.utc).isoformat()
-        # Two cache rows from one compute (no drift): the legacy per-manager ranks
-        # blob that the widget/history/existing readers consume, plus the full
-        # league matrix (ranks + role counts per team) that the trade tools read
-        # to compute each rival's posture.
+        # The essential write: the legacy per-manager ranks blob that the widget,
+        # history, and existing readers consume. Must land on its own.
         sb.table("dashboard_cache").upsert(
-            [
-                {
-                    "league_id": league_id,
-                    "widget": "category_ranks",
-                    "content": _json.dumps(ranks),
-                    "updated_at": now,
-                },
+            {
+                "league_id": league_id,
+                "widget": "category_ranks",
+                "content": _json.dumps(ranks),
+                "updated_at": now,
+            },
+            on_conflict="league_id,widget",
+        ).execute()
+        _snapshot_rank_history(sb, league_id, ranks)
+        # The enhancement: the full league matrix (ranks + role counts per team)
+        # that the trade tools read for rival posture. Written separately and
+        # best-effort so a matrix failure (e.g. the widget-constraint migration
+        # not yet applied) never blocks the ranks/history above.
+        try:
+            sb.table("dashboard_cache").upsert(
                 {
                     "league_id": league_id,
                     "widget": "category_matrix",
                     "content": _json.dumps(matrix),
                     "updated_at": now,
                 },
-            ],
-            on_conflict="league_id,widget",
-        ).execute()
-        _snapshot_rank_history(sb, league_id, ranks)
+                on_conflict="league_id,widget",
+            ).execute()
+        except Exception:
+            traceback.print_exc()  # missing constraint value / older schema
         print(f"[category_ranks] Computed ranks for league {league_id}: {ranks}")
     except Exception:
         traceback.print_exc()
