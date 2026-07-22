@@ -8,6 +8,42 @@ from .supabase_client import get_supabase
 from .mlb_stats_client import get_player_stats, get_milb_player_summary, get_prior_seasons
 from .rules import LeagueRules, ContractRules, load_rules
 from .player_value import production_ratings, assign_values
+from .category_ranks import team_posture_summary
+
+
+def _load_matrix_cache(sb, league_id: str) -> dict:
+    """Load the full league category matrix (ranks + role counts per team) from
+    dashboard_cache. Returns {} if it hasn't been computed yet (old leagues pick
+    it up on their next sync / rank compute) — posture is then simply omitted."""
+    try:
+        res = (
+            sb.table("dashboard_cache")
+            .select("content")
+            .eq("league_id", league_id)
+            .eq("widget", "category_matrix")
+            .limit(1)
+            .execute()
+        )
+        if res.data:
+            return json.loads(res.data[0]["content"])
+    except Exception:
+        pass
+    return {}
+
+
+def _format_posture(name: str, summary: dict, *, trailer: str = "") -> str:
+    """Render a team's {needs, punts, strong} digest into one compact prompt line,
+    or "" if the team has no notable posture."""
+    parts = []
+    if summary.get("needs"):
+        parts.append(f"needs {', '.join(summary['needs'])}")
+    if summary.get("strong"):
+        parts.append(f"strong in {', '.join(summary['strong'])}")
+    if summary.get("punts"):
+        parts.append(f"punting {', '.join(summary['punts'])}")
+    if not parts:
+        return ""
+    return f"{name}: " + "; ".join(parts) + trailer
 
 
 async def _db(fn):
@@ -467,6 +503,22 @@ async def build_trade_context(
     except Exception:
         pass
 
+    # Opponent posture: read the full league matrix to tell the model where the
+    # counterparty is genuinely thin (why they'd want your players) vs. punting by
+    # design (their surplus, not their need). Approximate; omitted if uncomputed.
+    opp_posture = {}
+    try:
+        matrix = await _db(lambda: _load_matrix_cache(sb, league_id))
+        entry = (matrix.get("teams") or {}).get(opponent_team_id)
+        if entry:
+            summary = team_posture_summary(entry, matrix.get("num_teams") or rules.league_size)
+            opp_posture = {
+                "team_name": entry.get("name") or opp_roster_row.get("team_name") or "Opponent",
+                **summary,
+            }
+    except Exception:
+        pass
+
     return {
         "league": league,
         "rules": rules,
@@ -480,6 +532,7 @@ async def build_trade_context(
         "offering_ids": offering_ids,
         "receiving_ids": receiving_ids,
         "category_ranks": category_ranks,
+        "opp_posture": opp_posture,
     }
 
 
@@ -517,6 +570,17 @@ def build_trade_prompt(context: dict[str, Any]) -> str:
         weak = league.get('team_weaknesses') or []
         category_context = f"Category weaknesses: {', '.join(weak) or 'Not set'}"
 
+    # Opponent posture line — why they'd want your players / what they'd part with.
+    opp_posture = context.get("opp_posture") or {}
+    opp_posture_line = ""
+    posture_body = _format_posture(
+        opp_posture.get("team_name") or "Opponent",
+        opp_posture,
+        trailer=" (approximate, from category ranks + roster shape)",
+    )
+    if posture_body:
+        opp_posture_line = f"\n  Opponent posture — {posture_body}"
+
     philosophy = f"""
 Manager's team philosophy:
   League: {league.get('name', 'Unknown')}
@@ -524,7 +588,7 @@ Manager's team philosophy:
   {category_context}
   Cap philosophy: {league.get('cap_philosophy') or 'Not set'}
   Season goals: {league.get('goals') or 'Not set'}
-  Current salary cap: ${my_roster.get('salary_cap', 450)}"""
+  Current salary cap: ${my_roster.get('salary_cap', 450)}{opp_posture_line}"""
 
     # Proposed trade block
     offering_names = [
@@ -832,6 +896,23 @@ async def build_finder_context(
         production_ratings(group, specs)
         assign_values(group)
 
+    # Rival postures for the teams that own the shortlisted targets — turns the
+    # finder from a one-sided wishlist into matchmaking (which owners need what
+    # you'd send back). Approximate; omitted if the matrix isn't computed yet.
+    team_postures: dict[str, dict] = {}
+    try:
+        matrix = await _db(lambda: _load_matrix_cache(sb, league_id))
+        num_teams = matrix.get("num_teams") or rules.league_size
+        for tid in {c["owner_team_id"] for c in top}:
+            entry = (matrix.get("teams") or {}).get(tid)
+            if entry:
+                team_postures[tid] = {
+                    "team_name": entry.get("name") or "",
+                    **team_posture_summary(entry, num_teams),
+                }
+    except Exception:
+        pass
+
     return {
         "league": league,
         "rules": rules,
@@ -841,6 +922,7 @@ async def build_finder_context(
         "candidates": top,
         "my_assets": my_assets,
         "salary_cap": salary_cap,
+        "team_postures": team_postures,
     }
 
 
@@ -870,6 +952,34 @@ def build_finder_prompt(context: dict[str, Any]) -> str:
         f"Manager's team: {league.get('name', 'Unknown')} | "
         f"Window: {league.get('competitive_window') or 'Not set'} | "
         f"Cap philosophy: {league.get('cap_philosophy') or 'Not set'}{cap_line}",
+    ]
+
+    # Rival postures — matchmaking grounding: which owners are thin where (a real
+    # need you can sell into) vs. punting by design (their surplus). One line per
+    # owning team, in candidate order, deduped.
+    team_postures = context.get("team_postures") or {}
+    posture_lines = []
+    seen_tids = set()
+    for c in candidates:
+        tid = c["owner_team_id"]
+        if tid in seen_tids:
+            continue
+        seen_tids.add(tid)
+        summary = team_postures.get(tid)
+        if not summary:
+            continue
+        line = _format_posture(summary.get("team_name") or c["owner_team_name"], summary)
+        if line:
+            posture_lines.append(f"  {line}")
+    if posture_lines:
+        lines += [
+            "",
+            "Rival team postures (approximate, from category ranks + roster shape — "
+            "a real need is where you can sell; a punt is their surplus):",
+            *posture_lines,
+        ]
+
+    lines += [
         "",
         "Acquisition targets (id | player | owner | pos | age | $salary | contract yr | "
         f"{category} | talent | value; a [flag] marks IL or Minors):",

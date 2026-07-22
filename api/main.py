@@ -51,7 +51,7 @@ from engine.supabase_client import get_supabase
 from engine.fantrax_mapper import map_roster_to_analyze_result
 from engine.player_resolver import resolve_player, refresh_roster_statuses, get_existing_fantrax_ids
 from engine.mlb_stats_client import get_milb_player_summary, get_cached_stats_bulk, get_schedule_context
-from engine.category_ranks import compute_category_ranks
+from engine.category_ranks import compute_category_matrix, my_ranks_from_matrix
 from engine.trade_analyzer import (
     build_trade_context,
     build_trade_prompt,
@@ -1956,17 +1956,33 @@ async def _run_category_ranks_compute(league_id: str, my_team_id: str) -> None:
     write them to the category_ranks widget, and append a daily history point.
     Never raises."""
     try:
-        ranks = await compute_category_ranks(league_id, my_team_id)
+        matrix = await compute_category_matrix(league_id)
+        if not matrix:
+            return
+        ranks = my_ranks_from_matrix(matrix, my_team_id)
         if not ranks:
             return
         sb = get_supabase()
+        now = datetime.now(timezone.utc).isoformat()
+        # Two cache rows from one compute (no drift): the legacy per-manager ranks
+        # blob that the widget/history/existing readers consume, plus the full
+        # league matrix (ranks + role counts per team) that the trade tools read
+        # to compute each rival's posture.
         sb.table("dashboard_cache").upsert(
-            {
-                "league_id": league_id,
-                "widget": "category_ranks",
-                "content": _json.dumps(ranks),
-                "updated_at": datetime.now(timezone.utc).isoformat(),
-            },
+            [
+                {
+                    "league_id": league_id,
+                    "widget": "category_ranks",
+                    "content": _json.dumps(ranks),
+                    "updated_at": now,
+                },
+                {
+                    "league_id": league_id,
+                    "widget": "category_matrix",
+                    "content": _json.dumps(matrix),
+                    "updated_at": now,
+                },
+            ],
             on_conflict="league_id,widget",
         ).execute()
         _snapshot_rank_history(sb, league_id, ranks)
