@@ -1,5 +1,6 @@
 import asyncio
 import html as _html
+import threading
 import time
 import traceback
 import os
@@ -906,11 +907,37 @@ def detect_rules(
     return rules
 
 
-def resolve_all_players(rosters: dict, player_names: dict) -> None:
+# Single-flight guard for background resolution: rapid re-syncs of the same
+# league would otherwise each spawn a full resolve pass, re-attempting the same
+# unresolvable prospects concurrently (each a slow MLB API call). If a pass is
+# already running for a league, later ones are skipped — the in-flight run
+# already covers essentially the same rosters. Thread-safe because Starlette runs
+# these sync background tasks in a worker-thread pool.
+_resolve_in_progress: set[str] = set()
+_resolve_guard = threading.Lock()
+
+
+def resolve_all_players(rosters: dict, player_names: dict, league_id: str | None = None) -> None:
     """
     Background task: resolve Fantrax IDs to MLB IDs for all players
     across all league rosters. Runs after the sync response is sent.
+    Deduplicated per league so overlapping syncs don't run it concurrently.
     """
+    if league_id:
+        with _resolve_guard:
+            if league_id in _resolve_in_progress:
+                print(f"[bg] Resolution already running for league {league_id}; skipping duplicate")
+                return
+            _resolve_in_progress.add(league_id)
+    try:
+        _resolve_all_players_inner(rosters, player_names)
+    finally:
+        if league_id:
+            with _resolve_guard:
+                _resolve_in_progress.discard(league_id)
+
+
+def _resolve_all_players_inner(rosters: dict, player_names: dict) -> None:
     print("[bg] Starting full league player resolution...")
     all_items = []
     for tdata in rosters.values():
@@ -2226,7 +2253,7 @@ async def roster_sync(
         # auto-compute category ranks (MLB only) so the trend history gains a
         # point every sync with no manual "Auto" click. BackgroundTasks run in
         # order, so the compute sees a fully-resolved id map + fresh stats.
-        background_tasks.add_task(resolve_all_players, rosters, player_names)
+        background_tasks.add_task(resolve_all_players, rosters, player_names, league_uuid)
         if sport != "NFL":
             background_tasks.add_task(_run_category_ranks_compute, league_uuid, team_id)
 
