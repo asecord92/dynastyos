@@ -1,10 +1,42 @@
 import asyncio
+import time
 import httpx
 from datetime import datetime, timedelta, timezone
-from .supabase_client import get_supabase
+from .supabase_client import get_supabase, reset_supabase
 
 MLB_STATS_BASE = "https://statsapi.mlb.com/api/v1"
 STATS_TTL_HOURS = 24
+
+
+def _is_transient_db_error(e: Exception) -> bool:
+    """True for connection-level Supabase failures worth retrying — the HTTP/2
+    ConnectionTerminated / GOAWAY the shared client hits under concurrent load,
+    plus timeouts and dropped sockets. A postgrest APIError (constraint, RLS, bad
+    query) is a real rejection, not transient, so it's never retried."""
+    if type(e).__name__ == "APIError":
+        return False
+    msg = str(e).lower()
+    return any(s in msg for s in (
+        "connectionterminated", "goaway", "disconnect", "connection",
+        "timeout", "timed out", "reset", "eof", "broken pipe",
+    ))
+
+
+def _db_op(fn, *, retries: int = 3):
+    """Run a Supabase call with retry + client reset on transient connection
+    failures. The client is resolved fresh each attempt, so after a reset the
+    retry runs on a new connection instead of the poisoned one. Real rejections
+    (APIError) raise immediately; transient errors back off (0.5s, 1s)."""
+    delay = 0.5
+    for attempt in range(retries):
+        try:
+            return fn(get_supabase())
+        except Exception as e:
+            if attempt == retries - 1 or not _is_transient_db_error(e):
+                raise
+            reset_supabase()  # poisoned pooled connection — force a fresh one
+            time.sleep(delay)
+            delay *= 2
 
 
 async def _get_with_retry(client: httpx.AsyncClient, url: str, params: dict) -> httpx.Response:
@@ -46,8 +78,9 @@ def is_stale(refreshed_at: str) -> bool:
 def get_cached_stats(mlb_id: int) -> dict | None:
     """Return cached stats from Supabase if they exist and are fresh."""
     try:
-        supabase = get_supabase()
-        result = supabase.table("player_stats").select("*").eq("mlb_id", mlb_id).execute()
+        result = _db_op(
+            lambda sb: sb.table("player_stats").select("*").eq("mlb_id", mlb_id).execute()
+        )
         if result.data:
             row = result.data[0]
             if not is_stale(row["refreshed_at"]):
@@ -65,38 +98,39 @@ def get_cached_stats_bulk(mlb_ids: list[int]) -> dict[int, dict]:
     out: dict[int, dict] = {}
     if not mlb_ids:
         return out
-    try:
-        supabase = get_supabase()
-        ids = list({int(m) for m in mlb_ids})
-        for i in range(0, len(ids), 100):
+    ids = list({int(m) for m in mlb_ids})
+    for i in range(0, len(ids), 100):
+        chunk = ids[i:i + 100]
+        try:
             # Only the columns the caller needs — pulling the big recent_stats
             # JSONB for a whole league bloats the payload and lengthens the block.
-            result = (
-                supabase.table("player_stats")
+            result = _db_op(
+                lambda sb: sb.table("player_stats")
                 .select("mlb_id, season_stats, refreshed_at")
-                .in_("mlb_id", ids[i:i + 100])
+                .in_("mlb_id", chunk)
                 .execute()
             )
             for row in (result.data or []):
                 if not is_stale(row["refreshed_at"]):
                     out[row["mlb_id"]] = row
-    except Exception as e:
-        print(f"[stats] Supabase bulk read error: {e}")
+        except Exception as e:
+            print(f"[stats] Supabase bulk read error: {e}")
     return out
 
 
 def save_stats(mlb_id: int, season: int, player_type: str, season_stats: dict, recent_stats: dict) -> None:
     """Persist stats to Supabase."""
     try:
-        supabase = get_supabase()
-        supabase.table("player_stats").upsert({
-            "mlb_id": mlb_id,
-            "season": season,
-            "player_type": player_type,
-            "season_stats": season_stats,
-            "recent_stats": recent_stats,
-            "refreshed_at": datetime.utcnow().isoformat(),
-        }, on_conflict="mlb_id").execute()
+        _db_op(
+            lambda sb: sb.table("player_stats").upsert({
+                "mlb_id": mlb_id,
+                "season": season,
+                "player_type": player_type,
+                "season_stats": season_stats,
+                "recent_stats": recent_stats,
+                "refreshed_at": datetime.utcnow().isoformat(),
+            }, on_conflict="mlb_id").execute()
+        )
     except Exception as e:
         print(f"[stats] Supabase write error for mlb_id {mlb_id}: {e}")
 
