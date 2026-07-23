@@ -38,7 +38,10 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-      - run: pip install -r requirements.txt ruff
+      # Pin ruff — unpinned it floats to whatever released last, and 0.16.0
+      # turned on a batch of new default rules (ISC/I001/…) that red-lit the
+      # whole repo overnight with pre-existing style nits. Bump deliberately.
+      - run: pip install -r requirements.txt ruff==0.15.21
       - run: ruff check .
       - name: Import smoke test
         env:

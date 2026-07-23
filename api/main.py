@@ -465,6 +465,40 @@ async def get_api_key_status(user: dict = Depends(get_current_user)):
     return {"set": bool(last4), "last4": last4}
 
 
+@app.get("/me/ai-status")
+async def get_ai_status(user: dict = Depends(get_current_user)):
+    """The caller's current AI key health, derived from their most recent
+    `ai_usage` row. Every AI call — including the background daily digest —
+    meters here, so if the digest hits an out-of-credits wall at 8:43am this
+    flips to `out_of_credits` and the frontend shows the banner on the next app
+    load, without the user having to trigger a fresh failing call. `null` when
+    the last call succeeded (or there's no history / the table predates its
+    migration). Mirrors `aiIssueFromDetail`, just sourced from the DB instead of
+    a live response."""
+    sb = get_supabase()
+
+    def _load() -> str | None:
+        try:
+            row = (
+                sb.table("ai_usage")
+                .select("ok, error")
+                .eq("user_id", user.get("sub"))
+                .order("created_at", desc=True)
+                .limit(1)
+                .execute()
+            )
+            data = row.data or []
+            if data and not data[0].get("ok"):
+                err = data[0].get("error")
+                if err in ("out_of_credits", "invalid_api_key"):
+                    return err
+        except Exception:
+            pass
+        return None
+
+    return {"issue": await asyncio.to_thread(_load)}
+
+
 @app.put("/settings/api-key")
 async def set_api_key(body: ApiKeyRequest, user: dict = Depends(get_current_user)):
     """Validate an Anthropic key against the API, then store it encrypted."""
