@@ -165,9 +165,77 @@ def _get_standings_cached(fantrax_league_id: str) -> list:
     return teams
 
 
-# Re-warm AI widgets in the background before their 4h cache lapses, so a user
-# never triggers a slow on-demand Sonnet+web_search generation themselves.
-REFRESH_AFTER = timedelta(hours=3)
+# Re-warm AI widgets in the background before their cache goes too stale, so a
+# user rarely triggers a slow on-demand Sonnet+web_search generation themselves.
+# Raised from 3h → 8h: the old cadence regenerated every widget ~8×/day around
+# the clock (the bulk of the AI bill). At 8h an active league warms ~2–3×/day;
+# the morning digest covers the overnight gap and an on-demand gen still fills in
+# the moment someone opens the app to a widget older than the 4h cache TTL.
+REFRESH_AFTER = timedelta(hours=8)
+
+# The standalone widget warmer only keeps a league's AI widgets fresh while its
+# owner is actually opening the app — no point paying to re-warm a dormant
+# league round the clock. (The opt-in daily digest is exempt: it's meant to
+# reach owners who AREN'T currently in the app.) `last_viewed_at` is touched on
+# dashboard reads; everything tolerates the column being absent pre-migration.
+WARM_VIEW_WINDOW = timedelta(hours=36)
+_LAST_VIEWED_COL_MISSING = False
+# In-process debounce so a dashboard load (which fires several widget calls)
+# writes last_viewed_at at most once per league per window, not once per widget.
+_last_viewed_touch: dict[str, float] = {}
+_VIEW_TOUCH_DEBOUNCE_S = 600
+
+
+def _touch_league_viewed(sb, league_id: str) -> None:
+    """Record that an owner just opened this league's dashboard, gating the
+    warmer to leagues in active use. Best-effort, debounced, and tolerant of the
+    column predating its migration (goes quiet instead of erroring per call)."""
+    global _LAST_VIEWED_COL_MISSING
+    if _LAST_VIEWED_COL_MISSING or not league_id:
+        return
+    now = time.monotonic()
+    if now - _last_viewed_touch.get(league_id, 0.0) < _VIEW_TOUCH_DEBOUNCE_S:
+        return
+    _last_viewed_touch[league_id] = now
+    try:
+        sb.table("leagues").update(
+            {"last_viewed_at": datetime.now(timezone.utc).isoformat()}
+        ).eq("id", league_id).execute()
+    except Exception as e:
+        if "last_viewed_at" in str(e):
+            _LAST_VIEWED_COL_MISSING = True  # migration not applied yet — stop trying
+
+
+def _recently_viewed_league_ids(sb) -> set[str] | None:
+    """League ids opened within WARM_VIEW_WINDOW — the standalone warmer's
+    activity gate. Returns None ('warm everything', the pre-gate behavior) if the
+    column isn't there yet or the query fails, so this is safe before the
+    migration and never silently starves the warmer on a transient error."""
+    global _LAST_VIEWED_COL_MISSING
+    cutoff = (datetime.now(timezone.utc) - WARM_VIEW_WINDOW).isoformat()
+    try:
+        rows = (
+            sb.table("leagues").select("id").gte("last_viewed_at", cutoff).execute()
+        ).data or []
+        return {r["id"] for r in rows if r.get("id")}
+    except Exception as e:
+        if "last_viewed_at" in str(e):
+            _LAST_VIEWED_COL_MISSING = True
+        return None
+
+
+def _digest_enabled_league_ids(sb) -> set[str] | None:
+    """League ids opted into the digest — the digest warmer only pays to warm
+    what it will actually email (disabled leagues short-circuit to 'opted_out'
+    anyway). None on error so a query blip warms all rather than emptying every
+    digest."""
+    try:
+        rows = (
+            sb.table("leagues").select("id").eq("digest_enabled", True).execute()
+        ).data or []
+        return {r["id"] for r in rows if r.get("id")}
+    except Exception:
+        return None
 
 
 def _cache_age(sb, league_id: str, widget: str) -> timedelta | None:
@@ -207,7 +275,10 @@ _ADAPTIVE_THINKING = {"type": "adaptive"}
 
 # web_search_20260209 (dynamic filtering built in) — supported by both Sonnet 5
 # (dashboard widgets) and Opus 4.8 (trade analysis).
-_WEB_SEARCH = [{"type": "web_search_20260209", "name": "web_search"}]
+# Dashboard widgets (news/start_sit/waiver/minors) get a bounded search budget —
+# results are billed as input tokens, and an unbounded loop was the biggest
+# silent cost. 3 is plenty to cover a roster's worth of injury/role news.
+_WEB_SEARCH = [{"type": "web_search_20260209", "name": "web_search", "max_uses": 3}]
 
 # Trade analysis gets a bounded search allowance to verify injuries / roster
 # moves newer than the 24h stats cache. Searches bill the owner's BYOK key.
@@ -1230,15 +1301,20 @@ async def cron_refresh_widgets(x_cron_secret: str = Header(default="")):
     secret = os.getenv("CRON_SECRET")
     if not secret or x_cron_secret != secret:
         raise HTTPException(status_code=401, detail="Unauthorized")
-    refreshed = await _warm_stale_widgets(get_supabase())
+    # Only keep actively-used leagues warm — dormant ones cost nothing until the
+    # owner opens the app again (or their opt-in digest warms them each morning).
+    active = await asyncio.to_thread(_recently_viewed_league_ids, get_supabase())
+    refreshed = await _warm_stale_widgets(get_supabase(), only_league_ids=active)
     return {"refreshed": refreshed, "count": len(refreshed)}
 
 
-async def _warm_stale_widgets(sb) -> list[str]:
+async def _warm_stale_widgets(sb, only_league_ids: set[str] | None = None) -> list[str]:
     """Regenerate every near-expiry cached widget (the warmer's core). Can run
     for many minutes across leagues — callers over HTTP must background it or
     Railway's edge cuts the request around the 5-minute mark (which is exactly
-    how the first digest run died)."""
+    how the first digest run died). `only_league_ids` restricts the sweep — the
+    standalone cron passes recently-viewed leagues, the digest passes opted-in
+    ones; None warms every league (the pre-gate behavior)."""
     leagues = (await asyncio.to_thread(
         lambda: sb.table("leagues").select("id, fantrax_team_id").execute()
     )).data or []
@@ -1254,6 +1330,8 @@ async def _warm_stale_widgets(sb) -> list[str]:
         team_id = lg.get("fantrax_team_id")
         if not league_id or not team_id:
             continue
+        if only_league_ids is not None and league_id not in only_league_ids:
+            continue  # not in active use (cron) / not opted in (digest) — skip
         for widget, handler in handlers.items():
             age = await asyncio.to_thread(_cache_age, sb, league_id, widget)
             if age is None or age < REFRESH_AFTER:
@@ -1673,7 +1751,10 @@ async def _daily_digest_job():
         return
 
     try:
-        refreshed = await _warm_stale_widgets(sb)
+        # Warm only opted-in leagues — disabled ones short-circuit to
+        # "opted_out" below, so warming them would be pure waste.
+        enabled = await asyncio.to_thread(_digest_enabled_league_ids, sb)
+        refreshed = await _warm_stale_widgets(sb, only_league_ids=enabled)
         print(f"[digest] warmed {len(refreshed)} widgets")
     except Exception:
         traceback.print_exc()  # digest still sends from whatever cache exists
@@ -2899,6 +2980,8 @@ async def dashboard_news(
     try:
         sb = get_supabase()
         require_league_owner(sb, user, body.league_id)
+        if (user or {}).get("sub"):  # a real owner view (not the warmer) keeps it warm
+            await asyncio.to_thread(_touch_league_viewed, sb, body.league_id)
 
         def cached_response(force: bool, max_age: timedelta | None = None) -> dict | None:
             row = _check_cache(sb, body.league_id, "news", force, max_age)
@@ -2985,6 +3068,8 @@ async def dashboard_start_sit(
     try:
         sb = get_supabase()
         require_league_owner(sb, user, body.league_id)
+        if (user or {}).get("sub"):  # a real owner view (not the warmer) keeps it warm
+            await asyncio.to_thread(_touch_league_viewed, sb, body.league_id)
 
         def cached_response(force: bool, max_age: timedelta | None = None) -> dict | None:
             row = _check_cache(sb, body.league_id, "start_sit", force, max_age)
@@ -3234,6 +3319,8 @@ async def dashboard_waiver(
     try:
         sb = get_supabase()
         require_league_owner(sb, user, body.league_id)
+        if (user or {}).get("sub"):  # a real owner view (not the warmer) keeps it warm
+            await asyncio.to_thread(_touch_league_viewed, sb, body.league_id)
 
         def cached_response(force: bool, max_age: timedelta | None = None) -> dict | None:
             row = _check_cache(sb, body.league_id, "waiver", force, max_age)
