@@ -1246,6 +1246,24 @@ async def _warm_stale_widgets(sb) -> list[str]:
 _DIGEST_CACHE_WINDOW = timedelta(hours=6)
 
 
+def _truncate_readable(text: str, limit: int) -> str:
+    """Truncate to ~limit chars on a boundary — never mid-sentence or mid-word —
+    and append a marker so a trimmed section reads as intentional, not cut off.
+    Prefers a line break, then a sentence end, then a word boundary; falls back
+    to a hard cut only if no boundary sits in the back half. Returns the text
+    unchanged when it already fits."""
+    text = (text or "").strip()
+    if len(text) <= limit:
+        return text
+    window = text[:limit]
+    for sep in ("\n", ". ", "! ", "? ", " "):
+        idx = window.rfind(sep)
+        if idx >= limit // 2:  # only snap back to a boundary that isn't too greedy
+            window = window[: idx + (0 if sep == "\n" else 1)]
+            break
+    return window.rstrip(" ,;:—-\n") + "\n\n… more in the app"
+
+
 def _md_lite_html(text: str) -> str:
     """Tiny markdown-to-HTML for email bodies: **bold**, bullet lines, paragraphs.
     Everything is HTML-escaped first — widget content is model output."""
@@ -1299,8 +1317,8 @@ def _digest_waiver_text(raw: str) -> str:
     """Prefer the scannable Priority order section; fall back to a trimmed body."""
     m = re.search(r"\*\*Priority order\*\*[:\s]*", raw or "", re.IGNORECASE)
     if m:
-        return raw[m.start():][:1500]
-    return (raw or "")[:1500]
+        return _truncate_readable(raw[m.start():], 2200)
+    return _truncate_readable(raw or "", 2200)
 
 
 def _digest_lead(sb, league_id: str, sport: str, sections: dict[str, str], standings_line: str,
@@ -1429,8 +1447,8 @@ def _digest_email_bodies(parts: list[dict]) -> tuple[str, str, str]:
         for title, body in p["sections"].items():
             if not body:
                 continue
-            if multi and len(body) > _MULTI_SECTION_CAP:
-                body = body[:_MULTI_SECTION_CAP] + "\n… more in the app."
+            if multi:
+                body = _truncate_readable(body, _MULTI_SECTION_CAP)
             html_parts.append(
                 f'<h3 style="margin:18px 0 4px;border-bottom:1px solid #e5e5e5;padding-bottom:4px;">{_html.escape(title)}</h3>'
             )
@@ -1557,7 +1575,7 @@ def _league_digest_part(sb, league: dict) -> tuple[str, dict | None]:
         sections["Today's Calls"] = _digest_start_sit_text(row["content"])
     row = _check_cache(sb, league_id, "news", force=False, max_age=_DIGEST_CACHE_WINDOW)
     if row:
-        sections["News"] = (row["content"] or "")[:3000]
+        sections["News"] = _truncate_readable(row["content"], 3000)
     row = _check_cache(sb, league_id, "waiver", force=False, max_age=_DIGEST_CACHE_WINDOW)
     if row:
         sections["Waiver Watch"] = _digest_waiver_text(row["content"])
