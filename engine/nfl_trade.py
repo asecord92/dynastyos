@@ -468,7 +468,12 @@ async def build_nfl_add_drop_context(
 
     incoming_ids = [inc["id"] for inc in incoming if inc.get("id")]
     exclude = set(outgoing_ids) | set(incoming_ids)
-    drop_items = [it for it in my_items if it.get("id") not in exclude]
+    # Taxi players sit outside the main roster in Sleeper — cutting one doesn't
+    # free the spot the manager is trying to clear, so they aren't candidates.
+    drop_items = [
+        it for it in my_items
+        if it.get("id") not in exclude and it.get("status") != "taxi"
+    ]
 
     # Value the drop candidates within position (points percentile per position).
     _value_players(drop_items, stats, fmt_key)

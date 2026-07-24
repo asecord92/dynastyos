@@ -2264,7 +2264,10 @@ async def sleeper_sync(body: SleeperSyncRequest, user: dict = Depends(get_curren
                 "league_id": body.league_id,
                 "fantrax_team_id": str(rid),
                 "team_name": team_names.get(owner, f"Roster {rid}"),
-                "roster_items": build_roster_items(r.get("players"), r.get("starters"), players),
+                "roster_items": build_roster_items(
+                    r.get("players"), r.get("starters"), players,
+                    taxi=r.get("taxi"), reserve=r.get("reserve"),
+                ),
                 "salary_cap": None,
                 "draft_picks": picks.get(rid, []),
                 "synced_at": datetime.now(timezone.utc).isoformat(),

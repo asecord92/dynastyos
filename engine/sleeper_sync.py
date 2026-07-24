@@ -77,22 +77,37 @@ def compute_pick_inventory(
     return inventory
 
 
-def build_roster_items(player_ids: list, starters: list, players: dict) -> list:
+def build_roster_items(
+    player_ids: list, starters: list, players: dict,
+    taxi: list | None = None, reserve: list | None = None,
+) -> list:
     """Self-describing roster items for the shared rosters table, with player
-    metadata embedded from the players dump."""
+    metadata embedded from the players dump. Sleeper's `players` list includes
+    taxi and IR players, so status distinguishes all four slots:
+    starter | bench | taxi | ir."""
     starter_set = set(starters or [])
+    taxi_set = set(taxi or [])
+    reserve_set = set(reserve or [])
     items = []
     for pid in player_ids or []:
         meta = players.get(pid) or {}
         name = meta.get("full_name") or (
             f"{meta.get('first_name', '')} {meta.get('last_name', '')}".strip()
         ) or pid
+        if pid in starter_set:
+            status = "starter"
+        elif pid in taxi_set:
+            status = "taxi"
+        elif pid in reserve_set:
+            status = "ir"
+        else:
+            status = "bench"
         items.append({
             "id": pid,
             "name": name,
             "position": meta.get("position") or "?",
             "team": meta.get("team") or meta.get("team_abbr") or "",
-            "status": "starter" if pid in starter_set else "bench",
+            "status": status,
             "injury_status": meta.get("injury_status"),
             # Dynasty-window grounding for the trade prompts.
             "age": meta.get("age"),
