@@ -20,7 +20,8 @@ export default function CapPlannerPage() {
         <header className="space-y-1">
           <h1 className="text-3xl font-semibold">Roster</h1>
           <p className="text-gray-700">
-            Your synced Sleeper roster — starters, bench, and injury status.
+            Your dynasty assets — pick capital, market values, age curves, and
+            where your roster&apos;s window sits.
           </p>
         </header>
         <NFLRosterView leagueId={leagueId} />
