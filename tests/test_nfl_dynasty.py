@@ -8,9 +8,11 @@ from engine.nfl_dynasty import (
     depth_flags,
     derive_fc_params,
     index_fc,
+    league_position_averages,
     league_standing,
     roster_window,
     starting_slots,
+    team_posture,
 )
 
 
@@ -240,6 +242,79 @@ def test_window_detail_is_plain_english():
         detail = _windowed(players, picks)["detail"]
         assert detail.endswith(".")
         assert "life-stage" not in detail and "/3" not in detail
+
+
+def valued(pid, position, age, value, status="starter"):
+    return dict(item(pid, position, age, status=status), value=value)
+
+
+# --- league_position_averages ----------------------------------------------
+
+def test_league_averages_mean_startable_value_per_pos():
+    by_team = {
+        "1": [valued("a", "WR", 25, 8000), valued("b", "RB", 24, 6000)],
+        "2": [valued("c", "WR", 27, 4000), valued("d", "RB", 26, 2000)],
+    }
+    avg = league_position_averages(by_team)
+    assert avg["WR"] == 6000  # (8000 + 4000) / 2
+    assert avg["RB"] == 4000
+
+
+def test_league_averages_exclude_taxi_and_ir():
+    by_team = {
+        "1": [valued("a", "WR", 25, 8000), valued("b", "WR", 22, 9000, status="taxi")],
+        "2": [valued("c", "WR", 27, 4000)],
+    }
+    # Only startable bodies count, so team 1 contributes 8000 not 17000.
+    assert league_position_averages(by_team)["WR"] == 6000
+
+
+# --- team_posture -----------------------------------------------------------
+
+POS_RULES = {"roster_positions": ["QB", "RB", "WR", "TE"]}
+
+
+def test_posture_flags_thin_and_surplus_vs_league():
+    players = [
+        valued("a", "WR", 25, 9000),   # deep at WR
+        valued("b", "WR", 24, 8000),
+        valued("c", "RB", 26, 500),    # thin at RB
+    ]
+    averages = {"WR": 4000, "RB": 6000, "QB": 5000, "TE": 3000}
+    p = team_posture(players, [], POS_RULES, averages, standing=None)
+    assert "WR" in p["surplus"]
+    assert "RB" in p["thin"]
+
+
+def test_posture_picks_rich_and_poor_from_standing():
+    players = [valued("a", "WR", 25, 8000)]
+    averages = {"WR": 8000}
+    rich = team_posture(players, [], POS_RULES,
+                        averages, {"pick_rank": 1, "size": 12})
+    poor = team_posture(players, [], POS_RULES,
+                        averages, {"pick_rank": 12, "size": 12})
+    assert rich["picks"] == "rich"
+    assert poor["picks"] == "poor"
+
+
+def test_posture_window_reads_aging_seller():
+    """The classic sell-high team: old, valuable core plus pick capital."""
+    players = [
+        valued("a", "RB", 29, 8000),   # cliff
+        valued("b", "WR", 31, 7000),   # cliff
+        valued("c", "TE", 30, 4000),   # aging
+    ]
+    averages = {"RB": 8000, "WR": 7000, "TE": 4000}
+    p = team_posture(players, [{"label": "2027 1st", "value": 6000}], POS_RULES,
+                     averages, {"pick_rank": 1, "size": 12})
+    assert p["window"] == "Aging — sell high"
+    assert p["picks"] == "rich"
+
+
+def test_posture_does_not_mutate_caller_players():
+    players = [valued("a", "WR", 25, 8000)]
+    team_posture(players, [], POS_RULES, {"WR": 8000}, None)
+    assert "band" not in players[0]  # band attached on a copy, not the original
 
 
 def test_window_no_values_degrades():

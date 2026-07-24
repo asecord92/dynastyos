@@ -5,6 +5,7 @@ from engine.nfl_trade import (
     _detect_weak_position,
     _fmt_asset,
     _fmt_val,
+    _format_nfl_posture,
     _pick_assets,
     _value_players,
 )
@@ -137,3 +138,20 @@ def test_weak_position_uses_value_not_points():
 def test_weak_position_defaults_without_values():
     by_team = {"1": [item("a", "WR")], "2": [item("b", "RB")]}
     assert _detect_weak_position(by_team["1"], by_team) in ("QB", "RB", "WR", "TE")
+
+
+# --- posture rendering ------------------------------------------------------
+
+def test_posture_line_composes_all_parts():
+    line = _format_nfl_posture("Team 7", {
+        "window": "Aging — sell high", "picks": "rich",
+        "thin": ["WR"], "surplus": ["RB", "QB"],
+    })
+    assert line == "Team 7: aging/selling, rich in picks, thin at WR, surplus at RB, QB"
+
+
+def test_posture_line_empty_when_nothing_notable():
+    assert _format_nfl_posture("Team 7", {
+        "window": None, "picks": None, "thin": [], "surplus": [],
+    }) == ""
+    assert _format_nfl_posture("Team 7", {}) == ""
