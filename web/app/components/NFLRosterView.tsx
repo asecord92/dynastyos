@@ -93,13 +93,12 @@ function InjuryBadge({ status }: { status?: string | null }) {
 
 function PlayerRow({ p }: { p: DynastyPlayer }) {
   const chip = p.band ? bandChip[p.band] : null;
-  const sub = [
-    p.team || "FA",
-    p.age != null ? `${p.age}` : null,
-    p.pos_rank != null ? `${p.position}${p.pos_rank}` : null,
-  ]
+  const sub = [p.team || "FA", p.age != null ? `age ${p.age}` : null]
     .filter(Boolean)
     .join(" · ");
+  // Rank leads: "#3 overall" reads instantly, the raw trade value doesn't.
+  // Value stays visible (it's what you sum across a trade) but subordinate.
+  const posRank = p.pos_rank != null ? `${p.position}${p.pos_rank}` : null;
   return (
     <div className="flex items-center gap-3 py-2.5 border-b last:border-0">
       <span className="w-9 shrink-0 text-[11px] font-semibold text-gray-500">
@@ -126,8 +125,15 @@ function PlayerRow({ p }: { p: DynastyPlayer }) {
       </div>
       <div className="shrink-0 text-right">
         <div className="text-sm font-semibold tabular-nums">
-          {fmtValue(p.value)} <TrendArrow trend={p.trend} />
+          {p.overall_rank != null ? `#${p.overall_rank} overall` : "—"}
         </div>
+        {p.value != null && (
+          <div className="text-xs text-gray-500 tabular-nums">
+            {posRank && <span className="font-medium">{posRank}</span>}
+            {posRank && " · "}
+            {fmtValue(p.value)} <TrendArrow trend={p.trend} />
+          </div>
+        )}
       </div>
     </div>
   );
@@ -240,13 +246,29 @@ export function NFLRosterView({ leagueId }: { leagueId: string }) {
         </div>
       )}
 
+      {/* The value scale is arbitrary and unlabeled everywhere it appears —
+          say so once, up front, before the first number shows up. */}
+      {data.fc_available && (
+        <p className="text-xs text-gray-400 leading-relaxed">
+          Ranks and values come from FantasyCalc&apos;s dynasty market.{" "}
+          <span className="text-gray-500">Value</span> is a relative trade-value scale
+          where the best asset in football sits around 10,000 — it&apos;s meant for
+          comparing <em>totals</em> (both sides of a trade, your pick pile), not for
+          reading one player in isolation. ▲▼ flag a big 30-day move; “—” means the
+          market doesn&apos;t price that asset.
+        </p>
+      )}
+
       {/* Draft pick inventory */}
       <div className="bg-gray-50 border rounded-2xl p-4 md:p-6 shadow-sm">
         <div className="flex items-baseline justify-between mb-3">
           <h2 className="text-lg font-semibold">Draft Picks</h2>
           {pick_capital.total > 0 && (
-            <span className="text-sm text-gray-500 tabular-nums">
-              {pick_capital.total.toLocaleString()} pick capital
+            <span className="text-sm text-gray-500">
+              Total value{" "}
+              <span className="tabular-nums font-medium">
+                {pick_capital.total.toLocaleString()}
+              </span>
             </span>
           )}
         </div>

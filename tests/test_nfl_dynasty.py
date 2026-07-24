@@ -175,6 +175,19 @@ def test_window_prime_core_pick_capital_splits_winnow_vs_balanced():
     assert _windowed(players, picks)["verdict"] == "Balanced"
 
 
+def test_window_detail_is_plain_english():
+    """The detail line is shown to the user verbatim — it must read as a
+    sentence, not leak the internal 0-3 stage score."""
+    players = [
+        dict(item("1", "WR", 26), value=8000, band="prime"),
+        dict(item("2", "RB", 24), value=7000, band="prime"),
+    ]
+    for picks in ([], [{"label": "2027 1st", "value": 6000}]):
+        detail = _windowed(players, picks)["detail"]
+        assert detail.endswith(".")
+        assert "life-stage" not in detail and "/3" not in detail
+
+
 def test_window_no_values_degrades():
     players = [dict(item("1", "WR"), value=None, band="prime")]
     out = _windowed(players)
