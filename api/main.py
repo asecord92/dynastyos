@@ -2314,17 +2314,21 @@ async def dashboard_nfl_roster(body: DashboardRequest, user: dict = Depends(get_
                 sb.table("leagues").select("rules").eq("id", body.league_id)
                 .single().execute()
             ).data or {}
+            # Every team, not just the owner's: rival rosters + picks are what
+            # turn the window read into league ranks instead of a bare percentage.
             rows = (
                 sb.table("rosters")
-                .select("team_name, roster_items, draft_picks")
+                .select("fantrax_team_id, team_name, roster_items, draft_picks")
                 .eq("league_id", body.league_id)
-                .eq("fantrax_team_id", body.my_team_id)
-                .limit(1)
                 .execute()
-            ).data
-            return league, (rows[0] if rows else None)
+            ).data or []
+            mine = next(
+                (r for r in rows if str(r.get("fantrax_team_id")) == str(body.my_team_id)),
+                None,
+            )
+            return league, mine, rows
 
-        league, roster_row = await asyncio.to_thread(_load)
+        league, roster_row, all_rosters = await asyncio.to_thread(_load)
         rules = league.get("rules") or {}
         if (rules.get("sport") or "").upper() != "NFL":
             raise HTTPException(status_code=400, detail="Not an NFL league.")
@@ -2340,7 +2344,7 @@ async def dashboard_nfl_roster(body: DashboardRequest, user: dict = Depends(get_
         )
         payload = build_nfl_dynasty_payload(
             roster_row.get("roster_items"), roster_row.get("draft_picks"),
-            rules, fc["entries"],
+            rules, fc["entries"], all_rosters, body.my_team_id,
         )
         payload["team_name"] = roster_row.get("team_name") or "Your Team"
         payload["values_updated_at"] = fc["fetched_at"]
