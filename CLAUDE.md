@@ -38,6 +38,7 @@ Branch → PR → CI green → **squash-merge to main** → **Vercel** (frontend
 - Heavy stat fetches (trade finder, category compute) must be **bounded/backgrounded** or Vercel times out the proxy (`ROUTER_EXTERNAL_TARGET_ERROR`).
 - **Fantrax `getStandings` gives overall standings only — no category ranks.** Category ranks are *approximated* from rosters + season stats (`engine/category_ranks.py`).
 - NFL roster items embed `age`/`years_exp`/`injury_status` from the Sleeper players dump at sync time — existing leagues only pick these up on their next sync.
+- **Football assets are priced on ONE scale** — FantasyCalc dynasty market value (`engine/fantasycalc.py`, cached in-process per settings combo), shared by the roster page and all three trade tools. Don't reintroduce a within-position percentile or a separate pick curve: `value` used to be a points percentile *within a position*, so every position's best player scored 100 and "my WR1 for your RB1" read as an even swap (Olave 100 = Bijan 100, when the market says 3,898 vs 10,191) — the AI proposed trades nobody would accept. Unpriced assets stay `None`, never 0.
 - Settings **reconnect** reuses the existing league row by `fantrax_league_id`; **deleting** a league cascade-wipes its cache/ranks/snapshots/rosters.
 - DB migrations live in `supabase/migrations/` and are **applied manually** in the Supabase SQL editor.
 
