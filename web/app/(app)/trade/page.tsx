@@ -637,9 +637,10 @@ export default function TradePage() {
           </div>
 
           {mode === "build" && (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
-          {/* Left — trade builder */}
-          <div className="bg-gray-50 border rounded-2xl p-5 shadow-sm space-y-5 lg:sticky lg:top-6">
+          <div className="grid grid-cols-1 lg:grid-cols-5 gap-6 items-start">
+          {/* Left — trade builder (narrower: it's a compact form, so the dense
+              analysis on the right gets the extra width) */}
+          <div className="lg:col-span-2 bg-gray-50 border rounded-2xl p-5 shadow-sm space-y-5 lg:sticky lg:top-6">
             <h2 className="text-lg font-semibold">Build Trade</h2>
 
             <div className="space-y-2">
@@ -697,8 +698,8 @@ export default function TradePage() {
             )}
           </div>
 
-          {/* Right — analysis output */}
-          <div className="space-y-4">
+          {/* Right — analysis output (wider: the information-dense side) */}
+          <div className="lg:col-span-3 space-y-4">
             {needsApiKey && <NeedsApiKey feature="Trade analysis" />}
 
             {!streamText && !loading && !needsApiKey && (
@@ -722,9 +723,9 @@ export default function TradePage() {
           )}
 
           {mode === "find" && (
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
-              {/* Left — category picker */}
-              <div className="bg-gray-50 border rounded-2xl p-5 shadow-sm space-y-4 lg:sticky lg:top-6">
+            <div className="grid grid-cols-1 lg:grid-cols-5 gap-6 items-start">
+              {/* Left — category picker (narrow; results on the right get the width) */}
+              <div className="lg:col-span-2 bg-gray-50 border rounded-2xl p-5 shadow-sm space-y-4 lg:sticky lg:top-6">
                 <h2 className="text-lg font-semibold">Find Targets</h2>
                 <p className="text-sm text-gray-500">
                   {isNFL
@@ -765,8 +766,8 @@ export default function TradePage() {
                 )}
               </div>
 
-              {/* Right — results */}
-              <div className="space-y-4">
+              {/* Right — results (wider: candidate list, packages, recommendation) */}
+              <div className="lg:col-span-3 space-y-4">
                 {needsApiKey && <NeedsApiKey feature="Trade Finder" />}
 
                 {!finder && !finderLoading && !needsApiKey && (
