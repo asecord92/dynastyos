@@ -138,18 +138,31 @@ def roster_window(players: list[dict], picks: list[dict], rules: dict) -> dict:
     stage = sum(_STAGE_SCORE[p["band"]] * p["value"] for p in core) / core_value
     pick_share = pick_value / (core_value + pick_value) if core_value + pick_value else 0.0
 
+    # Plain-English detail: the underlying stage score (0-3) is jargon nobody
+    # asked for, so it stays in the payload as data and out of the sentence.
+    pct = round(pick_share * 100)
     if stage < 0.9:
-        verdict, blurb = "Ascending", "young core still gaining value"
+        verdict = "Ascending"
+        detail = "Your best players are young and still gaining value."
     elif stage <= 1.5:
         if pick_share >= 0.15:
-            verdict, blurb = "Balanced", "prime core backed by real pick capital"
+            verdict = "Balanced"
+            detail = (
+                "Your best players are in their prime and you hold real draft capital "
+                f"({pct}% of everything you own)."
+            )
         else:
-            verdict, blurb = "Win-now", "prime core, light on picks — push your chips in"
+            verdict = "Win-now"
+            detail = (
+                "Your best players are in their prime but you're light on picks "
+                f"({pct}% of everything you own) — this is the year to push."
+            )
     else:
-        verdict, blurb = "Aging — sell high", "core past its prime; move vets while they still hold value"
+        verdict = "Aging — sell high"
+        detail = "Your best players are past their prime — move them while they still hold value."
     return {
         "verdict": verdict,
-        "detail": f"{blurb} (core life-stage {stage:.1f}/3, picks {round(pick_share * 100)}% of asset value)",
+        "detail": detail,
         "stage": round(stage, 2),
         "pick_share": round(pick_share, 3),
     }
