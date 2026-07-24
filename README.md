@@ -14,7 +14,7 @@ data and powered by Claude — for deep **Fantrax** baseball and **Sleeper** foo
 ![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-Python%203.11-009688?logo=fastapi&logoColor=white)
 ![Supabase](https://img.shields.io/badge/Supabase-Postgres%20%2B%20Auth-3ECF8E?logo=supabase&logoColor=white)
-![Anthropic](https://img.shields.io/badge/Claude-Opus%204.8%20%2F%20Sonnet%205-D97757?logo=anthropic&logoColor=white)
+![Anthropic](https://img.shields.io/badge/Claude-Opus%205%20%2F%20Sonnet%205-D97757?logo=anthropic&logoColor=white)
 
 </div>
 
@@ -95,7 +95,7 @@ share — each friend brings their own Claude API key, so nobody foots the bill 
 ```
 
 **Highlights**
-- **AI model split** — `claude-opus-4-8` for deep trade reasoning; `claude-sonnet-5` for the high-frequency dashboard widgets (news / start-sit / waiver). All prompts are date-anchored so answers stay current.
+- **AI model split** — `claude-opus-5` for deep trade reasoning; `claude-sonnet-5` for the high-frequency dashboard widgets (news / start-sit / waiver). All prompts are date-anchored so answers stay current.
 - **Caching** — a per-`(league, widget)` `dashboard_cache` table with a 4-hour TTL keeps the expensive AI calls cheap and fast; a `force` flag bypasses it.
 - **Category ranks are approximated** — Fantrax's API only exposes overall standings, so per-category ranks are reconstructed from rosters + season stats.
 - **Heavy stat work is bounded/backgrounded** so the serverless proxy never times out.
@@ -107,7 +107,7 @@ share — each friend brings their own Claude API key, so nobody foots the bill 
 | Frontend   | Next.js 16 (App Router), React 19, TypeScript, Tailwind CSS v4 |
 | Backend    | FastAPI, Python 3.11, Pydantic, `ruff` |
 | Data / Auth| Supabase (Postgres + Auth), Row-Level Security |
-| AI         | Anthropic Claude (Opus 4.8 + Sonnet 5), server-side web search |
+| AI         | Anthropic Claude (Opus 5 + Sonnet 5), server-side web search |
 | Hosting    | Vercel (frontend) · Railway (backend) |
 | Sources    | Fantrax API · Sleeper API · MLB Stats API |
 
