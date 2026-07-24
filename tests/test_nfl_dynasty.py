@@ -8,6 +8,7 @@ from engine.nfl_dynasty import (
     depth_flags,
     derive_fc_params,
     index_fc,
+    league_standing,
     roster_window,
     starting_slots,
 )
@@ -173,6 +174,59 @@ def test_window_prime_core_pick_capital_splits_winnow_vs_balanced():
     assert _windowed(players)["verdict"] == "Win-now"
     picks = [{"label": "2027 1st", "value": 6000}]
     assert _windowed(players, picks)["verdict"] == "Balanced"
+
+
+def test_league_standing_ranks_roster_and_picks():
+    entries = [
+        fc_player("a", 9000), fc_player("b", 5000), fc_player("c", 1000),
+        fc_pick("2027 1st", 3000),
+    ]
+    fc_players, fc_picks = index_fc(entries)
+    rosters = [
+        {"fantrax_team_id": "1", "roster_items": [item("a")], "draft_picks": []},
+        {"fantrax_team_id": "2", "roster_items": [item("b")],
+         "draft_picks": [{"label": "2027 1st"}]},
+        {"fantrax_team_id": "3", "roster_items": [item("c")], "draft_picks": []},
+    ]
+    st = league_standing(rosters, fc_players, fc_picks, "2")
+    assert st["size"] == 3
+    assert st["value_rank"] == 2  # 5000 sits behind 9000
+    assert st["pick_rank"] == 1  # only team holding a valued pick
+    assert st["pick_value"] == 3000
+
+
+def test_league_standing_none_without_rivals_or_values():
+    fc_players, fc_picks = index_fc([fc_player("a", 9000)])
+    solo = [{"fantrax_team_id": "1", "roster_items": [item("a")], "draft_picks": []}]
+    assert league_standing(solo, fc_players, fc_picks, "1") is None
+    assert league_standing(solo, {}, {}, "1") is None
+
+
+def test_window_uses_league_rank_when_standing_present():
+    players = [
+        dict(item("1", "WR", 26), value=8000, band="prime"),
+        dict(item("2", "RB", 24), value=7000, band="prime"),
+    ]
+    standing = {"size": 12, "pick_rank": 2, "value_rank": 4,
+                "roster_value": 50000, "pick_value": 6000}
+    out = roster_window(players, [{"label": "2027 1st", "value": 6000}],
+                        {"roster_positions": ["QB", "RB"]}, standing)
+    assert out["verdict"] == "Balanced"
+    assert "2nd-most draft capital of 12 teams" in out["detail"]
+    assert "%" not in out["detail"]  # the bare percentage is gone
+    assert out["core_age"] == 25.0
+
+
+def test_window_thin_picks_reads_as_win_now():
+    players = [
+        dict(item("1", "WR", 26), value=8000, band="prime"),
+        dict(item("2", "RB", 24), value=7000, band="prime"),
+    ]
+    standing = {"size": 12, "pick_rank": 11, "value_rank": 2,
+                "roster_value": 50000, "pick_value": 200}
+    out = roster_window(players, [], {"roster_positions": ["QB", "RB"]}, standing)
+    assert out["verdict"] == "Win-now"
+    assert "thin" in out["detail"] and "11th of 12" in out["detail"]
 
 
 def test_window_detail_is_plain_english():

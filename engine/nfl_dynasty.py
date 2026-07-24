@@ -78,6 +78,51 @@ def starting_slots(roster_positions: list | None) -> list[str]:
     return [p for p in roster_positions or [] if p and p not in _NON_STARTING]
 
 
+def _ordinal(n: int) -> str:
+    if 11 <= (n % 100) <= 13:
+        return f"{n}th"
+    return f"{n}{ {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th') }"
+
+
+def league_standing(rosters: list | None, fc_players: dict, fc_picks: dict,
+                    my_team_id: str) -> dict | None:
+    """Rank every synced team by total roster value and by pick capital, and
+    return where the owner lands. A bare percentage ("picks are 29% of what you
+    own") means nothing without a reference point; "2nd-most in the league"
+    does — and every rival's roster is already in the rosters table, so this
+    costs one wider query and pure math. None when values are unavailable."""
+    if not fc_players and not fc_picks:
+        return None
+    rows = []
+    for r in rosters or []:
+        team_id = str(r.get("fantrax_team_id") or "")
+        roster_value = sum(
+            (fc_players.get(str(it.get("id") or "")) or {}).get("value") or 0
+            for it in (r.get("roster_items") or [])
+        )
+        pick_value = sum(
+            (fc_picks.get((pk.get("label") or "").strip()) or {}).get("value") or 0
+            for pk in (r.get("draft_picks") or [])
+        )
+        rows.append({"team_id": team_id, "roster_value": roster_value,
+                     "pick_value": pick_value})
+    mine = next((r for r in rows if r["team_id"] == str(my_team_id)), None)
+    if not mine or len(rows) < 2:
+        return None
+
+    def rank_of(key: str) -> int:
+        ordered = sorted(rows, key=lambda r: r[key], reverse=True)
+        return next(i for i, r in enumerate(ordered, 1) if r["team_id"] == mine["team_id"])
+
+    return {
+        "size": len(rows),
+        "value_rank": rank_of("roster_value"),
+        "pick_rank": rank_of("pick_value"),
+        "roster_value": mine["roster_value"],
+        "pick_value": mine["pick_value"],
+    }
+
+
 def depth_flags(players: list[dict], rules: dict) -> list[dict]:
     """At most 3 deterministic lineup-construction warnings, worst first, from
     startable bodies (taxi/IR excluded) vs dedicated slots. FLEX-type slots are
@@ -122,58 +167,90 @@ def depth_flags(players: list[dict], rules: dict) -> list[dict]:
     return flags[:3]
 
 
-def roster_window(players: list[dict], picks: list[dict], rules: dict) -> dict:
+def _picks_phrase(pick_share: float, standing: dict | None) -> tuple[str, bool]:
+    """How to describe the pick stash, plus whether it counts as 'real' capital.
+    League-relative when we can see rivals (a rank is a reference point a bare
+    percentage never gives you); falls back to share-of-assets otherwise."""
+    if standing:
+        rank, size = standing["pick_rank"], standing["size"]
+        strong = rank <= max(1, size // 3)
+        if rank == 1:
+            return "you hold the most draft capital in the league", True
+        if strong:
+            return f"you hold the {_ordinal(rank)}-most draft capital of {size} teams", True
+        if rank > (size * 2) // 3:
+            # Parenthesised, not em-dashed: these phrases land inside sentences
+            # that already carry an em-dash.
+            return f"your draft capital is thin ({_ordinal(rank)} of {size})", False
+        return f"your draft capital is middle of the pack ({_ordinal(rank)} of {size})", False
+    pct = round(pick_share * 100)
+    if pick_share >= 0.15:
+        return f"picks make up a real slice of your assets ({pct}%)", True
+    return f"you're light on picks ({pct}% of your assets)", False
+
+
+def roster_window(players: list[dict], picks: list[dict], rules: dict,
+                  standing: dict | None = None) -> dict:
     """One-line dynasty window verdict: value-weighted life-stage of the core
     (top-N by market value, N = starting slots so chaff doesn't skew) plus pick
-    capital's share of total asset value. Taxi/IR players count — a stashed
-    rookie is part of the young core."""
+    capital, described relative to the rest of the league when `standing` is
+    available. Taxi/IR players count — a stashed rookie is part of the young
+    core."""
     n = max(1, len(starting_slots((rules or {}).get("roster_positions"))))
     valued = [p for p in players if p.get("value") and p.get("band")]
     core = sorted(valued, key=lambda p: p["value"], reverse=True)[:n]
     if not core:
-        return {"verdict": None, "detail": "No market values available to read the window."}
+        return {"verdict": None, "detail": "No market values available to read the window.",
+                "core_age": None}
 
     core_value = sum(p["value"] for p in core)
     pick_value = sum(pk.get("value") or 0 for pk in picks)
     stage = sum(_STAGE_SCORE[p["band"]] * p["value"] for p in core) / core_value
     pick_share = pick_value / (core_value + pick_value) if core_value + pick_value else 0.0
+    ages = [p["age"] for p in core if isinstance(p.get("age"), (int, float))]
+    core_age = round(sum(ages) / len(ages), 1) if ages else None
 
-    # Plain-English detail: the underlying stage score (0-3) is jargon nobody
-    # asked for, so it stays in the payload as data and out of the sentence.
-    pct = round(pick_share * 100)
+    # Plain English only: the 0-3 stage score is internal, and a bare percentage
+    # is meaningless without something to compare it against.
+    phrase, strong_picks = _picks_phrase(pick_share, standing)
     if stage < 0.9:
         verdict = "Ascending"
-        detail = "Your best players are young and still gaining value."
+        detail = f"Your best players are young and still gaining value, and {phrase}."
     elif stage <= 1.5:
-        if pick_share >= 0.15:
+        if strong_picks:
             verdict = "Balanced"
-            detail = (
-                "Your best players are in their prime and you hold real draft capital "
-                f"({pct}% of everything you own)."
-            )
+            detail = f"Your best players are in their prime and {phrase}."
         else:
             verdict = "Win-now"
             detail = (
-                "Your best players are in their prime but you're light on picks "
-                f"({pct}% of everything you own) — this is the year to push."
+                f"Your best players are in their prime but {phrase} — "
+                "this is the year to push."
             )
     else:
         verdict = "Aging — sell high"
-        detail = "Your best players are past their prime — move them while they still hold value."
+        detail = (
+            f"Your best players are past their prime and {phrase} — "
+            "move the vets while they still hold value."
+        )
     return {
         "verdict": verdict,
         "detail": detail,
+        "core_age": core_age,
         "stage": round(stage, 2),
         "pick_share": round(pick_share, 3),
     }
 
 
 def build_payload(roster_items: list | None, draft_picks: list | None,
-                  rules: dict, fc_entries: list | None) -> dict:
+                  rules: dict, fc_entries: list | None,
+                  all_rosters: list | None = None, my_team_id: str = "") -> dict:
     """The ready-to-render /dashboard/nfl_roster body (minus team_name /
     values_updated_at, which the endpoint adds). Joins are best-effort: players
-    or picks FantasyCalc doesn't know keep value None and still render."""
+    or picks FantasyCalc doesn't know keep value None and still render. Pass
+    `all_rosters` (every synced team) to ground the window read in league ranks
+    rather than a free-floating percentage."""
     fc_players, fc_picks = index_fc(fc_entries)
+    standing = league_standing(all_rosters, fc_players, fc_picks, my_team_id)
 
     players = []
     for it in roster_items or []:
@@ -229,6 +306,7 @@ def build_payload(roster_items: list | None, draft_picks: list | None,
             "valued": len(valued_picks),
             "unvalued": len(picks) - len(valued_picks),
         },
-        "window": roster_window(players, picks, rules),
+        "window": roster_window(players, picks, rules, standing),
         "depth_flags": depth_flags(players, rules),
+        "standing": standing,
     }
