@@ -260,7 +260,7 @@ def _cache_age(sb, league_id: str, widget: str) -> timedelta | None:
 
 # Model selection: Opus for deep trade reasoning, Sonnet for the high-frequency
 # dashboard widgets (news / start_sit / waiver) — faster and cheaper.
-MODEL_TRADE = "claude-opus-4-8"
+MODEL_TRADE = "claude-opus-5"
 MODEL_DASHBOARD = "claude-sonnet-5"
 
 # Sonnet 5 turns adaptive thinking ON by default. These widgets are simple,
@@ -269,14 +269,14 @@ MODEL_DASHBOARD = "claude-sonnet-5"
 # these prompts were tuned for on Sonnet 4.6.
 _NO_THINKING = {"type": "disabled"}
 
-# Opus 4.8 runs WITHOUT thinking when the parameter is omitted — trade analysis
+# Opus runs WITHOUT thinking when the parameter is omitted — trade analysis
 # is the app's deepest reasoning surface, so it explicitly opts in to adaptive
 # thinking. Thinking tokens count against max_tokens, hence the generous caps
 # on the trade calls below.
 _ADAPTIVE_THINKING = {"type": "adaptive"}
 
 # web_search_20260209 (dynamic filtering built in) — supported by both Sonnet 5
-# (dashboard widgets) and Opus 4.8 (trade analysis).
+# (dashboard widgets) and Opus 5 (trade analysis).
 # Dashboard widgets (news/start_sit/waiver/minors) get a bounded search budget —
 # results are billed as input tokens, and an unbounded loop was the biggest
 # silent cost. 3 is plenty to cover a roster's worth of injury/role news.
