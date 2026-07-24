@@ -2,25 +2,77 @@
 
 import { useEffect, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
+import { useDashboardWidget } from "../lib/useDashboardWidget";
+import { timeAgo } from "../lib/format";
+import { Spinner } from "./ui/Spinner";
 
-type NFLItem = {
+type DynastyPlayer = {
   id: string;
   name?: string;
   position?: string;
   team?: string;
-  status?: string; // "starter" | "bench"
+  status: string;
   injury_status?: string | null;
   age?: number | null;
-  years_exp?: number | null;
+  band?: "ascending" | "prime" | "aging" | "cliff" | null;
+  rookie_tag?: string | null;
+  value?: number | null;
+  overall_rank?: number | null;
+  pos_rank?: number | null;
+  tier?: number | null;
+  trend?: number | null;
 };
 
-const POS_ORDER: Record<string, number> = { QB: 0, RB: 1, WR: 2, TE: 3, K: 4, DEF: 5 };
+type DynastyPick = {
+  label?: string;
+  season?: number;
+  round?: number;
+  value?: number | null;
+  trend?: number | null;
+};
 
-function byPosThenName(a: NFLItem, b: NFLItem): number {
-  const pa = POS_ORDER[a.position ?? ""] ?? 9;
-  const pb = POS_ORDER[b.position ?? ""] ?? 9;
-  if (pa !== pb) return pa - pb;
-  return (a.name ?? "").localeCompare(b.name ?? "");
+type NflRosterPayload = {
+  fc_available: boolean;
+  players: {
+    starter: DynastyPlayer[];
+    bench: DynastyPlayer[];
+    taxi: DynastyPlayer[];
+    ir: DynastyPlayer[];
+  };
+  picks: DynastyPick[];
+  pick_capital: { total: number; valued: number; unvalued: number };
+  window: { verdict: string | null; detail: string };
+  depth_flags: { level: "critical" | "warn"; text: string }[];
+  team_name: string;
+  values_updated_at: string | null;
+};
+
+const bandChip: Record<string, { label: string; cls: string }> = {
+  ascending: { label: "Ascending", cls: "bg-green-500/15 text-green-300" },
+  prime: { label: "Prime", cls: "bg-violet-500/15 text-violet-300" },
+  aging: { label: "Aging", cls: "bg-amber-500/15 text-amber-300" },
+  cliff: { label: "Cliff", cls: "bg-red-500/15 text-red-300" },
+};
+
+const verdictCls: Record<string, string> = {
+  Ascending: "bg-green-500/15 text-green-300",
+  Balanced: "bg-violet-500/15 text-violet-300",
+  "Win-now": "bg-blue-500/15 text-blue-300",
+  "Aging — sell high": "bg-red-500/15 text-red-300",
+};
+
+function fmtValue(v?: number | null): string {
+  return v ? v.toLocaleString() : "—";
+}
+
+/** 30-day market movement arrow — only meaningful swings get ink. */
+function TrendArrow({ trend }: { trend?: number | null }) {
+  if (!trend || Math.abs(trend) < 100) return null;
+  return trend > 0 ? (
+    <span className="text-green-400 text-xs">▲</span>
+  ) : (
+    <span className="text-red-400 text-xs">▼</span>
+  );
 }
 
 function InjuryBadge({ status }: { status?: string | null }) {
@@ -30,7 +82,7 @@ function InjuryBadge({ status }: { status?: string | null }) {
   );
   return (
     <span
-      className={`ml-2 inline-block px-1.5 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wide ${
+      className={`inline-block px-1.5 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wide ${
         bad ? "bg-red-100 text-red-800" : "bg-amber-100 text-amber-800"
       }`}
     >
@@ -39,106 +91,222 @@ function InjuryBadge({ status }: { status?: string | null }) {
   );
 }
 
-function RosterGroup({ title, items }: { title: string; items: NFLItem[] }) {
-  if (items.length === 0) return null;
+function PlayerRow({ p }: { p: DynastyPlayer }) {
+  const chip = p.band ? bandChip[p.band] : null;
+  const sub = [
+    p.team || "FA",
+    p.age != null ? `${p.age}` : null,
+    p.pos_rank != null ? `${p.position}${p.pos_rank}` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
   return (
-    <div className="bg-gray-50 border rounded-2xl p-4 md:p-6 shadow-sm space-y-3">
-      <div className="flex items-baseline justify-between">
-        <h2 className="text-lg font-semibold">{title}</h2>
-        <span className="text-sm text-gray-500">{items.length}</span>
+    <div className="flex items-center gap-3 py-2.5 border-b last:border-0">
+      <span className="w-9 shrink-0 text-[11px] font-semibold text-gray-500">
+        {p.position ?? "—"}
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="font-medium truncate">{p.name ?? "—"}</span>
+          {p.rookie_tag && (
+            <span className="px-1.5 py-0.5 rounded-md text-[10px] font-semibold bg-blue-500/15 text-blue-300">
+              {p.rookie_tag}
+            </span>
+          )}
+          <InjuryBadge status={p.injury_status} />
+        </div>
+        <div className="flex items-center gap-2 text-xs text-gray-500">
+          <span>{sub}</span>
+          {chip && (
+            <span className={`px-1.5 py-0.5 rounded-md text-[10px] font-semibold ${chip.cls}`}>
+              {chip.label}
+            </span>
+          )}
+        </div>
       </div>
-      <div className="overflow-x-auto">
-        <table className="min-w-full text-sm">
-          <thead className="border-b text-left text-gray-600">
-            <tr>
-              <th className="py-2 pr-4">Player</th>
-              <th className="py-2 pr-4">Pos</th>
-              <th className="py-2 pr-4">Team</th>
-              <th className="py-2 pr-4">Age</th>
-              <th className="py-2">Exp</th>
-            </tr>
-          </thead>
-          <tbody>
-            {items.map((p) => (
-              <tr key={p.id} className="border-b last:border-0">
-                <td className="py-2 pr-4 font-medium whitespace-nowrap">
-                  {p.name ?? "—"}
-                  <InjuryBadge status={p.injury_status} />
-                </td>
-                <td className="py-2 pr-4">{p.position ?? "—"}</td>
-                <td className="py-2 pr-4">{p.team || "FA"}</td>
-                <td className="py-2 pr-4">{p.age ?? "—"}</td>
-                <td className="py-2">
-                  {p.years_exp === 0 ? "R" : p.years_exp != null ? `${p.years_exp} yr` : "—"}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <div className="shrink-0 text-right">
+        <div className="text-sm font-semibold tabular-nums">
+          {fmtValue(p.value)} <TrendArrow trend={p.trend} />
+        </div>
       </div>
     </div>
   );
 }
 
-/** Roster view for Sleeper football leagues — points-based, no salaries or
- * contracts, so the /roster tab shows the synced roster instead of the Cap
- * Planner. Reads the owner-scoped rosters row directly. */
-export function NFLRosterView({ leagueId }: { leagueId: string }) {
-  const [teamName, setTeamName] = useState<string>("");
-  const [items, setItems] = useState<NFLItem[] | null>(null);
-  const [loading, setLoading] = useState(true);
+function RosterGroup({ title, items }: { title: string; items: DynastyPlayer[] }) {
+  if (items.length === 0) return null;
+  return (
+    <div className="bg-gray-50 border rounded-2xl p-4 md:p-6 shadow-sm">
+      <div className="flex items-baseline justify-between mb-1">
+        <h2 className="text-lg font-semibold">{title}</h2>
+        <span className="text-sm text-gray-500">{items.length}</span>
+      </div>
+      <div>
+        {items.map((p) => (
+          <PlayerRow key={p.id} p={p} />
+        ))}
+      </div>
+    </div>
+  );
+}
 
+/** Dynasty roster view for Sleeper football leagues: pick capital first, the
+ * roster-window read, then the roster with FantasyCalc market values and
+ * age-curve chips. All reads are computed server-side (/dashboard/nfl_roster) —
+ * no AI call, so refresh is free. */
+export function NFLRosterView({ leagueId }: { leagueId: string }) {
+  // Resolve the owner's roster id from the league row (same pattern as the
+  // waivers page); the widget hook no-ops until it settles.
+  const [myTeamId, setMyTeamId] = useState("");
   useEffect(() => {
-    if (!leagueId) return;
-    let active = true;
-    (async () => {
-      setLoading(true);
-      setItems(null);
-      const { data: lg } = await supabase
-        .from("leagues")
-        .select("fantrax_team_id")
-        .eq("id", leagueId)
-        .single();
-      const teamId = lg?.fantrax_team_id;
-      if (!teamId) {
-        if (active) setLoading(false);
-        return;
-      }
-      const { data: rows } = await supabase
-        .from("rosters")
-        .select("team_name, roster_items")
-        .eq("league_id", leagueId)
-        .eq("fantrax_team_id", teamId)
-        .limit(1);
-      if (!active) return;
-      const row = rows?.[0];
-      setTeamName((row?.team_name as string) ?? "");
-      setItems(((row?.roster_items as NFLItem[]) ?? []).slice());
-      setLoading(false);
-    })();
-    return () => {
-      active = false;
-    };
+    if (!leagueId) {
+      setMyTeamId("");
+      return;
+    }
+    supabase
+      .from("leagues")
+      .select("fantrax_team_id")
+      .eq("id", leagueId)
+      .single()
+      .then(({ data }) => setMyTeamId(data?.fantrax_team_id ?? ""));
   }, [leagueId]);
 
-  if (loading) return <div className="text-sm text-gray-500">Loading roster...</div>;
+  const { data, loading, validating, error, refresh } = useDashboardWidget<NflRosterPayload>(
+    "nfl_roster",
+    leagueId,
+    myTeamId
+  );
 
-  if (!items || items.length === 0) {
+  if ((loading || !myTeamId) && !data) {
     return (
-      <div className="text-sm text-gray-500 bg-gray-50 border rounded-2xl p-6 shadow-sm">
-        No synced roster yet — hit Sync in the nav to pull it from Sleeper.
+      <div className="space-y-4 animate-pulse">
+        <div className="h-24 bg-gray-50 border rounded-2xl" />
+        <div className="h-16 bg-gray-50 border rounded-2xl" />
+        <div className="h-64 bg-gray-50 border rounded-2xl" />
       </div>
     );
   }
 
-  const starters = items.filter((p) => p.status === "starter").sort(byPosThenName);
-  const bench = items.filter((p) => p.status !== "starter").sort(byPosThenName);
+  if (error && !data) {
+    const needsSync = error.toLowerCase().includes("sync");
+    return (
+      <div className="text-sm text-gray-500 bg-gray-50 border rounded-2xl p-6 shadow-sm space-y-3">
+        <p>
+          {needsSync
+            ? "No synced roster yet — hit Sync in the nav to pull it from Sleeper."
+            : `Couldn't load the roster: ${error}`}
+        </p>
+        {!needsSync && (
+          <button
+            onClick={() => refresh()}
+            className="px-3 py-1.5 rounded-xl text-xs border border-gray-200 hover:border-gray-300 transition"
+          >
+            Retry
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  if (!data) return null;
+
+  const { players, picks, pick_capital, window, depth_flags } = data;
 
   return (
-    <div className="space-y-6">
-      {teamName && <div className="text-sm text-gray-500">{teamName}</div>}
-      <RosterGroup title="Starters" items={starters} />
-      <RosterGroup title="Bench" items={bench} />
+    <div className="space-y-4 md:space-y-6">
+      {/* Header */}
+      <div className="flex items-center justify-between gap-3">
+        <div className="text-sm text-gray-500">{data.team_name}</div>
+        <div className="flex items-center gap-3">
+          {data.values_updated_at && (
+            <span className="text-xs text-gray-400 whitespace-nowrap">
+              Values {timeAgo(data.values_updated_at)}
+            </span>
+          )}
+          <button
+            onClick={() => refresh(true)}
+            disabled={validating}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs border border-gray-200 hover:border-gray-300 disabled:opacity-60 transition"
+          >
+            {validating && <Spinner />}
+            {validating ? "Refreshing…" : "Refresh"}
+          </button>
+        </div>
+      </div>
+
+      {!data.fc_available && (
+        <div className="text-xs text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded-xl px-4 py-2.5">
+          Market values are unavailable right now — showing roster reads without values.
+        </div>
+      )}
+
+      {/* Draft pick inventory */}
+      <div className="bg-gray-50 border rounded-2xl p-4 md:p-6 shadow-sm">
+        <div className="flex items-baseline justify-between mb-3">
+          <h2 className="text-lg font-semibold">Draft Picks</h2>
+          {pick_capital.total > 0 && (
+            <span className="text-sm text-gray-500 tabular-nums">
+              {pick_capital.total.toLocaleString()} pick capital
+            </span>
+          )}
+        </div>
+        {picks.length === 0 ? (
+          <p className="text-sm text-gray-500">No future picks — they&apos;ve been traded away.</p>
+        ) : (
+          <div className="flex flex-wrap gap-2">
+            {picks.map((pk, i) => (
+              <span
+                key={`${pk.label}-${i}`}
+                className="inline-flex items-center gap-2 px-3 py-1.5 rounded-xl border bg-gray-100 text-sm"
+              >
+                <span className="font-medium">{pk.label}</span>
+                <span className="text-gray-500 tabular-nums text-xs">
+                  {fmtValue(pk.value)} <TrendArrow trend={pk.trend} />
+                </span>
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Window verdict + depth flags */}
+      {(window.verdict || depth_flags.length > 0) && (
+        <div className="bg-gray-50 border rounded-2xl p-4 md:p-6 shadow-sm space-y-3">
+          {window.verdict && (
+            <div className="flex items-center gap-3 flex-wrap">
+              <span
+                className={`px-2.5 py-1 rounded-lg text-sm font-semibold ${
+                  verdictCls[window.verdict] ?? "bg-gray-100 text-gray-700"
+                }`}
+              >
+                {window.verdict}
+              </span>
+              <span className="text-sm text-gray-500">{window.detail}</span>
+            </div>
+          )}
+          {depth_flags.length > 0 && (
+            <ul className="space-y-1.5">
+              {depth_flags.map((f, i) => (
+                <li
+                  key={i}
+                  className={`text-sm ${
+                    f.level === "critical" ? "text-red-300" : "text-amber-300"
+                  }`}
+                >
+                  {f.level === "critical" ? "⚠ " : "△ "}
+                  {f.text}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+
+      {/* Roster */}
+      <RosterGroup title="Starters" items={players.starter} />
+      <RosterGroup title="Bench" items={players.bench} />
+      <RosterGroup title="Taxi Squad" items={players.taxi} />
+      <RosterGroup title="IR" items={players.ir} />
     </div>
   );
 }
