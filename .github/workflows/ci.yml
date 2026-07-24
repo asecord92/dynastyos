@@ -41,8 +41,9 @@ jobs:
       # Pin ruff — unpinned it floats to whatever released last, and 0.16.0
       # turned on a batch of new default rules (ISC/I001/…) that red-lit the
       # whole repo overnight with pre-existing style nits. Bump deliberately.
-      - run: pip install -r requirements.txt ruff==0.15.21
+      - run: pip install -r requirements.txt ruff==0.15.21 pytest==8.4.1
       - run: ruff check .
+      - run: pytest tests/ -q
       - name: Import smoke test
         env:
           SUPABASE_URL: https://example.supabase.co
