@@ -637,69 +637,73 @@ export default function TradePage() {
           </div>
 
           {mode === "build" && (
-          <div className="grid grid-cols-1 lg:grid-cols-5 gap-6 items-start">
-          {/* Left — trade builder (narrower: it's a compact form, so the dense
-              analysis on the right gets the extra width) */}
-          <div className="lg:col-span-2 bg-gray-50 border rounded-2xl p-5 shadow-sm space-y-5 lg:sticky lg:top-6">
-            <h2 className="text-lg font-semibold">Build Trade</h2>
-
-            <div className="space-y-2">
-              <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">
-                Opponent Team
-              </label>
-              <select
-                value={opponentTeamId}
-                onChange={(e) => setOpponentTeamId(e.target.value)}
-                className="w-full px-3 py-2 rounded-xl border border-gray-200 bg-gray-50 text-sm outline-none focus:border-gray-400"
-              >
-                <option value="">Select a team...</option>
-                {teams
-                  .filter((t) => t.fantrax_team_id !== myTeamId)
-                  .map((t) => (
-                    <option key={t.fantrax_team_id} value={t.fantrax_team_id}>
-                      {t.team_name}
-                    </option>
-                  ))}
-              </select>
-            </div>
-
-            {opponentTeamId && (
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <PlayerSearch
-                  label="They Offer"
-                  players={oppPlayers}
-                  selected={receiving}
-                  onToggle={toggleReceiving}
-                />
-                <PlayerSearch
-                  label="You Give Up"
-                  players={myPlayers}
-                  selected={offering}
-                  onToggle={toggleOffering}
-                />
-              </div>
-            )}
-
-            <button
-              onClick={analyze}
-              disabled={!canAnalyze}
-              className="w-full px-4 py-3 rounded-xl bg-violet-600 text-white text-sm font-medium disabled:opacity-30 disabled:cursor-not-allowed transition hover:bg-violet-700"
-            >
-              {loading ? "Analyzing..." : "Analyze Trade"}
-            </button>
-
-            {error && (
-              <div className="text-sm text-red-300 bg-red-50 border border-red-500/30 rounded-xl p-3">
-                {error}{" "}
-                <button onClick={analyze} disabled={!canAnalyze} className="underline disabled:opacity-40">
-                  Retry
+          <div className="space-y-6">
+            {/* Builder — full-width card on top, mirroring Find Targets */}
+            <div className="bg-gray-50 border rounded-2xl p-5 shadow-sm space-y-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="space-y-1">
+                  <h2 className="text-lg font-semibold">Build Trade</h2>
+                  <p className="text-sm text-gray-500">
+                    Pick an opponent and the players on each side, then analyze the deal.
+                  </p>
+                </div>
+                <button
+                  onClick={analyze}
+                  disabled={!canAnalyze}
+                  className="shrink-0 px-4 py-2 rounded-xl bg-violet-600 text-white text-sm font-medium disabled:opacity-30 disabled:cursor-not-allowed transition hover:bg-violet-700"
+                >
+                  {loading ? "Analyzing..." : "Analyze Trade"}
                 </button>
               </div>
-            )}
-          </div>
 
-          {/* Right — analysis output (wider: the information-dense side) */}
-          <div className="lg:col-span-3 space-y-4">
+              <div className="space-y-2 max-w-sm">
+                <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+                  Opponent Team
+                </label>
+                <select
+                  value={opponentTeamId}
+                  onChange={(e) => setOpponentTeamId(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl border border-gray-200 bg-gray-50 text-sm outline-none focus:border-gray-400"
+                >
+                  <option value="">Select a team...</option>
+                  {teams
+                    .filter((t) => t.fantrax_team_id !== myTeamId)
+                    .map((t) => (
+                      <option key={t.fantrax_team_id} value={t.fantrax_team_id}>
+                        {t.team_name}
+                      </option>
+                    ))}
+                </select>
+              </div>
+
+              {opponentTeamId && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <PlayerSearch
+                    label="They Offer"
+                    players={oppPlayers}
+                    selected={receiving}
+                    onToggle={toggleReceiving}
+                  />
+                  <PlayerSearch
+                    label="You Give Up"
+                    players={myPlayers}
+                    selected={offering}
+                    onToggle={toggleOffering}
+                  />
+                </div>
+              )}
+
+              {error && (
+                <div className="text-sm text-red-300 bg-red-50 border border-red-500/30 rounded-xl p-3">
+                  {error}{" "}
+                  <button onClick={analyze} disabled={!canAnalyze} className="underline disabled:opacity-40">
+                    Retry
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Analysis output — full width, like Find's results */}
             {needsApiKey && <NeedsApiKey feature="Trade analysis" />}
 
             {!streamText && !loading && !needsApiKey && (
@@ -718,7 +722,6 @@ export default function TradePage() {
             {loading && streamText && analyzeStatus && (
               <div className="text-xs text-gray-400 animate-pulse">{analyzeStatus}</div>
             )}
-          </div>
           </div>
           )}
 
