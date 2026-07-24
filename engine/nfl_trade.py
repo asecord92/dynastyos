@@ -157,14 +157,24 @@ def build_nfl_system_prompt(rules: dict) -> str:
 You give direct, defensible recommendations — not balanced summaries. You have a point of view and
 you back it up with specifics. You never hedge without committing to a final answer.
 
+VOICE: Write straight to the manager in the second person — "you", "your roster", "your WRs".
+Never talk about them in the third person ("the manager has…", "this team should…") and never
+address a general audience. Below, "the manager" and "your"/"my" all refer to the same person you
+are advising — speak to them as "you".
+
+NEVER narrate your process or tools. Do not mention web searches, the data provided, or any tool
+limitation — no "based on my research", no "given the persistent tool limitation", no notes about
+what you did, could, or could not check. If a fact can't be confirmed, just tell the manager what
+to verify before pulling the trigger and move on. Open with the substance, not with meta-commentary.
+
 IMPORTANT: Only reference player facts explicitly provided in this prompt — position, team, age,
 injury status, fantasy production, and the value figures given. Do not use training knowledge to
 invent injuries, depth-chart roles, or stats not provided; player situations change frequently.
 
-Data grounding: rosters, ages, and injury designations below come from live Sleeper data and may
-lag reality by up to ~24 hours. If a fact you need is not provided (and not confirmed by a web
-search result when search is available), treat it as unknown — say so explicitly and tell the
-manager what to verify, rather than guessing.
+Data grounding: rosters, ages, and injury designations below come from live data and may lag
+reality by up to ~24 hours. If a fact you need isn't provided, treat it as unknown — say so and
+tell the manager what to verify, rather than guessing. (Don't describe this as a tool or data
+limitation; just name what to double-check.)
 
 League format:
 - {size}-team dynasty league, {fmt} scoring, {sf}
@@ -281,7 +291,7 @@ def build_nfl_trade_prompt(context: dict[str, Any]) -> str:
     hi, lo = max(give_val, get_val), min(give_val, get_val)
     if hi and lo:
         pct = round((hi - lo) / hi * 100)
-        heavier = "manager gives" if give_val > get_val else "manager gets"
+        heavier = "you give" if give_val > get_val else "you get"
         gap = (
             " — within 5%, an even deal by market value"
             if pct <= 5
@@ -318,7 +328,7 @@ def build_nfl_trade_prompt(context: dict[str, Any]) -> str:
         "",
         market_line,
         "" if market_line else None,
-        f"Manager's team: {context['my_team_name']} | "
+        f"Your team: {context['my_team_name']} | "
         f"Window: {league.get('competitive_window') or 'Not set'} | "
         f"Goals: {league.get('goals') or 'Not set'}",
         "",
@@ -328,8 +338,8 @@ def build_nfl_trade_prompt(context: dict[str, Any]) -> str:
         "asset in football ≈ 10,000.",
         "",
         "Proposed trade:",
-        f"  Manager GIVES: {', '.join(_fmt_asset(a) for a in giving) or '(nothing)'}",
-        f"  Manager GETS:  {', '.join(_fmt_asset(a) for a in getting) or '(nothing)'}",
+        f"  You GIVE: {', '.join(_fmt_asset(a) for a in giving) or '(nothing)'}",
+        f"  You GET:  {', '.join(_fmt_asset(a) for a in getting) or '(nothing)'}",
         f"  Value sent: {round(give_val):,} | value received: {round(get_val):,}{gap}",
         unpriced_line,
         roster_block(f"Manager's roster ({context['my_team_name']})", context["my_players"], context["my_picks"]),
@@ -350,15 +360,15 @@ VERDICT
 ACCEPT, DECLINE, or COUNTER — one punchy sentence on why.
 
 ANALYSIS
-3-5 paragraphs. Name the players and picks, cite the points/ppg/positional ranks and ages, and
-argue the call. Cover positional scarcity (QB in superflex), dynasty age/window (weigh each
-player's age against the manager's competitive window), injury flags, per-game production vs raw
-totals (a high total on 17 games is different from the same total on 12), depth impact, and pick
-value. Make the case.
+3-5 paragraphs, written straight to the manager as "you". Name the players and picks, cite the
+points/ppg/positional ranks and ages, and argue the call. Cover positional scarcity (QB in
+superflex), dynasty age/window (weigh each player's age against your competitive window), injury
+flags, per-game production vs raw totals (a high total on 17 games is different from the same total
+on 12), depth impact, and pick value. Make the case.
 
 COUNTER OFFER
 If COUNTER, propose a specific tweak (swap/add/remove a player or pick) that stays within this deal
-and is fair or tilts slightly to the manager. Otherwise note whether a tweak is worth exploring.""",
+and is fair or tilts slightly to you. Otherwise note whether a tweak is worth exploring.""",
     ] if line is not None)
 
 
@@ -451,16 +461,16 @@ def build_nfl_finder_prompt(context: dict[str, Any]) -> str:
     lines = [
         _nfl_today_line(),
         "",
-        f"The manager needs help at {pos}. Below are the best {pos} targets across the league, "
+        f"You need help at {pos}. Below are the best {pos} targets across the league, "
         "ranked by dynasty market value. Points shown are "
         f"{stats_year} regular-season totals in this league's scoring format (gp = games played, "
         "ppg = points per game, WR12-style = league-wide positional rank). `value` is dynasty "
         "market value on ONE scale across all positions — best asset in football ≈ 10,000 — and "
         "your tradeable assets, players and draft picks alike, are priced on that same scale. "
-        "Weigh age and injury flags against the manager's window, and per-game production against "
+        "Weigh age and injury flags against your window, and per-game production against "
         "raw totals.",
         "",
-        f"Manager's team: {league.get('name', 'Unknown')} | "
+        f"Your team: {league.get('name', 'Unknown')} | "
         f"Window: {league.get('competitive_window') or 'Not set'}",
         "",
         f"Acquisition targets at {pos} (id | player | pos team | age | points | value | owner):",
@@ -597,13 +607,13 @@ def build_nfl_add_drop_prompt(context: dict[str, Any]) -> str:
         ask = "Recommend who is most expendable"
         spots_line = (
             "No drop is strictly required (the players already leaving cover the additions), "
-            "but identify who is most expendable if the manager wants to open a spot."
+            "but identify who is most expendable if you want to open a spot."
         )
 
     return "\n".join([
         _nfl_today_line(),
         "",
-        f"The manager is making room on their roster ({context['team_name']}).",
+        f"You're making room on your roster ({context['team_name']}).",
         f"Adding:\n{incoming_lines}",
         f"Already dropping/trading away: {', '.join(outgoing) or 'none'}",
         spots_line,
