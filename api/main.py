@@ -30,6 +30,8 @@ from engine.sleeper_client import (
     get_players as sleeper_get_players,
 )
 from engine.sleeper_sync import build_nfl_rules, compute_pick_inventory, build_roster_items
+from engine import fantasycalc
+from engine.nfl_dynasty import build_payload as build_nfl_dynasty_payload, derive_fc_params
 from engine.nfl_trade import (
     build_nfl_trade_context,
     build_nfl_trade_prompt,
@@ -2287,6 +2289,62 @@ async def sleeper_sync(body: SleeperSyncRequest, user: dict = Depends(get_curren
             "teams": len(roster_upserts),
             "my_team_id": str(my_roster_id) if my_roster_id is not None else None,
         }
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/dashboard/nfl_roster")
+async def dashboard_nfl_roster(body: DashboardRequest, user: dict = Depends(get_current_user)):
+    """Dynasty roster view payload for Sleeper NFL leagues: FantasyCalc market
+    values joined onto the synced roster + picks, plus deterministic age-curve,
+    depth, and roster-window reads (engine/nfl_dynasty.py). No AI call and no
+    dashboard_cache row — the only cached piece is the FantasyCalc response
+    (in-process per settings combo, engine/fantasycalc.py), so the page is
+    always fresh after a sync. `force` refetches FantasyCalc. Named under
+    /dashboard/ so the frontend's useDashboardWidget hook works unchanged."""
+    try:
+        sb = get_supabase()
+        require_league_owner(sb, user, body.league_id)
+
+        def _load():
+            league = (
+                sb.table("leagues").select("rules").eq("id", body.league_id)
+                .single().execute()
+            ).data or {}
+            rows = (
+                sb.table("rosters")
+                .select("team_name, roster_items, draft_picks")
+                .eq("league_id", body.league_id)
+                .eq("fantrax_team_id", body.my_team_id)
+                .limit(1)
+                .execute()
+            ).data
+            return league, (rows[0] if rows else None)
+
+        league, roster_row = await asyncio.to_thread(_load)
+        rules = league.get("rules") or {}
+        if (rules.get("sport") or "").upper() != "NFL":
+            raise HTTPException(status_code=400, detail="Not an NFL league.")
+        if not roster_row:
+            raise HTTPException(
+                status_code=404, detail="No synced roster yet — sync your league first."
+            )
+
+        params = derive_fc_params(rules)
+        fc = await asyncio.to_thread(
+            fantasycalc.get_values,
+            params["num_qbs"], params["ppr"], params["num_teams"], body.force,
+        )
+        payload = build_nfl_dynasty_payload(
+            roster_row.get("roster_items"), roster_row.get("draft_picks"),
+            rules, fc["entries"],
+        )
+        payload["team_name"] = roster_row.get("team_name") or "Your Team"
+        payload["values_updated_at"] = fc["fetched_at"]
+        return payload
     except HTTPException:
         raise
     except Exception as e:
