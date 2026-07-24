@@ -723,15 +723,30 @@ export default function TradePage() {
           )}
 
           {mode === "find" && (
-            <div className="grid grid-cols-1 lg:grid-cols-5 gap-6 items-start">
-              {/* Left — category picker (narrow; results on the right get the width) */}
-              <div className="lg:col-span-2 bg-gray-50 border rounded-2xl p-5 shadow-sm space-y-4 lg:sticky lg:top-6">
-                <h2 className="text-lg font-semibold">Find Targets</h2>
-                <p className="text-sm text-gray-500">
-                  {isNFL
-                    ? "Pick a position you need help at. We'll rank the best targets across the league by last season's fantasy points."
-                    : "Pick a category you need help in. We'll rank the best targets across the league by their production in that category."}
-                </p>
+            <div className="space-y-6">
+              {/* Picker toolbar — full width across the top, not a skinny column */}
+              <div className="bg-gray-50 border rounded-2xl p-5 shadow-sm space-y-3">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="space-y-1">
+                    <h2 className="text-lg font-semibold">Find Targets</h2>
+                    <p className="text-sm text-gray-500">
+                      {isNFL
+                        ? "Pick a position you need help at — we'll rank the best targets across the league."
+                        : "Pick a category you need help in — we'll rank the best targets across the league."}
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => runFinder()}
+                    disabled={finderLoading || !myTeamId}
+                    className="shrink-0 px-4 py-2 rounded-xl bg-violet-600 text-white text-sm font-medium disabled:opacity-30 disabled:cursor-not-allowed transition hover:bg-violet-700"
+                  >
+                    {finderLoading
+                      ? "Finding..."
+                      : isNFL
+                      ? "Find my weakest position"
+                      : "Find my weakest category"}
+                  </button>
+                </div>
                 <div className="flex flex-wrap gap-2">
                   {(isNFL ? NFL_POSITIONS : CATEGORIES).map((cat) => (
                     <button
@@ -748,17 +763,6 @@ export default function TradePage() {
                     </button>
                   ))}
                 </div>
-                <button
-                  onClick={() => runFinder()}
-                  disabled={finderLoading || !myTeamId}
-                  className="w-full px-4 py-3 rounded-xl bg-violet-600 text-white text-sm font-medium disabled:opacity-30 disabled:cursor-not-allowed transition hover:bg-violet-700"
-                >
-                  {finderLoading
-                    ? "Finding..."
-                    : isNFL
-                    ? "Find my weakest position"
-                    : "Find my weakest category"}
-                </button>
                 {finderError && (
                   <div className="text-sm text-red-300 bg-red-50 border border-red-500/30 rounded-xl p-3">
                     {finderError}
@@ -766,108 +770,100 @@ export default function TradePage() {
                 )}
               </div>
 
-              {/* Right — results (wider: candidate list, packages, recommendation) */}
-              <div className="lg:col-span-3 space-y-4">
-                {needsApiKey && <NeedsApiKey feature="Trade Finder" />}
+              {/* Results — full width, so lists become grids and prose wraps wide
+                  (fewer lines = far less scrolling than the old narrow column) */}
+              {needsApiKey && <NeedsApiKey feature="Trade Finder" />}
 
-                {!finder && !finderLoading && !needsApiKey && (
-                  <div className="bg-gray-50 border rounded-2xl p-6 shadow-sm text-sm text-gray-400">
-                    Pick a {isNFL ? "position" : "category"} to see acquisition targets.
-                  </div>
-                )}
-                {finderLoading && (
-                  <div className="bg-gray-50 border rounded-2xl p-6 shadow-sm text-sm text-gray-400 animate-pulse">
-                    {finderStatus || "Scanning the league..."}
-                  </div>
-                )}
-                {finder && !finderLoading && (
-                  <>
-                    <div className="bg-gray-50 border rounded-2xl p-6 shadow-sm space-y-3">
+              {!finder && !finderLoading && !needsApiKey && (
+                <div className="bg-gray-50 border rounded-2xl p-6 shadow-sm text-sm text-gray-400">
+                  Pick a {isNFL ? "position" : "category"} above to see acquisition targets.
+                </div>
+              )}
+              {finderLoading && (
+                <div className="bg-gray-50 border rounded-2xl p-6 shadow-sm text-sm text-gray-400 animate-pulse">
+                  {finderStatus || "Scanning the league..."}
+                </div>
+              )}
+              {finder && !finderLoading && (
+                <>
+                  <div className="bg-gray-50 border rounded-2xl p-5 shadow-sm space-y-3">
+                    <div className="flex items-center justify-between gap-3">
                       <div className="text-xs font-semibold uppercase tracking-widest text-gray-400">
                         Targets for {finder.target_category}
                       </div>
-                      <div className="divide-y divide-gray-50 max-h-80 overflow-y-auto">
+                      <span className="text-xs text-gray-400">Tap a target to prefill the builder</span>
+                    </div>
+                    {finder.candidates.length === 0 ? (
+                      <p className="text-sm text-gray-400 py-2">No candidates found.</p>
+                    ) : (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2">
                         {finder.candidates.map((c) => (
                           <button
                             key={c.fantrax_id}
                             onClick={() => targetPlayer(c)}
-                            className="w-full py-2.5 flex items-center justify-between gap-3 text-left hover:bg-gray-50 rounded-lg px-2 transition"
+                            className="text-left border border-gray-100 rounded-xl p-3 space-y-1 transition hover:bg-gray-50 hover:border-gray-200"
                           >
-                            <div className="min-w-0">
-                              <div className="flex items-center gap-2 flex-wrap">
-                                <span className="text-sm font-medium text-gray-900">{c.name}</span>
-                                <span className="text-xs text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded">
-                                  {c.position}
-                                </span>
-                                <span className="text-xs text-gray-400">
-                                  {isNFL ? c.team : `$${c.salary}`}
-                                </span>
-                              </div>
-                              <p className="text-xs text-gray-400 mt-0.5">{c.owner_team_name}</p>
-                            </div>
-                            <span className="shrink-0 text-right">
-                              <span className="block text-sm font-semibold text-gray-900">
+                            <div className="flex items-baseline justify-between gap-2">
+                              <span className="text-sm font-medium text-gray-900 truncate">{c.name}</span>
+                              <span className="shrink-0 text-sm font-semibold text-gray-900">
                                 {isNFL ? `${c.stat_value} pts` : `${finder.target_category} ${c.stat_value}`}
                               </span>
-                              {c.value != null && (
-                                <span className="block text-xs text-gray-400">val {c.value}</span>
-                              )}
-                            </span>
+                            </div>
+                            <div className="flex items-center gap-2 text-xs text-gray-400">
+                              <span className="bg-gray-100 px-1.5 py-0.5 rounded">{c.position}</span>
+                              <span>{isNFL ? c.team : `$${c.salary}`}</span>
+                              {c.value != null && <span>val {c.value}</span>}
+                              <span className="ml-auto truncate">{c.owner_team_name}</span>
+                            </div>
                           </button>
                         ))}
-                        {finder.candidates.length === 0 && (
-                          <p className="text-sm text-gray-400 py-2">No candidates found.</p>
-                        )}
                       </div>
-                      <p className="text-xs text-gray-400">
-                        Click a target to prefill the trade builder.
-                      </p>
-                    </div>
-                    {finder.packages?.length > 0 && (
-                      <div className="bg-gray-50 border rounded-2xl p-5 shadow-sm space-y-3">
-                        <div className="text-xs font-semibold uppercase tracking-widest text-gray-400">
-                          Suggested packages
-                        </div>
-                        <div className="space-y-2.5">
-                          {finder.packages.map((pkg, i) => (
-                            <div key={i} className="border border-gray-100 rounded-xl p-3 space-y-1.5">
-                              <div className="text-sm text-gray-900">
-                                <span className="font-medium">Send</span>{" "}
-                                {pkg.offer.map((p) => p.name).join(", ")}{" "}
-                                <span className="text-gray-400">→</span>{" "}
-                                <span className="font-medium">Get</span>{" "}
-                                {pkg.targets.map((p) => p.name).join(", ")}
-                              </div>
-                              <div className="text-xs text-gray-400">
-                                {pkg.owner_team_name}
-                                {pkg.rationale ? ` · ${pkg.rationale}` : ""}
-                              </div>
-                              <button
-                                onClick={() => loadPackage(pkg)}
-                                className="text-xs font-medium text-violet-600 hover:text-violet-300"
-                              >
-                                Load into Build Trade →
-                              </button>
+                    )}
+                  </div>
+                  {finder.packages?.length > 0 && (
+                    <div className="bg-gray-50 border rounded-2xl p-5 shadow-sm space-y-3">
+                      <div className="text-xs font-semibold uppercase tracking-widest text-gray-400">
+                        Suggested packages
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                        {finder.packages.map((pkg, i) => (
+                          <div key={i} className="border border-gray-100 rounded-xl p-3 space-y-1.5">
+                            <div className="text-sm text-gray-900">
+                              <span className="font-medium">Send</span>{" "}
+                              {pkg.offer.map((p) => p.name).join(", ")}{" "}
+                              <span className="text-gray-400">→</span>{" "}
+                              <span className="font-medium">Get</span>{" "}
+                              {pkg.targets.map((p) => p.name).join(", ")}
                             </div>
-                          ))}
-                        </div>
+                            <div className="text-xs text-gray-400">
+                              {pkg.owner_team_name}
+                              {pkg.rationale ? ` · ${pkg.rationale}` : ""}
+                            </div>
+                            <button
+                              onClick={() => loadPackage(pkg)}
+                              className="text-xs font-medium text-violet-600 hover:text-violet-300"
+                            >
+                              Load into Build Trade →
+                            </button>
+                          </div>
+                        ))}
                       </div>
-                    )}
-                    {finder.analysis ? (
-                      <div className="bg-gray-50 border rounded-2xl p-5 shadow-sm">
-                        <div className="text-xs font-semibold uppercase tracking-widest text-gray-400 mb-3">
-                          Recommendation
-                        </div>
-                        <MarkdownContent text={finder.analysis} />
+                    </div>
+                  )}
+                  {finder.analysis ? (
+                    <div className="bg-gray-50 border rounded-2xl p-5 shadow-sm">
+                      <div className="text-xs font-semibold uppercase tracking-widest text-gray-400 mb-3">
+                        Recommendation
                       </div>
-                    ) : (
-                      <div className="bg-gray-50 border rounded-2xl p-5 shadow-sm text-sm text-gray-400 animate-pulse">
-                        {finderStatus || "Analyzing targets and building offers…"}
-                      </div>
-                    )}
-                  </>
-                )}
-              </div>
+                      <MarkdownContent text={finder.analysis} />
+                    </div>
+                  ) : (
+                    <div className="bg-gray-50 border rounded-2xl p-5 shadow-sm text-sm text-gray-400 animate-pulse">
+                      {finderStatus || "Analyzing targets and building offers…"}
+                    </div>
+                  )}
+                </>
+              )}
             </div>
           )}
 
