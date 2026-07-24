@@ -23,6 +23,13 @@ _NON_STARTING = {"BN", "TAXI", "IR"}
 # Statuses that can actually take a lineup slot this week.
 _STARTABLE = {"starter", "bench"}
 
+# Posture thresholds: a position's startable market value vs the league average
+# for that position. Tunable; kept as constants so tuning never needs a cache
+# rebuild — posture is computed on read, never persisted.
+_THIN_RATIO = 0.6
+_SURPLUS_RATIO = 1.4
+_POSTURE_POSITIONS = ("QB", "RB", "WR", "TE")
+
 
 def age_band(position: str | None, age) -> str | None:
     """ascending | prime | aging | cliff, or None (no curve / unknown age)."""
@@ -239,6 +246,67 @@ def roster_window(players: list[dict], picks: list[dict], rules: dict,
         "stage": round(stage, 2),
         "pick_share": round(pick_share, 3),
     }
+
+
+def _startable_value_by_pos(players: list[dict]) -> dict[str, float]:
+    """Sum of dynasty market value at each position among players who can take a
+    lineup slot (starters + bench; taxi/IR excluded)."""
+    out: dict[str, float] = {}
+    for p in players:
+        if p.get("status") in _STARTABLE and p.get("value"):
+            pos = p.get("position")
+            if pos in _POSTURE_POSITIONS:
+                out[pos] = out.get(pos, 0) + p["value"]
+    return out
+
+
+def league_position_averages(players_by_team: dict[str, list]) -> dict[str, float]:
+    """Average startable market value per position across all teams — the
+    reference line thin/surplus are measured against. Empty when no team has
+    valued players."""
+    n = max(len(players_by_team), 1)
+    totals: dict[str, float] = {}
+    for players in players_by_team.values():
+        for pos, val in _startable_value_by_pos(players).items():
+            totals[pos] = totals.get(pos, 0) + val
+    return {pos: total / n for pos, total in totals.items()}
+
+
+def team_posture(players: list[dict], picks: list[dict], rules: dict,
+                 averages: dict[str, float], standing: dict | None = None) -> dict:
+    """A team's roster-construction stance, composed from the roster-view
+    primitives: dynasty window, positions it's thin at (a real need you can sell
+    into — football has no punting, every slot must be filled each week),
+    positions it's deep at (its surplus, what it would pay you with), and whether
+    it's rich or poor in draft capital. Pure; thresholds are tunable constants,
+    never persisted. Returns {window, thin[], surplus[], picks}."""
+    # roster_window needs an age band per player; the trade valuation path
+    # doesn't set one, so attach it here (cheap, pure) without mutating callers'
+    # dicts.
+    banded = [dict(p, band=age_band(p.get("position"), p.get("age"))) for p in players]
+    verdict = roster_window(banded, picks, rules, standing).get("verdict")
+
+    mine = _startable_value_by_pos(players)
+    thin, surplus = [], []
+    for pos in _POSTURE_POSITIONS:
+        avg = averages.get(pos, 0)
+        if avg <= 0:
+            continue
+        have = mine.get(pos, 0)
+        if have < _THIN_RATIO * avg:
+            thin.append(pos)
+        elif have > _SURPLUS_RATIO * avg:
+            surplus.append(pos)
+
+    picks_stance = None
+    if standing:
+        rank, size = standing["pick_rank"], standing["size"]
+        if rank <= max(1, size // 3):
+            picks_stance = "rich"
+        elif rank > (size * 2) // 3:
+            picks_stance = "poor"
+
+    return {"window": verdict, "thin": thin, "surplus": surplus, "picks": picks_stance}
 
 
 def build_payload(roster_items: list | None, draft_picks: list | None,

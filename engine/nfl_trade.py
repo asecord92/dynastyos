@@ -15,7 +15,13 @@ from typing import Any
 from .supabase_client import get_supabase
 from .sleeper_client import get_season_stats
 from . import fantasycalc
-from .nfl_dynasty import derive_fc_params, index_fc
+from .nfl_dynasty import (
+    derive_fc_params,
+    index_fc,
+    league_position_averages,
+    league_standing,
+    team_posture,
+)
 
 
 def _market_values(rules: dict) -> tuple[dict, dict]:
@@ -231,6 +237,69 @@ def _fmt_asset(a: dict) -> str:
     )
 
 
+# Short window tag for a posture line — the roster-view verdict is a bit long
+# for an inline "Team: …, thin at WR" summary.
+_WINDOW_TAG = {
+    "Ascending": "ascending",
+    "Balanced": "balanced",
+    "Win-now": "win-now",
+    "Aging — sell high": "aging/selling",
+}
+
+
+def _format_nfl_posture(name: str, posture: dict) -> str:
+    """One compact line of a team's roster-construction stance, or "" if there's
+    nothing notable. The prompt-facing slice — mirrors the baseball
+    _format_posture; never dumps the underlying numbers."""
+    parts = []
+    tag = _WINDOW_TAG.get((posture or {}).get("window"))
+    if tag:
+        parts.append(tag)
+    if posture.get("picks"):
+        parts.append(f"{posture['picks']} in picks")
+    if posture.get("thin"):
+        parts.append(f"thin at {', '.join(posture['thin'])}")
+    if posture.get("surplus"):
+        parts.append(f"surplus at {', '.join(posture['surplus'])}")
+    if not parts:
+        return ""
+    return f"{name}: " + ", ".join(parts)
+
+
+def _nfl_posture_map(rosters: list, by_team: dict, fc_players: dict,
+                     fc_picks: dict, rules: dict, team_ids) -> dict[str, dict]:
+    """{team_id: {team_name, window, thin, surplus, picks}} for the given teams.
+    Pure math over already-loaded, already-valued rosters — no query."""
+    averages = league_position_averages(by_team)
+    roster_by_tid = {str(r.get("fantrax_team_id")): r for r in rosters}
+    out = {}
+    for tid in team_ids:
+        raw = roster_by_tid.get(str(tid)) or {}
+        picks = _pick_assets(raw.get("draft_picks"), fc_picks)
+        standing = league_standing(rosters, fc_players, fc_picks, tid)
+        out[str(tid)] = {
+            "team_name": raw.get("team_name") or "",
+            **team_posture(by_team.get(str(tid), by_team.get(tid, [])), picks,
+                           rules, averages, standing),
+        }
+    return out
+
+
+def _nfl_posture_block(context: dict) -> str | None:
+    """The analyze prompt's posture section — your stance and theirs, so the
+    model can argue fit (who a player helps more) not just raw value. None when
+    neither side has anything notable."""
+    mine = _format_nfl_posture("Your team", context.get("my_posture") or {})
+    theirs = _format_nfl_posture(
+        context.get("opp_team_name") or "Their team", context.get("opp_posture") or {}
+    )
+    lines = [ln for ln in (mine, theirs) if ln]
+    if not lines:
+        return None
+    return "\nRoster posture (thin = a need they'd pay up to fill; surplus = depth to deal from):\n" + \
+        "\n".join(f"  {ln}" for ln in lines)
+
+
 # ---------------------------------------------------------------------------
 # Trade analyze
 # ---------------------------------------------------------------------------
@@ -242,9 +311,10 @@ async def build_nfl_trade_context(
     receiving_ids: list[str],
 ) -> dict[str, Any]:
     sb = get_supabase()
-    league, stats, rosters, fc_players, fc_picks = await _load_blocking(
-        sb, league_id, [my_team_id, opponent_team_id]
-    )
+    # Load the whole league (not just the two teams) so the counterparty's
+    # thin/surplus reads are league-relative — one wider query, same pattern as
+    # the roster endpoint.
+    league, stats, rosters, fc_players, fc_picks = await _load_blocking(sb, league_id)
     rules = league.get("rules") or {}
     fmt_key = _format_key(rules)
     season = stats_season()
@@ -253,11 +323,19 @@ async def build_nfl_trade_context(
     if not my or not opp:
         raise ValueError("Could not load both rosters.")
 
-    my_players = [dict(it) for it in (my.get("roster_items") or [])]
-    opp_players = [dict(it) for it in (opp.get("roster_items") or [])]
-    _value_players(my_players + opp_players, stats, fmt_key, fc_players)
+    # Value every team on one scale — needed for the league averages behind
+    # posture, and for the two trading rosters' own asset values.
+    by_team = {r["fantrax_team_id"]: [dict(it) for it in (r.get("roster_items") or [])]
+               for r in rosters}
+    for items in by_team.values():
+        _value_players(items, stats, fmt_key, fc_players)
+    my_players = by_team[my_team_id]
+    opp_players = by_team[opponent_team_id]
     my_picks = _pick_assets(my.get("draft_picks"), fc_picks)
     opp_picks = _pick_assets(opp.get("draft_picks"), fc_picks)
+
+    postures = _nfl_posture_map(rosters, by_team, fc_players, fc_picks, rules,
+                                [my_team_id, opponent_team_id])
 
     by_id = {a["id"]: a for a in (my_players + opp_players + my_picks + opp_picks)}
     return {
@@ -273,6 +351,8 @@ async def build_nfl_trade_context(
         "opp_picks": opp_picks,
         "by_id": by_id,
         "market_available": bool(fc_players),
+        "my_posture": postures.get(str(my_team_id)),
+        "opp_posture": postures.get(str(opponent_team_id)),
         "offering_ids": offering_ids,
         "receiving_ids": receiving_ids,
     }
@@ -342,8 +422,9 @@ def build_nfl_trade_prompt(context: dict[str, Any]) -> str:
         f"  You GET:  {', '.join(_fmt_asset(a) for a in getting) or '(nothing)'}",
         f"  Value sent: {round(give_val):,} | value received: {round(get_val):,}{gap}",
         unpriced_line,
-        roster_block(f"Manager's roster ({context['my_team_name']})", context["my_players"], context["my_picks"]),
-        roster_block(f"Opponent's roster ({context['opp_team_name']})", context["opp_players"], context["opp_picks"]),
+        _nfl_posture_block(context),
+        roster_block(f"Your roster ({context['my_team_name']})", context["my_players"], context["my_picks"]),
+        roster_block(f"Their roster ({context['opp_team_name']})", context["opp_players"], context["opp_picks"]),
         "",
         """Before finalizing your verdict, use web search (a few targeted searches at most) to verify
 the current situation of the key players in this trade — injuries, depth-chart or role changes,
@@ -364,11 +445,15 @@ ANALYSIS
 points/ppg/positional ranks and ages, and argue the call. Cover positional scarcity (QB in
 superflex), dynasty age/window (weigh each player's age against your competitive window), injury
 flags, per-game production vs raw totals (a high total on 17 games is different from the same total
-on 12), depth impact, and pick value. Make the case.
+on 12), depth impact, and pick value. Make the case. Use the roster posture: a player who fills the
+other side's thin spot is worth more to them than raw market value, and their surplus is what you can
+most easily pry loose — factor that into whether they'd actually say yes.
 
 COUNTER OFFER
 If COUNTER, propose a specific tweak (swap/add/remove a player or pick) that stays within this deal
-and is fair or tilts slightly to you. Otherwise note whether a tweak is worth exploring.""",
+and is fair or tilts slightly to you. Aim the ask at their surplus and lead with a piece that fills
+their thin spot, so the counter is one they'd realistically accept. Otherwise note whether a tweak is
+worth exploring.""",
     ] if line is not None)
 
 
@@ -439,6 +524,12 @@ async def build_nfl_finder_context(
     my_picks = _pick_assets(my.get("draft_picks"), fc_picks)
     my_assets = my_players + my_picks
 
+    # Posture for every owner of a shortlisted target, plus your own — pure math
+    # over rosters already loaded and valued, so no extra query. Turns the finder
+    # from a wishlist into matchmaking: who's thin where, who has picks to spend.
+    posture_tids = {my_team_id, *(c["owner_team_id"] for c in candidates)}
+    postures = _nfl_posture_map(rosters, by_team, fc_players, fc_picks, rules, posture_tids)
+
     return {
         "sport": "NFL",
         "league": league,
@@ -448,6 +539,8 @@ async def build_nfl_finder_context(
         "candidates": candidates,
         "my_assets": my_assets,
         "market_available": bool(fc_players),
+        "team_postures": postures,
+        "my_team_id": my_team_id,
     }
 
 
@@ -481,6 +574,27 @@ def build_nfl_finder_prompt(context: dict[str, Any]) -> str:
     for a in sorted(my_assets, key=lambda x: (x.get("value") or 0), reverse=True):
         lines.append(f"  {a['id']} | {_fmt_asset(a)}")
 
+    # Posture block: your stance and each owning team's, so offers target owners
+    # who actually need what you're deep in — deduped, in candidate order.
+    postures = context.get("team_postures") or {}
+    my_line = _format_nfl_posture("Your team", postures.get(str(context.get("my_team_id"))) or {})
+    rival_lines, seen = [], set()
+    for c in candidates:
+        tid = str(c["owner_team_id"])
+        if tid in seen:
+            continue
+        seen.add(tid)
+        p = postures.get(tid) or {}
+        line = _format_nfl_posture(p.get("team_name") or c["owner_team_name"], p)
+        if line:
+            rival_lines.append(f"  {line}")
+    if my_line or rival_lines:
+        lines += ["", "Roster posture (thin = a need they'd pay up to fill; surplus = depth to "
+                  "deal from):"]
+        if my_line:
+            lines.append(f"  {my_line}")
+        lines += rival_lines
+
     if not context.get("market_available", True):
         lines.insert(2, "MARKET VALUES ARE UNAVAILABLE right now — assets show as unpriced. Do not "
                         "claim any package is balanced; reason qualitatively from production, age "
@@ -493,7 +607,9 @@ def build_nfl_finder_prompt(context: dict[str, Any]) -> str:
         "Aim for total value sent within ~15% of the target's market value — check the arithmetic, "
         "because a package that falls far short is one the other owner simply declines. Favor "
         "packaging depth + a pick to land a clear upgrade rather than a straight swap; a single "
-        "mid-tier player almost never buys an elite one. Never invent players, ids, or stats.",
+        "mid-tier player almost never buys an elite one. Prefer targets whose owner is thin where "
+        "you're deep, and lead your offer with your surplus and (for a pick-poor owner) a pick — "
+        "that's what makes a deal they'd actually take. Never invent players, ids, or stats.",
         "",
         "Write 2-4 short paragraphs, then end with a fenced ```json block (nothing after it) using the "
         "ids above, in exactly this schema:",
