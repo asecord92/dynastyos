@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
 import { authedFetch } from "../lib/useDashboardWidget";
-import { aiIssueFromDetail, useAiStatus } from "../lib/aiStatus";
+import { aiErrorMessage, aiIssueFromDetail, useAiStatus } from "../lib/aiStatus";
 import { NeedsApiKey } from "./ui/NeedsApiKey";
 import { Spinner } from "./ui/Spinner";
 
@@ -236,9 +236,7 @@ export function AddDropPanel({
         } else if (evt.type === "error") {
           const issue = aiIssueFromDetail(evt.detail);
           if (issue) reportIssue(issue);
-          else if (evt.detail === "rate_limited")
-            setError("Anthropic is rate-limiting your key — try again in a moment.");
-          else setError(evt.detail ?? "Something went wrong.");
+          else setError(aiErrorMessage(evt.detail));
         }
       };
       const reader = res.body.getReader();

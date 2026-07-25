@@ -2577,6 +2577,12 @@ class _FenceHoldback:
         return ""
 
 
+class TruncatedResponseError(Exception):
+    """The model hit `max_tokens` mid-answer, so the text is incomplete. Not an
+    SDK error — the stream ends cleanly — which is exactly why we raise our own:
+    without it a half-written response looks like a successful one."""
+
+
 def _ai_ndjson_lines(ai, *, status_label: str, text_mapper=None, collect=None,
                      failed=None, done_event=True, **stream_kwargs):
     """Iterate one Anthropic stream as ndjson lines. Answer text becomes `text`
@@ -2586,7 +2592,9 @@ def _ai_ndjson_lines(ai, *, status_label: str, text_mapper=None, collect=None,
     in Starlette's threadpool, keeping the sync SDK off the event loop, and the
     metering wrapper (_LoggedStreamManager) logs usage on context exit exactly
     as before. `collect` accumulates the full raw text for post-processing;
-    `failed` (a list) is appended to on error so callers can skip finalization."""
+    `failed` (a list) is appended to on error so callers can skip finalization —
+    including a `max_tokens` truncation, which is a clean stream end, not a
+    raised error."""
     last = time.monotonic()
 
     def line(obj: dict) -> str:
@@ -2594,6 +2602,7 @@ def _ai_ndjson_lines(ai, *, status_label: str, text_mapper=None, collect=None,
         last = time.monotonic()
         return _ndjson(obj)
 
+    truncated = False
     try:
         # Mark the phase transition immediately — otherwise the last prep status
         # ("Pulling live stats…") lingers on screen into the thinking phase.
@@ -2614,7 +2623,18 @@ def _ai_ndjson_lines(ai, *, status_label: str, text_mapper=None, collect=None,
                     yield line({"type": "status", "label": "Searching the web…"})
                 elif time.monotonic() - last >= _STATUS_INTERVAL_S:
                     yield line({"type": "status", "label": status_label})
-        if done_event:
+            # Hitting the cap ends the stream normally — no exception — so
+            # nothing downstream would notice on its own. Thinking tokens share
+            # max_tokens with the answer, so an unlucky long think can truncate
+            # a request that usually fits. Left undetected, the finder parses a
+            # half-written ```json block and blames the parser.
+            snapshot = getattr(s, "current_message_snapshot", None)
+            truncated = getattr(snapshot, "stop_reason", None) == "max_tokens"
+        if truncated:
+            if failed is not None:
+                failed.append(TruncatedResponseError())
+            yield _ndjson({"type": "error", "detail": "truncated"})
+        elif done_event:
             yield _ndjson({"type": "done"})
     except anthropic.APIStatusError as e:
         traceback.print_exc()
@@ -2958,7 +2978,11 @@ async def trade_finder(
             failed=failed,
             done_event=False,
             model=MODEL_TRADE,
-            max_tokens=8000,
+            # Roomier than the other two trade calls: the finder writes prose
+            # AND a ```json package block that gets parsed, so a truncation here
+            # loses the packages entirely rather than just clipping a sentence.
+            # Opus 5 also writes longer than 4.8 at the same settings.
+            max_tokens=16000,
             thinking=_ADAPTIVE_THINKING,
             system=prep["system_prompt"],
             messages=[{"role": "user", "content": prep["prompt"]}],
