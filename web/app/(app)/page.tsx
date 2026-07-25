@@ -153,7 +153,8 @@ export default function DashboardPage() {
             <h2 className="text-xl font-semibold">Welcome to DynastyOS 👋</h2>
             <p className="text-sm text-gray-500 mt-2 max-w-md mx-auto leading-relaxed">
               Connect your first league to load your dashboard — rosters, standings,
-              start/sit, waivers, and the AI trade tools.
+              start/sit, waivers, and the AI trade tools. Settings is also where you
+              add your Anthropic API key, which is what powers the AI features.
             </p>
           </div>
           <Link
