@@ -44,6 +44,10 @@ export function isTimeoutError(e: unknown): boolean {
 /**
  * fetch() wrapper that attaches the Supabase access token and JSON headers.
  * Use for any authenticated call to the backend (GET, POST, streaming).
+ *
+ * FormData bodies are left without a Content-Type on purpose — the browser has
+ * to set it itself so the multipart boundary is included. Forcing JSON here
+ * silently breaks file uploads.
  */
 export async function authedFetch(
   path: string,
@@ -52,6 +56,7 @@ export async function authedFetch(
 ): Promise<Response> {
   const token = await sessionToken();
   const { signal, ...rest } = init;
+  const isMultipart = typeof FormData !== "undefined" && rest.body instanceof FormData;
   const fallbackSignal =
     typeof AbortSignal !== "undefined" && "timeout" in AbortSignal
       ? AbortSignal.timeout(opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS)
@@ -60,7 +65,7 @@ export async function authedFetch(
     ...rest,
     signal: signal ?? fallbackSignal,
     headers: {
-      "Content-Type": "application/json",
+      ...(isMultipart ? {} : { "Content-Type": "application/json" }),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(init.headers ?? {}),
     },

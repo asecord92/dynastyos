@@ -4,6 +4,7 @@ import { useState } from "react";
 import type { AnalyzeResult } from "../lib/types";
 import { useLeague } from "../lib/useLeague";
 import { supabase } from "../lib/supabaseClient";
+import { authedFetch } from "../lib/useDashboardWidget";
 
 export function UploadAnalyze({
   onData,
@@ -35,7 +36,7 @@ export function UploadAnalyze({
       const form = new FormData();
       form.append("file", file);
 
-      const res = await fetch(`/api/roster/analyze?mode=${mode}`, {
+      const res = await authedFetch(`/api/roster/analyze?mode=${mode}`, {
         method: "POST",
         body: form,
       });
