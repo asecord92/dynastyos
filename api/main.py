@@ -2169,30 +2169,61 @@ async def compute_category_ranks_endpoint(
     return {"status": "started"}
 
 
+# Roster CSVs are a few hundred rows; anything near this is abuse, not a roster.
+_MAX_CSV_UPLOAD_BYTES = 2 * 1024 * 1024
+
+
 @app.post("/roster/analyze")
 async def roster_analyze(
     file: UploadFile = File(...),
     mode: str = Query(default="in_season"),
+    _user: dict = Depends(get_current_user),
 ):
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp:
-        content = await file.read()
-        tmp.write(content)
-        tmp_path = tmp.name
+    # Read in chunks and bail past the cap, so an oversized upload can't be
+    # buffered whole before we reject it. The temp file is removed in `finally`
+    # — it used to be written with delete=False and never cleaned up, which on
+    # an unauthenticated endpoint meant anyone could fill the disk.
+    content = b""
+    while chunk := await file.read(64 * 1024):
+        content += chunk
+        if len(content) > _MAX_CSV_UPLOAD_BYTES:
+            raise HTTPException(status_code=413, detail="CSV is too large (2 MB max).")
 
-    return analyze_roster_from_csv(tmp_path, rules, mode=mode)
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp:
+            tmp.write(content)
+            tmp_path = tmp.name
+        return analyze_roster_from_csv(tmp_path, rules, mode=mode)
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
 
 @app.get("/fantrax/leagues")
-async def fantrax_leagues(user_secret_id: str = Query(...)):
+async def fantrax_leagues(
+    user_secret_id: str = Query(...),
+    _user: dict = Depends(get_current_user),
+):
     try:
         leagues = get_leagues(user_secret_id)
         return {"leagues": leagues}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        # Don't echo the upstream error back — it's a Fantrax-side message about
+        # someone's Secret ID, and the client only needs to know it failed.
+        traceback.print_exc()
+        raise HTTPException(status_code=502, detail="Couldn't reach Fantrax. Check your Secret ID.")
 
 
 @app.get("/sleeper/leagues")
-async def sleeper_leagues(username: str = Query(...), season: int = Query(None)):
+async def sleeper_leagues(
+    username: str = Query(...),
+    season: int = Query(None),
+    _user: dict = Depends(get_current_user),
+):
     """Resolve a Sleeper username and list their NFL leagues for a season
     (falling back to the prior season in the offseason)."""
     try:
@@ -2219,9 +2250,9 @@ async def sleeper_leagues(username: str = Query(...), season: int = Query(None))
         }
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=502, detail="Couldn't reach Sleeper. Try again.")
 
 
 @app.post("/sleeper/sync")

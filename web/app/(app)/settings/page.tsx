@@ -273,7 +273,9 @@ export default function SettingsPage() {
     setConnectMsg(null);
     setConnectMsgTone("error");
     try {
-      const res = await fetch(`/api/fantrax/leagues?user_secret_id=${secretId}`);
+      const res = await authedFetch(
+        `/api/fantrax/leagues?user_secret_id=${encodeURIComponent(secretId)}`
+      );
       if (!res.ok) throw new Error(await res.text());
       const json = await res.json();
       const fetched: FantraxLeague[] = json.leagues ?? [];
@@ -302,7 +304,9 @@ export default function SettingsPage() {
     setConnectMsg(null);
     setConnectMsgTone("error");
     try {
-      const res = await fetch(`/api/sleeper/leagues?username=${encodeURIComponent(sleeperUsername)}`);
+      const res = await authedFetch(
+        `/api/sleeper/leagues?username=${encodeURIComponent(sleeperUsername)}`
+      );
       if (!res.ok) throw new Error(await res.text());
       const json = await res.json();
       setSleeperUserId(json.user_id ?? "");
