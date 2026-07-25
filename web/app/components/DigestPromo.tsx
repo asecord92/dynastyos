@@ -74,7 +74,8 @@ export function DigestPromo({ leagueId }: { leagueId: string }) {
           </div>
           <p className="text-sm text-gray-500 mt-1 leading-relaxed">
             A morning email brief for this league — top news, today&apos;s lineup calls, and the
-            waiver move to make, around 9 AM PT. Off by default; one tap to join.
+            waiver move to make, around 9 AM PT. Off by default; one tap to join. It&apos;s
+            written fresh daily, so it uses your Anthropic key each morning.
           </p>
           {err && <p className="text-xs text-red-500 mt-1">{err}</p>}
         </div>

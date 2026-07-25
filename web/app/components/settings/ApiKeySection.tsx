@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { authedFetch } from "../../lib/useDashboardWidget";
+import { KeyUsageNote } from "./KeyUsageNote";
 
 async function readDetail(res: Response): Promise<string> {
   try {
@@ -150,6 +151,7 @@ export function ApiKeySection({ onSaved }: { onSaved?: () => void }) {
           {keyError}
         </div>
       )}
+      <KeyUsageNote />
     </div>
   );
 }

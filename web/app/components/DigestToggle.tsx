@@ -58,6 +58,12 @@ export function DigestToggle({ leagueId }: { leagueId: string }) {
         A morning brief for this league — top news, today&apos;s lineup calls, and the waiver
         move to make — sent to your login email.
       </p>
+      {/* The only AI spend that happens while they're not in the app — worth
+          saying plainly next to the switch, not just in the key card. */}
+      <p className="text-xs text-gray-400">
+        It&apos;s written fresh each morning, so leaving this on uses your Anthropic
+        key every day whether or not you open the app.
+      </p>
       {err && <p className="text-xs text-red-500">{err}</p>}
     </div>
   );
