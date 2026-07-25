@@ -1275,6 +1275,27 @@ def _extract_text(response: anthropic.types.Message) -> str:
     return result
 
 
+def _web_search_failed(response: anthropic.types.Message) -> bool:
+    """True when the model attempted web searches and every one errored — an
+    upstream search outage. The widget prompts hard-forbid asserting player
+    status without verification, so an all-errored run is a compliance
+    disclaimer ("I was unable to complete the required web verification…"), not
+    an answer — never cache it (mirrors mlb_stats_client's outage rule; a cached
+    one shipped in the digest email). Zero attempts is NOT an outage: the model
+    may legitimately answer from the provided data alone, and treating that as
+    failure would loop the warmer on re-billing regenerations."""
+    attempted = errored = 0
+    for block in response.content:
+        if getattr(block, "type", "") != "web_search_tool_result":
+            continue
+        attempted += 1
+        # On success .content is a list of results; on failure it's an error
+        # object typed web_search_tool_result_error.
+        if getattr(getattr(block, "content", None), "type", "") == "web_search_tool_result_error":
+            errored += 1
+    return attempted > 0 and errored == attempted
+
+
 def _load_category_ranks(sb, league_id: str) -> dict:
     """Load category ranks from dashboard_cache. Returns {} if not set."""
     try:
@@ -3060,7 +3081,9 @@ def _nfl_start_sit(sb, body) -> dict:
     structured["alerts"] = out_alerts + structured.get("alerts", [])
     seen = {(a["name"], a.get("status")): a for a in structured["alerts"] if a.get("name")}
     structured["alerts"] = list(seen.values())
-    if not structured.get("players"):  # don't cache an empty generation
+    # Don't cache an empty generation, or one where every web search errored
+    # (unverified statuses — serve once, let the next load retry).
+    if not structured.get("players") or _web_search_failed(response):
         return {"content": structured, "updated_at": _now_iso()}
     return {"content": structured, "updated_at": _upsert_cache(sb, body.league_id, "start_sit", _json.dumps(structured))}
 
@@ -3075,7 +3098,7 @@ def _nfl_news(sb, body) -> dict:
         messages=[{"role": "user", "content": nfl_news_prompt(team_name, items)}],
     )
     content = _extract_text(response)
-    if not content.strip():
+    if not content.strip() or _web_search_failed(response):
         return {"content": content, "updated_at": _now_iso()}
     return {"content": content, "updated_at": _upsert_cache(sb, body.league_id, "news", content)}
 
@@ -3091,7 +3114,7 @@ def _nfl_waiver(sb, body) -> dict:
         messages=[{"role": "user", "content": nfl_waiver_prompt(team_name or "Your Team", fas)}],
     )
     content = _extract_text(response)
-    if not content.strip():
+    if not content.strip() or _web_search_failed(response):
         return {"content": content, "updated_at": _now_iso()}
     return {"content": content, "updated_at": _upsert_cache(sb, body.league_id, "waiver", content)}
 
@@ -3168,6 +3191,8 @@ Search for and summarize recent news (last 2 weeks) for each player. Focus on: I
             )
             content = _extract_text(response)
 
+            if _web_search_failed(response):
+                return {"content": content, "updated_at": _now_iso()}
             updated_at = _upsert_cache(sb, body.league_id, "news", content)
             return {"content": content, "updated_at": updated_at}
 
@@ -3425,6 +3450,8 @@ Rules:
                     return {"content": prev_content, "updated_at": prev.data[0]["updated_at"]}
             return {"content": structured, "updated_at": datetime.now(timezone.utc).isoformat()}
 
+        if _web_search_failed(response):
+            return {"content": structured, "updated_at": _now_iso()}
         updated_at = _upsert_cache(sb, body.league_id, "start_sit", _json.dumps(structured))
         return {"content": structured, "updated_at": updated_at}
 
@@ -3680,6 +3707,8 @@ Finish with a **Priority order** section: one short line per player, in the orde
         )
         content = _extract_text(response)
 
+        if _web_search_failed(response):
+            return {"content": content, "updated_at": _now_iso()}
         updated_at = _upsert_cache(sb, body.league_id, "waiver", content)
         return {"content": content, "updated_at": updated_at}
 
