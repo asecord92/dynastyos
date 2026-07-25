@@ -4,7 +4,7 @@ import { AutoSync } from "../components/AutoSync";
 import { PullToRefresh } from "../components/PullToRefresh";
 import { AiStatusBanner } from "../components/ui/AiStatusBanner";
 import { AiStatusSync } from "../components/AiStatusSync";
-import { WhatsNewModal } from "../components/WhatsNewModal";
+import { FirstRun } from "../components/FirstRun";
 import { AiStatusProvider } from "../lib/aiStatus";
 import { Suspense } from "react";
 
@@ -19,7 +19,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             <AppNav />
             <AutoSync />
             <PullToRefresh />
-            <WhatsNewModal />
+            <FirstRun />
             <AiStatusSync />
             <AiStatusBanner />
             {/* Extra bottom padding on mobile so content clears the bottom tab bar */}
