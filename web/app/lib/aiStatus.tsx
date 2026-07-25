@@ -48,3 +48,18 @@ export function aiIssueFromDetail(detail: string | null | undefined): AiIssue | 
   if (detail === "out_of_credits" || detail === "invalid_api_key") return detail;
   return null;
 }
+
+/**
+ * Human copy for an `error` event's detail that `aiIssueFromDetail` didn't
+ * claim — the stable codes the AI streams can end on. Shared so the trade
+ * analyzer, the finder, and add/drop word the same failure the same way.
+ */
+export function aiErrorMessage(detail: string | null | undefined): string {
+  if (detail === "rate_limited")
+    return "Anthropic is rate-limiting your key — try again in a moment.";
+  // The answer above this banner is real, just cut off mid-thought, so say
+  // that rather than implying nothing came back.
+  if (detail === "truncated")
+    return "The answer was cut off before it finished — retry to get the full one.";
+  return detail || "Something went wrong.";
+}

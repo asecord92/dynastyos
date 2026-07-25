@@ -6,7 +6,7 @@ import { useLeague } from "../../lib/useLeague";
 import { authedFetch } from "../../lib/useDashboardWidget";
 import { AnalysisRenderer } from "../../components/trade/AnalysisRenderer";
 import { TradeHistory } from "../../components/trade/TradeHistory";
-import { aiIssueFromDetail, useAiStatus } from "../../lib/aiStatus";
+import { aiErrorMessage, aiIssueFromDetail, useAiStatus } from "../../lib/aiStatus";
 import { NeedsApiKey } from "../../components/ui/NeedsApiKey";
 import { MarkdownContent } from "../../lib/format";
 
@@ -393,12 +393,11 @@ export default function TradePage() {
               : prev
           );
         } else if (evt.type === "error") {
-          // Key/billing errors surface mid-stream (after the 200) as an event.
+          // Key/billing errors surface mid-stream (after the 200) as an event,
+          // as does a `truncated` answer that hit the token cap.
           const issue = aiIssueFromDetail(evt.detail);
           if (issue) reportIssue(issue);
-          else if (evt.detail === "rate_limited")
-            setFinderError("Anthropic is rate-limiting your key — try again in a moment.");
-          else setFinderError(evt.detail ?? "Something went wrong.");
+          else setFinderError(aiErrorMessage(evt.detail));
         }
       };
 
@@ -555,9 +554,7 @@ export default function TradePage() {
           failed = true;
           const issue = aiIssueFromDetail(evt.detail);
           if (issue) reportIssue(issue);
-          else if (evt.detail === "rate_limited")
-            setError("Anthropic is rate-limiting your key — try again in a moment.");
-          else setError(evt.detail ?? "Something went wrong.");
+          else setError(aiErrorMessage(evt.detail));
         }
       };
 
