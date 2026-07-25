@@ -269,10 +269,14 @@ MODEL_DASHBOARD = "claude-sonnet-5"
 # these prompts were tuned for on Sonnet 4.6.
 _NO_THINKING = {"type": "disabled"}
 
-# Opus runs WITHOUT thinking when the parameter is omitted — trade analysis
-# is the app's deepest reasoning surface, so it explicitly opts in to adaptive
-# thinking. Thinking tokens count against max_tokens, hence the generous caps
-# on the trade calls below.
+# Opus 5 thinks by DEFAULT — omitting the param is equivalent to adaptive. (This
+# inverted at Opus 5: on Opus 4.8 omitting it meant no thinking, so the explicit
+# param used to be the switch that turned thinking on.) Trade analysis is the
+# app's deepest reasoning surface and wants adaptive, so we keep passing it to
+# state that intent — it's documentation now, not an activation. Don't "simplify"
+# it to {"type": "disabled"} to save tokens: that 400s on Opus 5 at effort
+# xhigh/max (we set no effort, so the default `high` applies, where it's legal).
+# Thinking tokens count against max_tokens, hence the generous caps below.
 _ADAPTIVE_THINKING = {"type": "adaptive"}
 
 # web_search_20260209 (dynamic filtering built in) — supported by both Sonnet 5
