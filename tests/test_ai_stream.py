@@ -11,7 +11,7 @@ event types, which are the actual contract with the frontends.
 """
 import json
 
-from api.main import TruncatedResponseError, _ai_ndjson_lines
+from api.main import PausedTurnError, TruncatedResponseError, _ai_ndjson_lines
 
 
 def fake_ai(stop_reason, deltas=(), *, snapshot=True):
@@ -88,6 +88,46 @@ def test_partial_text_still_streams():
     """The truncated answer is real, just short — the user keeps what arrived."""
     evts = events(fake_ai("max_tokens", ["kept"]), status_label="x", done_event=False)
     assert [e["delta"] for e in evts if e["type"] == "text"] == ["kept"]
+
+
+def test_pause_turn_emits_error_not_done():
+    """`pause_turn` means the server-side web-search loop hit its iteration cap,
+    so the answer stops wherever the last search left it. Like max_tokens it
+    ends the stream cleanly, so without the check /trade/analyze reports a
+    half-finished analysis as `done`."""
+    failed: list = []
+    evts = events(
+        fake_ai("pause_turn", ["I checked two sources and"]),
+        status_label="Weighing the deal…",
+        failed=failed,
+        done_event=True,
+    )
+    assert [e["type"] for e in evts] == ["status", "text", "error"]
+    # Distinct from "truncated": different cause, different user-facing copy.
+    assert evts[-1]["detail"] == "paused"
+    assert len(failed) == 1
+    assert isinstance(failed[0], PausedTurnError)
+
+
+def test_pause_turn_keeps_partial_text():
+    """The research so far is real — the user keeps what arrived."""
+    evts = events(
+        fake_ai("pause_turn", ["partial"]), status_label="x", done_event=False
+    )
+    assert [e["delta"] for e in evts if e["type"] == "text"] == ["partial"]
+
+
+def test_pause_turn_and_truncation_stay_distinct():
+    """Both are clean stops with a partial answer, but the frontends word them
+    differently — a regression that collapsed them would be invisible above."""
+    def detail(reason):
+        return [
+            e for e in events(fake_ai(reason, ["x"]), status_label="x")
+            if e["type"] == "error"
+        ][0]["detail"]
+
+    assert detail("pause_turn") == "paused"
+    assert detail("max_tokens") == "truncated"
 
 
 def test_clean_stop_is_untouched():

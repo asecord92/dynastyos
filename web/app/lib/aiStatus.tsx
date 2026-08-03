@@ -61,5 +61,9 @@ export function aiErrorMessage(detail: string | null | undefined): string {
   // that rather than implying nothing came back.
   if (detail === "truncated")
     return "The answer was cut off before it finished — retry to get the full one.";
+  // Same shape as `truncated` — real answer above, just unfinished — but the
+  // cause is the web-search loop running out of steps, not the token budget.
+  if (detail === "paused")
+    return "The analysis stopped early while researching — retry to get the full one.";
   return detail || "Something went wrong.";
 }
