@@ -11,7 +11,7 @@ The fakes below mirror the SDK's `Message.content` block shapes; the distinction
 that matters is `.content` being a *list of results* (success) vs an object
 typed `web_search_tool_result_error` (failure).
 """
-from api.main import _web_search_failed
+from api.main import _web_search_error_codes, _web_search_failed
 
 
 class Text:
@@ -33,8 +33,8 @@ class SearchResult:
 
     type = "web_search_tool_result"
 
-    def __init__(self, ok=True):
-        self.content = [] if ok else SearchError()
+    def __init__(self, ok=True, code="unavailable"):
+        self.content = [] if ok else SearchError(code)
 
 
 class Message:
@@ -81,3 +81,48 @@ def test_unknown_block_types_are_ignored():
         type = "thinking"
 
     assert not _web_search_failed(Message(Thinking(), Text("answer")))
+
+
+# --- _web_search_error_codes: the *why* behind an outage ----------------------
+# `_web_search_failed` answers yes/no, which was enough to protect the cache but
+# left every outage unattributable. These codes distinguish an upstream outage
+# from our own budget from the owner's key being throttled.
+
+
+def test_error_codes_are_extracted_in_order():
+    codes = _web_search_error_codes(
+        Message(
+            SearchResult(ok=False, code="too_many_requests"),
+            SearchResult(ok=False, code="unavailable"),
+            Text("I was unable to…"),
+        )
+    )
+    assert codes == ["too_many_requests", "unavailable"]
+
+
+def test_error_codes_ignore_successful_searches():
+    """A partial failure still yields its one code — that's the signal that the
+    model burned a search-loop iteration for nothing."""
+    assert _web_search_error_codes(
+        Message(SearchResult(), SearchResult(ok=False, code="max_uses_exceeded"))
+    ) == ["max_uses_exceeded"]
+
+
+def test_no_error_codes_when_everything_succeeded():
+    assert _web_search_error_codes(Message(SearchResult(), Text("Adds:"))) == []
+
+
+def test_no_error_codes_without_searches():
+    assert _web_search_error_codes(Message(Text("answer"))) == []
+
+
+def test_missing_error_code_falls_back_to_unknown():
+    """Never drop a failure just because the SDK shape shifted — an
+    unattributed outage still needs to reach the admin feed."""
+
+    class Bare:
+        type = "web_search_tool_result_error"
+
+    block = SearchResult(ok=False)
+    block.content = Bare()
+    assert _web_search_error_codes(Message(block)) == ["unknown"]

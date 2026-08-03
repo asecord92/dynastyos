@@ -279,8 +279,22 @@ _NO_THINKING = {"type": "disabled"}
 # Thinking tokens count against max_tokens, hence the generous caps below.
 _ADAPTIVE_THINKING = {"type": "adaptive"}
 
+# Effort for the three MODEL_TRADE surfaces. #119 moved them from Opus 4.8 to
+# Opus 5 by swapping the model string alone, so they silently kept running at
+# Opus 5's `high` DEFAULT — and Opus 5 at high deliberates, self-verifies, and
+# writes materially longer than 4.8 did at the same settings. On /trade/analyze,
+# where thinking interleaves with up to four web searches, that compounded into
+# minutes of think→search→think→search (the "cycles between Weighing the deal
+# and Searching the web" report). Anthropic's Opus 5 migration guidance is to
+# re-sweep effort precisely because low/medium punch well above their weight on
+# this model; `medium` is that sweep's starting point. Raise it if answers get
+# shallow — but never drop the parameter again, since absent means `high`.
+_TRADE_EFFORT = {"effort": "medium"}
+
 # web_search_20260209 (dynamic filtering built in) — supported by both Sonnet 5
-# (dashboard widgets) and Opus 5 (trade analysis).
+# (dashboard widgets) and Opus 5 (trade analysis). Dynamic filtering runs code
+# execution server-side per search, so each one costs real wall time — the
+# budgets below are latency ceilings, not just cost ceilings.
 # Dashboard widgets (news/start_sit/waiver/minors) get a bounded search budget —
 # results are billed as input tokens, and an unbounded loop was the biggest
 # silent cost. 3 is plenty to cover a roster's worth of injury/role news.
@@ -444,6 +458,8 @@ class _LoggedStreamManager:
                 ok=exc is None,
                 error=(_ai_error_code(exc) or str(exc)) if exc else None,
             )
+            if snapshot is not None:
+                _note_web_search_failures(self._ctx, snapshot)
         except Exception:
             traceback.print_exc()
         return self._manager.__exit__(exc_type, exc, tb)
@@ -476,6 +492,7 @@ class _MessagesProxy:
             self._ctx, kwargs.get("model"), getattr(resp, "usage", None),
             duration_ms=int((time.monotonic() - t0) * 1000), ok=True,
         )
+        _note_web_search_failures(self._ctx, resp)
         return resp
 
     def stream(self, *args, **kwargs):
@@ -1294,6 +1311,57 @@ def _web_search_failed(response: anthropic.types.Message) -> bool:
         if getattr(getattr(block, "content", None), "type", "") == "web_search_tool_result_error":
             errored += 1
     return attempted > 0 and errored == attempted
+
+
+def _web_search_error_codes(message) -> list[str]:
+    """Anthropic's error codes from a response's failed web searches, in order.
+
+    Server-tool failures arrive *inside* a 200 response (the result block's
+    content is an error object), so they never reach an exception handler and
+    `_web_search_failed` only answers yes/no. The codes are the missing `why`,
+    and they point at different fixes: `unavailable` is an upstream outage to
+    wait out, `too_many_requests` is the owner's key being throttled (the daily
+    digest warms every opted-in league's widgets in a burst, which is exactly
+    how you'd earn that), and `max_uses_exceeded` is our own `max_uses` budget.
+    """
+    codes: list[str] = []
+    for block in getattr(message, "content", None) or []:
+        if getattr(block, "type", "") != "web_search_tool_result":
+            continue
+        content = getattr(block, "content", None)
+        if getattr(content, "type", "") == "web_search_tool_result_error":
+            codes.append(str(getattr(content, "error_code", "") or "unknown"))
+    return codes
+
+
+def _note_web_search_failures(ctx: dict | None, message) -> None:
+    """Record failed web searches to app_events so an outage is diagnosable
+    instead of merely visible. Hooked into the AI metering wrappers rather than
+    the six widget call sites, so it covers *every* call — including
+    /trade/analyze, which searches but has no `_web_search_failed` check of its
+    own (it isn't cached, so it never needed the caching decision). Best-effort:
+    this observes requests, it must never break one."""
+    try:
+        codes = _web_search_error_codes(message)
+        if not codes:
+            return
+        total = _web_search_failed(message)
+        _log_event(
+            kind="web_search",
+            # Only a total outage is actionable enough for the admin error feed
+            # (which filters level == "error"); a partial still had real data.
+            level="error" if total else "warning",
+            message=(
+                f"{len(codes)} web search(es) failed"
+                f"{' — ALL of them' if total else ''}: "
+                f"{', '.join(sorted(set(codes)))}"
+            ),
+            user_id=(ctx or {}).get("user_id"),
+            league_id=(ctx or {}).get("league_id"),
+            meta={"tool": (ctx or {}).get("tool"), "codes": codes, "all_failed": total},
+        )
+    except Exception:
+        traceback.print_exc()
 
 
 def _load_category_ranks(sb, league_id: str) -> dict:
@@ -2635,6 +2703,16 @@ class TruncatedResponseError(Exception):
     without it a half-written response looks like a successful one."""
 
 
+class PausedTurnError(Exception):
+    """The server-side tool loop hit its iteration cap and returned
+    `stop_reason: "pause_turn"`, so the answer stops wherever the last search
+    left it. Like a max_tokens stop this ends the stream *cleanly* — no SDK
+    exception — so without this the user gets a `done` on a half-finished
+    analysis. Only /trade/analyze can hit it today (it's the one trade surface
+    with web search), and erroring searches make it far likelier: a failed
+    search burns a loop iteration without making progress."""
+
+
 def _ai_ndjson_lines(ai, *, status_label: str, text_mapper=None, collect=None,
                      failed=None, done_event=True, **stream_kwargs):
     """Iterate one Anthropic stream as ndjson lines. Answer text becomes `text`
@@ -2654,7 +2732,7 @@ def _ai_ndjson_lines(ai, *, status_label: str, text_mapper=None, collect=None,
         last = time.monotonic()
         return _ndjson(obj)
 
-    truncated = False
+    stop_reason = None
     try:
         # Mark the phase transition immediately — otherwise the last prep status
         # ("Pulling live stats…") lingers on screen into the thinking phase.
@@ -2675,17 +2753,23 @@ def _ai_ndjson_lines(ai, *, status_label: str, text_mapper=None, collect=None,
                     yield line({"type": "status", "label": "Searching the web…"})
                 elif time.monotonic() - last >= _STATUS_INTERVAL_S:
                     yield line({"type": "status", "label": status_label})
-            # Hitting the cap ends the stream normally — no exception — so
-            # nothing downstream would notice on its own. Thinking tokens share
-            # max_tokens with the answer, so an unlucky long think can truncate
-            # a request that usually fits. Left undetected, the finder parses a
-            # half-written ```json block and blames the parser.
+            # Two stop reasons end the stream normally — no exception — so
+            # nothing downstream would notice on its own. `max_tokens`: thinking
+            # tokens share the budget with the answer, so an unlucky long think
+            # truncates a request that usually fits (left undetected, the finder
+            # parses a half-written ```json block and blames the parser).
+            # `pause_turn`: the server-side web-search loop hit its iteration
+            # cap. Both leave a partial answer that must not be sold as `done`.
             snapshot = getattr(s, "current_message_snapshot", None)
-            truncated = getattr(snapshot, "stop_reason", None) == "max_tokens"
-        if truncated:
+            stop_reason = getattr(snapshot, "stop_reason", None)
+        if stop_reason in ("max_tokens", "pause_turn"):
+            paused = stop_reason == "pause_turn"
             if failed is not None:
-                failed.append(TruncatedResponseError())
-            yield _ndjson({"type": "error", "detail": "truncated"})
+                failed.append(PausedTurnError() if paused else TruncatedResponseError())
+            yield _ndjson({
+                "type": "error",
+                "detail": "paused" if paused else "truncated",
+            })
         elif done_event:
             yield _ndjson({"type": "done"})
     except anthropic.APIStatusError as e:
@@ -2753,6 +2837,7 @@ async def trade_analyze(
                 model=MODEL_TRADE,
                 max_tokens=8000,
                 thinking=_ADAPTIVE_THINKING,
+                output_config=_TRADE_EFFORT,
                 tools=_TRADE_WEB_SEARCH,
                 system=system_prompt,
                 messages=[{"role": "user", "content": prompt}],
@@ -2913,6 +2998,7 @@ async def waivers_add_drop(
                 model=MODEL_TRADE,
                 max_tokens=6000,
                 thinking=_ADAPTIVE_THINKING,
+                output_config=_TRADE_EFFORT,
                 system=system_prompt,
                 messages=[{"role": "user", "content": prompt}],
             )
@@ -3036,6 +3122,7 @@ async def trade_finder(
             # Opus 5 also writes longer than 4.8 at the same settings.
             max_tokens=16000,
             thinking=_ADAPTIVE_THINKING,
+            output_config=_TRADE_EFFORT,
             system=prep["system_prompt"],
             messages=[{"role": "user", "content": prep["prompt"]}],
         )
