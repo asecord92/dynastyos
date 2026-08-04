@@ -1238,6 +1238,35 @@ _ANSWER_MARKER_INSTRUCTION = (
 )
 
 
+# Sonnet 5 reaches for tools LESS when thinking is disabled — which is exactly
+# how the widgets run (`_NO_THINKING`, a deliberate BYOK cost choice). Their
+# prompts also hard-forbid asserting a team/role/health status that wasn't
+# confirmed by search, so a run where the model declines to search can't produce
+# recommendations at all — only the "I was unable to verify…" disclaimer.
+#
+# That failure mode is INVISIBLE to `_web_search_failed`: zero attempts is
+# deliberately not an outage (see its docstring), so the disclaimer caches for
+# the full 8h window and ships in the digest looking identical to a real
+# upstream outage. The two need opposite fixes, so make the trigger explicit
+# rather than implied. Diagnostic: `ai_usage.web_searches == 0` on a news /
+# start_sit / waiver row means the model skipped searching, not that search
+# broke — check that before touching this.
+_SEARCH_FIRST_INSTRUCTION = (
+    "Use web search before you answer — do not skip this step. The roster and "
+    "stat data above is current, but it says nothing about health, role, or "
+    "playing time, and your answer is wrong if any of those changed recently. "
+    "Search first, then write the answer."
+)
+
+
+def _with_search_first(prompt: str) -> str:
+    """Append the search-first trigger to a web-search widget prompt. Applied at
+    the call sites rather than inside each prompt builder so all six (MLB + NFL
+    × news / start_sit / waiver) stay provably in sync, and so the whole nudge
+    can be lifted in one edit if a future model stops needing it."""
+    return f"{prompt}\n\n{_SEARCH_FIRST_INSTRUCTION}"
+
+
 def _extract_text(response: anthropic.types.Message) -> str:
     # With web search enabled the model narrates BETWEEN tool calls ("Let me
     # dig deeper…", "Good data. Kim has been placed on IL…"). Those interleaved
@@ -3155,7 +3184,7 @@ def _nfl_start_sit(sb, body) -> dict:
     ai = get_ai_client_for_league(sb, body.league_id, tool="start_sit")
     response = ai.messages.create(
         model=MODEL_DASHBOARD, max_tokens=5000, thinking=_NO_THINKING, tools=_WEB_SEARCH,
-        messages=[{"role": "user", "content": nfl_start_sit_prompt(team_name, items)}],
+        messages=[{"role": "user", "content": _with_search_first(nfl_start_sit_prompt(team_name, items))}],
     )
     raw = _extract_text(response)
     structured = {"players": [], "alerts": []}
@@ -3182,7 +3211,7 @@ def _nfl_news(sb, body) -> dict:
     ai = get_ai_client_for_league(sb, body.league_id, tool="news")
     response = ai.messages.create(
         model=MODEL_DASHBOARD, max_tokens=3000, thinking=_NO_THINKING, tools=_WEB_SEARCH,
-        messages=[{"role": "user", "content": nfl_news_prompt(team_name, items)}],
+        messages=[{"role": "user", "content": _with_search_first(nfl_news_prompt(team_name, items))}],
     )
     content = _extract_text(response)
     if not content.strip() or _web_search_failed(response):
@@ -3198,7 +3227,7 @@ def _nfl_waiver(sb, body) -> dict:
     ai = get_ai_client_for_league(sb, body.league_id, tool="waiver")
     response = ai.messages.create(
         model=MODEL_DASHBOARD, max_tokens=3000, thinking=_NO_THINKING, tools=_WEB_SEARCH,
-        messages=[{"role": "user", "content": nfl_waiver_prompt(team_name or "Your Team", fas)}],
+        messages=[{"role": "user", "content": _with_search_first(nfl_waiver_prompt(team_name or "Your Team", fas))}],
     )
     content = _extract_text(response)
     if not content.strip() or _web_search_failed(response):
@@ -3274,7 +3303,7 @@ Search for and summarize recent news (last 2 weeks) for each player. Focus on: I
                 max_tokens=3000,
                 thinking=_NO_THINKING,
                 tools=_WEB_SEARCH,
-                messages=[{"role": "user", "content": prompt}],
+                messages=[{"role": "user", "content": _with_search_first(prompt)}],
             )
             content = _extract_text(response)
 
@@ -3482,7 +3511,7 @@ Rules:
             max_tokens=5000,
             thinking=_NO_THINKING,
             tools=_WEB_SEARCH,
-            messages=[{"role": "user", "content": prompt}],
+            messages=[{"role": "user", "content": _with_search_first(prompt)}],
         )
         raw_text = _extract_text(response)
 
@@ -3790,7 +3819,7 @@ Finish with a **Priority order** section: one short line per player, in the orde
             max_tokens=5000,
             thinking=_NO_THINKING,
             tools=_WEB_SEARCH,
-            messages=[{"role": "user", "content": prompt}],
+            messages=[{"role": "user", "content": _with_search_first(prompt)}],
         )
         content = _extract_text(response)
 
