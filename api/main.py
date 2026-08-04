@@ -298,7 +298,20 @@ _TRADE_EFFORT = {"effort": "medium"}
 # Dashboard widgets (news/start_sit/waiver/minors) get a bounded search budget —
 # results are billed as input tokens, and an unbounded loop was the biggest
 # silent cost. 3 is plenty to cover a roster's worth of injury/role news.
-_WEB_SEARCH = [{"type": "web_search_20260209", "name": "web_search", "max_uses": 3}]
+#
+# The number lives here and is interpolated into the prompts via
+# `_SEARCH_BUDGET_INSTRUCTION`, so a prompt can never again ask for more
+# searches than the tool will grant. That drift was expensive: the prompts used
+# to say "search for each player" against a cap of 3, so the model dutifully
+# queued a search per player, every attempt past the third was REFUSED, and each
+# refusal still cost a full re-send of the accumulated conversation (server-side
+# tool loops re-send everything each iteration). Waiver averaged 13.1 search
+# requests per call against a cap of 3 — ~10 round trips that bought nothing but
+# tokens, which is how one call reached ~301k input tokens.
+_WEB_SEARCH_MAX_USES = 3
+_WEB_SEARCH = [
+    {"type": "web_search_20260209", "name": "web_search", "max_uses": _WEB_SEARCH_MAX_USES}
+]
 
 # Trade analysis gets a bounded search allowance to verify injuries / roster
 # moves newer than the 24h stats cache. Searches bill the owner's BYOK key.
@@ -1236,6 +1249,29 @@ _ANSWER_MARKER_INSTRUCTION = (
     "then your final answer. Everything before that line is discarded — keep all "
     "research commentary before it and never reference your research process after it."
 )
+
+
+# Every web-search widget prompt states the SAME budget the tool actually
+# enforces (`_WEB_SEARCH_MAX_USES`), so the two can't drift apart again. The
+# phrasing matters: the model needs to know overflow is refused rather than
+# queued, or it plans a search per player and burns the difference on rejected
+# round trips. "Choose, then answer from the data" is the behavior we want.
+_SEARCH_BUDGET_INSTRUCTION = (
+    f"Search budget: you may run at most {_WEB_SEARCH_MAX_USES} web searches for "
+    "this entire response, and attempts beyond that are refused. Do NOT plan one "
+    "search per player. Choose the few whose current status is most uncertain AND "
+    "most changes your answer, search those, and rely on the data provided above "
+    "for everyone else."
+)
+
+
+def _with_search_budget(prompt: str) -> str:
+    """Append the search budget to a web-search widget prompt. Applied at the
+    call sites rather than inside each prompt builder so all six (MLB + NFL ×
+    news / start_sit / waiver) stay provably in sync with `_WEB_SEARCH`, which is
+    the whole point — the cost blowup came from a prompt and a tool config
+    disagreeing about how many searches were available."""
+    return f"{prompt}\n\n{_SEARCH_BUDGET_INSTRUCTION}"
 
 
 def _extract_text(response: anthropic.types.Message) -> str:
@@ -3155,7 +3191,7 @@ def _nfl_start_sit(sb, body) -> dict:
     ai = get_ai_client_for_league(sb, body.league_id, tool="start_sit")
     response = ai.messages.create(
         model=MODEL_DASHBOARD, max_tokens=5000, thinking=_NO_THINKING, tools=_WEB_SEARCH,
-        messages=[{"role": "user", "content": nfl_start_sit_prompt(team_name, items)}],
+        messages=[{"role": "user", "content": _with_search_budget(nfl_start_sit_prompt(team_name, items))}],
     )
     raw = _extract_text(response)
     structured = {"players": [], "alerts": []}
@@ -3182,7 +3218,7 @@ def _nfl_news(sb, body) -> dict:
     ai = get_ai_client_for_league(sb, body.league_id, tool="news")
     response = ai.messages.create(
         model=MODEL_DASHBOARD, max_tokens=3000, thinking=_NO_THINKING, tools=_WEB_SEARCH,
-        messages=[{"role": "user", "content": nfl_news_prompt(team_name, items)}],
+        messages=[{"role": "user", "content": _with_search_budget(nfl_news_prompt(team_name, items))}],
     )
     content = _extract_text(response)
     if not content.strip() or _web_search_failed(response):
@@ -3198,7 +3234,7 @@ def _nfl_waiver(sb, body) -> dict:
     ai = get_ai_client_for_league(sb, body.league_id, tool="waiver")
     response = ai.messages.create(
         model=MODEL_DASHBOARD, max_tokens=3000, thinking=_NO_THINKING, tools=_WEB_SEARCH,
-        messages=[{"role": "user", "content": nfl_waiver_prompt(team_name or "Your Team", fas)}],
+        messages=[{"role": "user", "content": _with_search_budget(nfl_waiver_prompt(team_name or "Your Team", fas))}],
     )
     content = _extract_text(response)
     if not content.strip() or _web_search_failed(response):
@@ -3264,7 +3300,7 @@ Team: {team_name}
 Roster (name (position, roster status, salary, contract year)):
 {chr(10).join(player_lines)}
 {weak_line}
-Search for and summarize recent news (last 2 weeks) for each player. Focus on: IL placements, returns from IL, lineup changes, role changes, injury updates, and anything else affecting fantasy value. Skip players with nothing to report. Format as a bulleted list with the player name in bold at the start of each item.
+Summarize recent news (last 2 weeks) for this roster, spending your search budget on the players most likely to have moved — IL placements, returns from IL, lineup changes, role changes. Skip players with nothing to report. Format as a bulleted list with the player name in bold at the start of each item.
 
 {_ANSWER_MARKER_INSTRUCTION} After the marker: no preamble, no horizontal rules (---) — start directly with the first player bullet point."""
 
@@ -3274,7 +3310,7 @@ Search for and summarize recent news (last 2 weeks) for each player. Focus on: I
                 max_tokens=3000,
                 thinking=_NO_THINKING,
                 tools=_WEB_SEARCH,
-                messages=[{"role": "user", "content": prompt}],
+                messages=[{"role": "user", "content": _with_search_budget(prompt)}],
             )
             content = _extract_text(response)
 
@@ -3431,7 +3467,10 @@ def _build_start_sit_mlb(sb, body) -> dict:
         il_section = ""
         if il_research:
             il_section = f"""
-Injured (IL) players — for each, search for the injury and the expected return:
+Injured (IL) players. Within your search budget, research the ones whose return
+timeline is most uncertain and most affects a start/sit call — the rest keep the
+roster's listed status, which is already shown to the user, so skipping them
+costs nothing:
 {chr(10).join(f"- {n} ({il})" for n, il in il_research)}
 For each you can confirm, add an alert: status = the IL type, detail = one concrete sentence with the injury and expected return (e.g. "Hamstring strain, targeting a late-June return" or "Torn ACL, out for the season"). Do not invent a timeline you can't find — skip those and the roster's listed status will be shown instead.
 """
@@ -3482,7 +3521,7 @@ Rules:
             max_tokens=5000,
             thinking=_NO_THINKING,
             tools=_WEB_SEARCH,
-            messages=[{"role": "user", "content": prompt}],
+            messages=[{"role": "user", "content": _with_search_budget(prompt)}],
         )
         raw_text = _extract_text(response)
 
@@ -3769,7 +3808,7 @@ My current roster:
 Available waiver pool (unclaimed in this league, with current-season stats where available; hitters sorted by OPS, pitchers by ERA). Lines marked "⚠ ON IL" are currently on the injured list:
 {unclaimed_section}
 
-From the unclaimed pool above, identify the best 4-5 players to target right now. The stat lines are real current-season numbers — use them to shortlist, then web search each of your top candidates to confirm role, health, and playing time before recommending them (not the whole pool). For each recommendation include:
+From the unclaimed pool above, identify the best 4-5 players to target right now. The stat lines are real current-season numbers — use them to shortlist, then spend your search budget confirming role, health, and playing time for the shortlisted names you are least sure about. For the rest, recommend from the stat lines and say what you could not verify. For each recommendation include:
 - Player name, team, position
 - Why they're a good pickup right now (cite their stat line)
 - Short-term and dynasty value assessment
@@ -3790,7 +3829,7 @@ Finish with a **Priority order** section: one short line per player, in the orde
             max_tokens=5000,
             thinking=_NO_THINKING,
             tools=_WEB_SEARCH,
-            messages=[{"role": "user", "content": prompt}],
+            messages=[{"role": "user", "content": _with_search_budget(prompt)}],
         )
         content = _extract_text(response)
 
