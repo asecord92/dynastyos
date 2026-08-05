@@ -9,6 +9,8 @@ from .mlb_stats_client import get_player_stats, get_milb_player_summary, get_pri
 from .rules import LeagueRules, ContractRules, load_rules
 from .player_value import production_ratings, assign_values
 from .category_ranks import team_posture_summary
+from . import mlb_market_values
+from .trade_values import index_mlb_values, match_mlb
 
 
 def _load_matrix_cache(sb, league_id: str) -> dict:
@@ -519,6 +521,25 @@ async def build_trade_context(
     except Exception:
         pass
 
+    # Crowdsourced dynasty market value for the traded players — the same
+    # numbers the free balance check in the trade builder just showed the user.
+    # Handing them over means the model argues with the market instead of
+    # re-deriving a value scale from stats, and its verdict can be read against
+    # what the user already saw. Best-effort: the block is simply omitted when
+    # the feed is unavailable.
+    market_values = {}
+    try:
+        feed = await _db(mlb_market_values.get_values)
+        index = index_mlb_values(feed.get("entries"))
+        if index:
+            for fid in offering_ids + receiving_ids:
+                info = player_id_map.get(fid) or {}
+                entry = match_mlb(info.get("name"), info.get("age"), index)
+                if entry:
+                    market_values[fid] = entry
+    except Exception:
+        pass
+
     return {
         "league": league,
         "rules": rules,
@@ -533,7 +554,64 @@ async def build_trade_context(
         "receiving_ids": receiving_ids,
         "category_ranks": category_ranks,
         "opp_posture": opp_posture,
+        "market_values": market_values,
     }
+
+
+def _market_value_block(
+    market_values: dict, player_id_map: dict, offering_ids: list, receiving_ids: list
+) -> str:
+    """Crowdsourced dynasty market value for the traded players, plus each
+    side's total. Returns "" when nothing on either side could be priced.
+
+    The point is to anchor the model to the market the user is actually trading
+    in, and to let it disagree *explicitly* — a deal the market calls lopsided
+    can still be right for a specific roster, but the answer should say so
+    rather than quietly assume a different value scale. Unpriced players are
+    named as unpriced so a partial total is never mistaken for a whole one.
+    """
+    if not market_values:
+        return ""
+
+    def side(ids: list) -> tuple[list[str], int, list[str]]:
+        lines, total, missing = [], 0, []
+        for fid in ids:
+            name = get_player_name(fid, player_id_map)
+            entry = market_values.get(fid)
+            if not entry or not isinstance(entry.get("value"), (int, float)):
+                missing.append(name)
+                continue
+            total += entry["value"]
+            trend = entry.get("valueChange30Days")
+            trend_str = ""
+            if isinstance(trend, (int, float)) and trend:
+                trend_str = f", {'+' if trend > 0 else ''}{round(trend)} over 30d"
+            lines.append(
+                f"    {name}: {round(entry['value'])} (overall #{entry.get('rank', '?')}{trend_str})"
+            )
+        return lines, total, missing
+
+    give_lines, give_total, give_missing = side(offering_ids)
+    get_lines, get_total, get_missing = side(receiving_ids)
+
+    out = [
+        "\nDynasty market value (crowdsourced from HarryKnowsBall, 0-10000 scale, "
+        "not our own valuation — it is one universal scale, so it is blind to this "
+        "league's categories, contracts and salaries):",
+        "  Manager gives up:",
+        *(give_lines or ["    (none priced)"]),
+        f"    Total: {round(give_total)}",
+        "  Manager receives:",
+        *(get_lines or ["    (none priced)"]),
+        f"    Total: {round(get_total)}",
+    ]
+    missing = give_missing + get_missing
+    if missing:
+        out.append(
+            f"  Not priced by the market feed (usually deep minors): {', '.join(missing)} "
+            "— the totals above exclude them."
+        )
+    return "\n".join(out)
 
 
 def build_trade_prompt(context: dict[str, Any]) -> str:
@@ -644,6 +722,10 @@ Proposed trade:
     cap_delta = receiving_salary - giving_salary
     cap_impact = f"\nCap impact: {'saves' if cap_delta < 0 else 'costs'} ${abs(cap_delta)} (giving ${giving_salary}, receiving ${receiving_salary})"
 
+    market_block = _market_value_block(
+        context.get("market_values") or {}, player_id_map, offering_ids, receiving_ids
+    )
+
     # Grounding via web search (the /trade/analyze call attaches the tool)
     search_instructions = """
 Before finalizing your verdict, use web search (a few targeted searches at most) to verify the
@@ -686,6 +768,7 @@ tilt slightly in the manager's favor. Explain why the adjustment is justified.""
         + philosophy
         + trade_block
         + cap_impact
+        + market_block
         + stats_block
         + my_roster_block
         + opp_roster_block
