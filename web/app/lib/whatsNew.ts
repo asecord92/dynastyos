@@ -15,6 +15,10 @@ export const WHATS_NEW: WhatsNewEntry = {
   date: "July 24, 2026",
   items: [
     {
+      title: "A free balance check on every trade",
+      body: "Build a trade and you now get an instant read on it — each side's total dynasty market value, how far apart they are, and what the deal does to your salary this season and your committed money against next season's cap. No AI, no tokens, no API key needed. Analyze Trade is still there when you want the full argument.",
+    },
+    {
       title: "The football Roster page is now a dynasty asset view",
       body: "Your Sleeper roster with real market values (via FantasyCalc), your full draft-pick inventory with what each pick is worth, and an age-curve read on every player — ascending, prime, aging, or cliff.",
     },

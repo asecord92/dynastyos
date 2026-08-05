@@ -31,6 +31,8 @@ from engine.sleeper_client import (
 )
 from engine.sleeper_sync import build_nfl_rules, compute_pick_inventory, build_roster_items
 from engine import fantasycalc
+from engine import mlb_market_values
+from engine.trade_values import build_values_payload
 from engine.nfl_dynasty import build_payload as build_nfl_dynasty_payload, derive_fc_params
 from engine.nfl_trade import (
     build_nfl_trade_context,
@@ -63,6 +65,7 @@ from engine.trade_analyzer import (
     build_system_prompt,
     build_add_drop_context,
     build_add_drop_prompt,
+    _select_id_map,
 )
 from engine.auth import get_current_user, _get_jwks
 from engine import crypto
@@ -2619,6 +2622,71 @@ async def dashboard_nfl_roster(body: DashboardRequest, user: dict = Depends(get_
         payload["team_name"] = roster_row.get("team_name") or "Your Team"
         payload["values_updated_at"] = fc["fetched_at"]
         return payload
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/dashboard/trade_values")
+async def dashboard_trade_values(body: DashboardRequest, user: dict = Depends(get_current_user)):
+    """Market value for every asset on every roster in the league — the free,
+    deterministic half of the trade builder.
+
+    No AI call, no dashboard_cache row, no 402: this is what lets a user (or a
+    user with no Anthropic key at all) answer "is this trade close?" without
+    spending anything, and lets /trade/analyze stay the deliberate escalation.
+    Because nothing here bills the owner's key, there is no KeyUsageNote entry
+    to add.
+
+    Returns the whole league in one response (~300 assets) rather than pricing
+    one package per request, so the builder re-totals instantly on every toggle
+    with no network round trip. Named under /dashboard/ so useDashboardWidget
+    works unchanged — same trick as /dashboard/nfl_roster. `force` refetches the
+    upstream value feed.
+    """
+    try:
+        sb = get_supabase()
+        require_league_owner(sb, user, body.league_id)
+
+        def _load():
+            league = (
+                sb.table("leagues").select("sport, rules").eq("id", body.league_id)
+                .single().execute()
+            ).data or {}
+            rosters = (
+                sb.table("rosters")
+                .select("fantrax_team_id, roster_items, draft_picks")
+                .eq("league_id", body.league_id)
+                .execute()
+            ).data or []
+            sport = (league.get("sport") or "MLB").upper()
+            id_map: list = []
+            if sport != "NFL":
+                ids = [
+                    str(it.get("id"))
+                    for r in rosters for it in (r.get("roster_items") or [])
+                    if it.get("id")
+                ]
+                # Names + ages are the only join keys the value feed exposes.
+                id_map = _select_id_map(sb, list(dict.fromkeys(ids)), "fantrax_id, full_name, age")
+            return sport, league.get("rules") or {}, rosters, id_map
+
+        sport, rules, rosters, id_map = await asyncio.to_thread(_load)
+
+        if sport == "NFL":
+            params = derive_fc_params(rules)
+            feed = await asyncio.to_thread(
+                fantasycalc.get_values,
+                params["num_qbs"], params["ppr"], params["num_teams"], body.force,
+            )
+        else:
+            feed = await asyncio.to_thread(mlb_market_values.get_values, body.force)
+
+        return build_values_payload(
+            sport, rosters, id_map, feed["entries"], feed["fetched_at"]
+        )
     except HTTPException:
         raise
     except Exception as e:

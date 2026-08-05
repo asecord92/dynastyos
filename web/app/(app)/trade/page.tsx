@@ -1,14 +1,16 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { supabase } from "../../lib/supabaseClient";
 import { useLeague } from "../../lib/useLeague";
-import { authedFetch } from "../../lib/useDashboardWidget";
+import { authedFetch, useDashboardWidget } from "../../lib/useDashboardWidget";
 import { AnalysisRenderer } from "../../components/trade/AnalysisRenderer";
 import { TradeHistory } from "../../components/trade/TradeHistory";
+import { TradeBalance, type TradeValues, type ValueInfo } from "../../components/trade/TradeBalance";
 import { aiErrorMessage, aiIssueFromDetail, useAiStatus } from "../../lib/aiStatus";
 import { NeedsApiKey } from "../../components/ui/NeedsApiKey";
 import { MarkdownContent } from "../../lib/format";
+import { useLeagueRules } from "../../lib/useLeagueRules";
 
 const CATEGORIES = ["R", "HR", "RBI", "SB", "OBP", "QS", "SV", "K", "ERA", "WHIP"];
 const NFL_POSITIONS = ["QB", "RB", "WR", "TE"];
@@ -97,11 +99,13 @@ function PlayerSearch({
   players,
   selected,
   onToggle,
+  values,
 }: {
   label: string;
   players: PlayerOption[];
   selected: string[];
   onToggle: (id: string) => void;
+  values?: Record<string, ValueInfo>;
 }) {
   const [query, setQuery] = useState("");
 
@@ -140,6 +144,11 @@ function PlayerSearch({
               <span className="text-xs text-gray-400">
                 {p.position}
               </span>
+              {typeof values?.[p.id]?.value === "number" && (
+                <span className="text-xs text-gray-400 tabular-nums">
+                  {Math.round(values[p.id].value as number).toLocaleString()}
+                </span>
+              )}
               {!p.detail && (
                 <span className="text-xs text-gray-400">
                   {p.contract} yr
@@ -209,6 +218,15 @@ export default function TradePage() {
   const [finder, setFinder] = useState<FinderResult | null>(null);
   // Carries a prefill target across the opponent-change effect (which clears receiving).
   const pendingReceiveRef = useRef<string[] | null>(null);
+
+  // Free, AI-free market values for every asset in the league — one fetch per
+  // league, so the balance panel re-totals instantly on every toggle.
+  const { data: tradeValues } = useDashboardWidget<TradeValues>(
+    "trade_values",
+    leagueId,
+    myTeamId
+  );
+  const rules = useLeagueRules(leagueId);
 
   // Cancel in-flight analysis/finder streams on unmount or league switch —
   // the read loops would otherwise keep running and setState on a dead
@@ -596,6 +614,15 @@ export default function TradePage() {
 
   const canAnalyze = !!(leagueId && myTeamId && opponentTeamId && offering.length > 0 && receiving.length > 0 && !loading);
 
+  const giveAssets = useMemo(
+    () => myPlayers.filter((p) => offering.includes(p.id)),
+    [myPlayers, offering]
+  );
+  const getAssets = useMemo(
+    () => oppPlayers.filter((p) => receiving.includes(p.id)),
+    [oppPlayers, receiving]
+  );
+
   const modeClass = (active: boolean) =>
     `px-3 py-1.5 rounded-xl text-sm border transition ${
       active
@@ -680,12 +707,14 @@ export default function TradePage() {
                     players={oppPlayers}
                     selected={receiving}
                     onToggle={toggleReceiving}
+                    values={tradeValues?.values}
                   />
                   <PlayerSearch
                     label="You Give Up"
                     players={myPlayers}
                     selected={offering}
                     onToggle={toggleOffering}
+                    values={tradeValues?.values}
                   />
                 </div>
               )}
@@ -699,6 +728,16 @@ export default function TradePage() {
                 </div>
               )}
             </div>
+
+            {/* Free balance check — answers "is this close?" before you spend
+                anything on the AI read below. */}
+            <TradeBalance
+              data={tradeValues}
+              give={giveAssets}
+              get={getAssets}
+              myRoster={myPlayers}
+              rules={rules}
+            />
 
             {/* Analysis output — full width, like Find's results */}
             {needsApiKey && <NeedsApiKey feature="Trade analysis" />}
