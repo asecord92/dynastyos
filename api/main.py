@@ -2012,7 +2012,50 @@ def _league_digest_part(sb, league: dict) -> tuple[str, dict | None]:
     }
 
 
-async def _daily_digest_job():
+def _digest_claim(sb, force: bool = False) -> bool:
+    """Claim today's digest run, returning False if it's already been claimed.
+
+    The digest schedule is fired twice — a primary and a backstop ~45 minutes
+    later — because GitHub's hosted runners intermittently never pick the job
+    up at all ("The job was not acquired by Runner of type hosted", which ate
+    the 2026-08-06 digest entirely). A second attempt only helps if it can't
+    double-send, so each run claims the day before doing any work.
+
+    The claim is written at *start*, not on completion: the job takes minutes
+    (a billed lead call per league), so a completion-only marker would let the
+    backstop fire while the primary was still mid-send. The cost of that choice
+    is that a run which dies partway holds the claim — deliberate, since one
+    incomplete send beats two full ones landing in everyone's inbox.
+
+    Keyed on the UTC date, which is safe only because both schedules sit in the
+    middle of the UTC day (~15:43 and ~16:28, plus GitHub's drift) and can't
+    straddle midnight. `force` bypasses it for a deliberate manual re-send.
+    """
+    day = datetime.now(timezone.utc).date().isoformat()
+    if not force:
+        try:
+            rows = (
+                sb.table("app_events").select("id")
+                .eq("kind", "digest_run")
+                .gte("created_at", f"{day}T00:00:00+00:00")
+                .limit(1).execute()
+            ).data or []
+            if rows:
+                print(f"[digest] already claimed for {day} — skipping")
+                return False
+        except Exception:
+            # Can't verify -> don't send. A silent double-send to every owner is
+            # worse than a missed day, and the next run retries anyway.
+            traceback.print_exc()
+            return False
+    _log_event(
+        kind="digest_run", level="info", status=200,
+        message=_json.dumps({"day": day, "forced": force}),
+    )
+    return True
+
+
+async def _daily_digest_job(force: bool = False):
     """Assemble + email each opted-in league's digest. Runs as a background task
     — Railway's edge cuts a live HTTP request around the 5-minute mark. The
     outcome is summarized to app_events so the admin page shows how each run
@@ -2035,6 +2078,11 @@ async def _daily_digest_job():
             _log_event, kind="digest", level="warning", status=500,
             message="digest aborted: BREVO_API_KEY / DIGEST_FROM_EMAIL not configured",
         )
+        return
+
+    # Claim after the config check, so a misconfigured run doesn't burn the
+    # day's only attempt — fix the env var and the backstop still fires.
+    if not await asyncio.to_thread(_digest_claim, sb, force):
         return
 
     leagues = (await asyncio.to_thread(
@@ -2098,14 +2146,23 @@ async def _daily_digest_job():
 
 
 @app.post("/cron/daily-digest")
-async def cron_daily_digest(background_tasks: BackgroundTasks, x_cron_secret: str = Header(default="")):
-    """Machine-triggered morning digest: warms the widgets, then emails each
-    opted-in league owner. Responds immediately and runs the pipeline as a
-    background task; the run's outcome lands in app_events (admin page)."""
+async def cron_daily_digest(
+    background_tasks: BackgroundTasks,
+    x_cron_secret: str = Header(default=""),
+    force: bool = Query(False),
+):
+    """Machine-triggered morning digest: emails each opted-in league owner.
+    Responds immediately and runs the pipeline as a background task; the run's
+    outcome lands in app_events (admin page).
+
+    Called twice a day by .github/workflows/daily-digest.yml (a primary and a
+    backstop), so the job claims the day via `_digest_claim` and the second call
+    is normally a no-op. `?force=true` overrides the claim for a deliberate
+    manual re-send — it will double-send if the day already went out."""
     if not _cron_secret_ok(x_cron_secret):
         raise HTTPException(status_code=401, detail="Unauthorized")
-    background_tasks.add_task(_daily_digest_job)
-    return {"started": True}
+    background_tasks.add_task(_daily_digest_job, force)
+    return {"started": True, "forced": force}
 
 
 def _build_standings(fantrax_league_id: str, my_team_id: str) -> dict:
