@@ -48,6 +48,15 @@ class _FakeSB:
         return _FakeQuery(self._result)
 
 
+@pytest.fixture(autouse=True)
+def _clear_allowlist_cache():
+    """`_allowlist_cache` is a module global; left populated it would 403 any
+    later test that touches get_current_user."""
+    auth.reset_allowlist_cache()
+    yield
+    auth.reset_allowlist_cache()
+
+
 OWNER = "11111111-1111-1111-1111-111111111111"
 STRANGER = "22222222-2222-2222-2222-222222222222"
 
@@ -98,7 +107,11 @@ def test_does_not_use_single():
     assert ".single()" not in body
 
 
-# ── Signup allowlist ─────────────────────────────────────────────────────────
+# ── Invite allowlist ─────────────────────────────────────────────────────────
+# Two layers read the same `allowed_emails` table: the `hook_restrict_signup`
+# Postgres hook rejects new signups, and this one 403s accounts that already
+# exist. The tests below cover the second; the hook is SQL (migration
+# 20260901_allowed_emails.sql).
 
 def _decode_as(monkeypatch, payload):
     monkeypatch.setattr(auth, "_get_jwks", lambda: {})
@@ -106,23 +119,45 @@ def _decode_as(monkeypatch, payload):
     return type("Creds", (), {"credentials": "token"})()
 
 
-def test_gate_is_off_when_unconfigured(monkeypatch):
-    """Empty ALLOWED_EMAILS must allow everyone. Deploying the code is then a
-    no-op and switching it on is a deliberate, reversible config change — rather
-    than something that strands every user the moment it merges."""
+def _listed(monkeypatch, emails, *, fail=False):
+    """Point the allowlist at a fake `allowed_emails` table."""
+    auth.reset_allowlist_cache()
     monkeypatch.delenv("ALLOWED_EMAILS", raising=False)
+
+    class _Tbl:
+        def select(self, *_a, **_k):
+            return self
+
+        def execute(self):
+            if fail:
+                raise RuntimeError("supabase down")
+            return type("Res", (), {"data": [{"email": e} for e in emails]})()
+
+    class _SB:
+        def table(self, _n):
+            return _Tbl()
+
+    import engine.supabase_client as sc
+    monkeypatch.setattr(sc, "get_supabase", lambda: _SB())
+
+
+def test_gate_is_off_when_list_is_empty(monkeypatch):
+    """An empty list means "not configured yet", not "admit nobody". Failing
+    closed on an unpopulated table would strand every user on deploy."""
+    _listed(monkeypatch, [])
+    monkeypatch.delenv("ADMIN_EMAILS", raising=False)
     creds = _decode_as(monkeypatch, {"sub": OWNER, "email": "rando@example.com"})
     assert auth.get_current_user(creds)["sub"] == OWNER
 
 
-def test_allowlisted_email_passes(monkeypatch):
-    monkeypatch.setenv("ALLOWED_EMAILS", "friend@example.com, other@example.com")
+def test_listed_email_passes(monkeypatch):
+    _listed(monkeypatch, ["friend@example.com"])
     creds = _decode_as(monkeypatch, {"sub": OWNER, "email": "Friend@Example.com"})
     assert auth.get_current_user(creds)["sub"] == OWNER
 
 
 def test_stranger_is_turned_away(monkeypatch):
-    monkeypatch.setenv("ALLOWED_EMAILS", "friend@example.com")
+    _listed(monkeypatch, ["friend@example.com"])
     creds = _decode_as(monkeypatch, {"sub": STRANGER, "email": "rando@example.com"})
     with pytest.raises(HTTPException) as e:
         auth.get_current_user(creds)
@@ -130,16 +165,47 @@ def test_stranger_is_turned_away(monkeypatch):
 
 
 def test_admin_is_always_allowed(monkeypatch):
-    """ADMIN_EMAILS is folded in unconditionally so a typo in ALLOWED_EMAILS
-    can't lock the operator out of their own app."""
-    monkeypatch.setenv("ALLOWED_EMAILS", "friend@example.com")
+    """ADMIN_EMAILS is unioned in so an empty or mistyped table can't lock the
+    operator out of the app that administers the table."""
+    _listed(monkeypatch, ["friend@example.com"])
     monkeypatch.setenv("ADMIN_EMAILS", "boss@example.com")
     creds = _decode_as(monkeypatch, {"sub": OWNER, "email": "boss@example.com"})
     assert auth.get_current_user(creds)["sub"] == OWNER
 
 
-def test_missing_email_claim_is_denied_when_gate_is_on(monkeypatch):
+def test_env_var_still_works_as_break_glass(monkeypatch):
+    """ALLOWED_EMAILS survives from #132 for the case where the table can't be
+    read at boot."""
+    _listed(monkeypatch, [], fail=True)
     monkeypatch.setenv("ALLOWED_EMAILS", "friend@example.com")
+    creds = _decode_as(monkeypatch, {"sub": STRANGER, "email": "rando@example.com"})
+    with pytest.raises(HTTPException) as e:
+        auth.get_current_user(creds)
+    assert e.value.status_code == 403
+
+
+def test_failed_refresh_keeps_serving_the_last_good_list(monkeypatch):
+    """The regression this guards: without stale-on-error, one Supabase blip
+    drops the gate to whatever the env vars say — which is usually nothing —
+    and silently readmits everyone."""
+    _listed(monkeypatch, ["friend@example.com"])
+    creds = _decode_as(monkeypatch, {"sub": OWNER, "email": "friend@example.com"})
+    assert auth.get_current_user(creds)["sub"] == OWNER  # populates the cache
+
+    # Table goes away; the TTL is forced to expire so the next call refetches.
+    auth._allowlist_fetched_at = 0.0
+    _fail = type("SB", (), {"table": lambda self, n: (_ for _ in ()).throw(RuntimeError("down"))})
+    import engine.supabase_client as sc
+    monkeypatch.setattr(sc, "get_supabase", lambda: _fail())
+
+    stranger = _decode_as(monkeypatch, {"sub": STRANGER, "email": "rando@example.com"})
+    with pytest.raises(HTTPException) as e:
+        auth.get_current_user(stranger)
+    assert e.value.status_code == 403
+
+
+def test_missing_email_claim_is_denied_when_gate_is_on(monkeypatch):
+    _listed(monkeypatch, ["friend@example.com"])
     creds = _decode_as(monkeypatch, {"sub": OWNER})
     with pytest.raises(HTTPException) as e:
         auth.get_current_user(creds)
