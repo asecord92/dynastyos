@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { authedFetch, isTimeoutError } from "../../lib/useDashboardWidget";
+import AllowedEmails from "../../components/admin/AllowedEmails";
 
 type UserRow = {
   user_id: string;
@@ -378,6 +379,8 @@ export default function AdminPage() {
           </div>
         </section>
       )}
+
+      <AllowedEmails />
 
       <p className="text-xs text-gray-400">
         Usage is derived live from existing data; issues are captured by a global error

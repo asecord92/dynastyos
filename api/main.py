@@ -68,7 +68,7 @@ from engine.trade_analyzer import (
     build_add_drop_prompt,
     _select_id_map,
 )
-from engine.auth import get_current_user, _get_jwks
+from engine.auth import get_current_user, reset_allowlist_cache, _get_jwks
 from engine import crypto
 from jose import jwt
 
@@ -928,6 +928,109 @@ async def admin_usage(_user: dict = Depends(require_admin)):
         "tools": finish(by_tool, "tool", lambda k: k),
         "users": finish(by_user, "email", lambda k: email_by_id.get(k) or k),
     }
+
+
+# ── Invite allowlist (admin-managed) ─────────────────────────────────────────
+# The list backs two gates: `hook_restrict_signup` (Postgres, rejects new
+# signups at the source) and `get_current_user` (403s accounts that already
+# exist). Both read the same `allowed_emails` table — see
+# supabase/migrations/20260901_allowed_emails.sql.
+
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+class AllowedEmailRequest(BaseModel):
+    email: str
+    note: str = ""
+
+
+@app.get("/admin/allowed-emails")
+async def list_allowed_emails(_user: dict = Depends(require_admin)):
+    """The invite list, plus recent blocked signup attempts so the operator can
+    see who tried and add them in one step if they're meant to be here."""
+    sb = get_supabase()
+
+    def _load() -> dict:
+        try:
+            rows = (
+                sb.table("allowed_emails")
+                .select("email, note, created_at")
+                .order("created_at", desc=True)
+                .execute()
+            ).data or []
+        except Exception:
+            # Pre-migration: report it rather than 500, so the admin page can say
+            # "run the migration" instead of just failing.
+            traceback.print_exc()
+            return {"available": False, "emails": [], "blocked": [], "admins": sorted(ADMIN_EMAILS)}
+        try:
+            blocked = (
+                sb.table("app_events")
+                .select("created_at, message")
+                .eq("kind", "signup_blocked")
+                .order("created_at", desc=True)
+                .limit(20)
+                .execute()
+            ).data or []
+        except Exception:
+            blocked = []
+        return {
+            "available": True,
+            # Empty is meaningful: the gate is off entirely, not "nobody allowed".
+            "enforcing": bool(rows) or bool(os.getenv("ALLOWED_EMAILS", "").strip()),
+            "emails": rows,
+            "blocked": blocked,
+            "admins": sorted(ADMIN_EMAILS),
+        }
+
+    return await asyncio.to_thread(_load)
+
+
+@app.post("/admin/allowed-emails")
+async def add_allowed_email(body: AllowedEmailRequest, user: dict = Depends(require_admin)):
+    email = (body.email or "").strip().lower()
+    if not _EMAIL_RE.match(email):
+        raise HTTPException(status_code=400, detail="That doesn't look like an email address.")
+    sb = get_supabase()
+
+    def _save() -> None:
+        sb.table("allowed_emails").upsert(
+            {"email": email, "note": (body.note or "").strip()[:200] or None,
+             "added_by": user.get("sub")},
+            on_conflict="email",
+        ).execute()
+
+    try:
+        await asyncio.to_thread(_save)
+    except Exception:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Couldn't save that email.")
+    reset_allowlist_cache()  # take effect now, not up to a minute from now
+    return {"ok": True, "email": email}
+
+
+@app.delete("/admin/allowed-emails")
+async def remove_allowed_email(email: str = Query(...), _user: dict = Depends(require_admin)):
+    target = (email or "").strip().lower()
+    if not target:
+        raise HTTPException(status_code=400, detail="No email given.")
+    if target in ADMIN_EMAILS:
+        # Removing yourself would only be cosmetic (ADMIN_EMAILS is unioned in
+        # regardless), so refuse rather than imply it did something.
+        raise HTTPException(
+            status_code=400,
+            detail="Admin emails are always allowed — remove it from ADMIN_EMAILS instead.",
+        )
+    sb = get_supabase()
+    try:
+        await asyncio.to_thread(
+            lambda: sb.table("allowed_emails").delete().eq("email", target).execute()
+        )
+    except Exception:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Couldn't remove that email.")
+    reset_allowlist_cache()
+    return {"ok": True, "email": target}
 
 
 class RosterSyncRequest(BaseModel):

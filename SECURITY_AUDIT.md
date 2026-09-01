@@ -3,9 +3,9 @@
 Full-app review (backend `api/` + `engine/`, frontend `web/`, Supabase config, CI/deploy).
 Remove entries as fixes ship.
 
-**Status:** #1, #3, #4, #9, #12, #15 and the signup allowlist half of #5 shipped in #132.
-Still open: #2 (Fantrax secret handling), the rate-limiting half of #5, #6, #7, #8, #10,
-#11, #13, #14.
+**Status:** #1, #3, #4, #9, #12, #15 shipped in #132; #5's access-control half in
+#132 + #133 (invite list + signup hook). Still open: #2 (Fantrax secret handling),
+the rate-limiting half of #5, #6, #7, #8, #10, #11, #13, #14.
 
 ## What's already right
 
@@ -114,13 +114,15 @@ The comment's "never lock out on legacy rows" concern is moot — the column is 
 
 ### 5. No rate limiting, and signup is open to the world
 
-> **HALF SHIPPED (#132).** The allowlist is in: `ALLOWED_EMAILS` is enforced inside
-> `get_current_user`, so it covers every route with no call site to forget, and
-> `ADMIN_EMAILS` is folded in so a typo can't lock the operator out. Empty means
-> allow-everyone, so **it does nothing until the env var is set on Railway.**
-> Note it gates the *backend* only — a stranger can still hold a Supabase session
-> and read the public-read reference tables via the anon key. Closing that needs a
-> Supabase-side auth hook. **Rate limiting is still open.**
+> **ACCESS CONTROL SHIPPED (#132, #133). Rate limiting still open.**
+> #132 added the backend gate; #133 moved the list into the `allowed_emails` table
+> (managed at `/admin`, no redeploy to add a friend) and added the **Before User
+> Created** Postgres hook, so signups are now rejected at the source rather than
+> merely rendered useless. Two layers because they cover different people: the hook
+> only fires at account creation, so the backend check is what handles accounts that
+> already exist. Empty list = allow-everyone in both, deliberately.
+> Still gates the *backend* only — a signed-up stranger can read the intentionally
+> public reference tables via the anon key. **Rate limiting is untouched.**
 
 Auth is magic-link + Google OAuth with no allowlist, so anyone who finds the app can hold a
 valid session. There is no rate limiting anywhere in the stack. An authenticated stranger can
