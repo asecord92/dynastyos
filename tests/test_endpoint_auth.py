@@ -16,8 +16,10 @@ from api.main import app
 # Routes that are public on purpose.
 PUBLIC_PATHS = {
     "/health",  # uptime probe
-    # FastAPI's built-in docs. Public schema is reconnaissance, not a hole —
-    # every documented route below is itself authenticated.
+    # FastAPI's built-in docs. Not registered at all unless DOCS_ENABLED=true
+    # (off in prod since the 2026-09-01 audit — the endpoints below are all
+    # authenticated, so publishing the schema was reconnaissance value only),
+    # but listed here so they stay deliberate if someone turns them back on.
     "/docs",
     "/docs/oauth2-redirect",
     "/redoc",

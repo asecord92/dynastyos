@@ -32,6 +32,34 @@ def _get_jwks() -> dict:
     return _jwks_cache
 
 
+def _allowed_emails() -> set[str]:
+    """The signup allowlist, read fresh each call so it can be changed on the
+    host without a redeploy.
+
+    Supabase signup is open to the world (magic link + Google, no gate), which
+    for a private league app means anyone who finds the site can hold a valid
+    session and reach the sync/proxy endpoints. ADMIN_EMAILS is folded in
+    unconditionally so the operator can never lock themselves out with a typo.
+
+    **Empty means allow everyone** — the pre-existing behaviour. That keeps
+    deploying this code a no-op and makes turning it on a deliberate, reversible
+    config change rather than something that can strand users mid-rollout.
+    """
+    allowed = {
+        e.strip().lower()
+        for e in os.getenv("ALLOWED_EMAILS", "").split(",")
+        if e.strip()
+    }
+    if not allowed:
+        return set()  # not configured -> gate is off
+    allowed |= {
+        e.strip().lower()
+        for e in os.getenv("ADMIN_EMAILS", "asecord92@gmail.com").split(",")
+        if e.strip()
+    }
+    return allowed
+
+
 def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(_bearer),
 ) -> dict:
@@ -44,10 +72,22 @@ def get_current_user(
             algorithms=["ES256"],
             options={"verify_aud": False},
         )
-        return payload
     except JWTError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired token",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+    # Enforced here rather than per-endpoint: every route already depends on
+    # get_current_user, so there is no call site to forget. The cron routes are
+    # unaffected — they authenticate with CRON_SECRET, not a user JWT.
+    allowed = _allowed_emails()
+    if allowed:
+        email = (payload.get("email") or "").strip().lower()
+        if email not in allowed:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="This app is invite-only. Ask Adam to add your email.",
+            )
+    return payload

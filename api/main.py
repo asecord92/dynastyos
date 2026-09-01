@@ -1,4 +1,5 @@
 import asyncio
+import hmac
 import html as _html
 import threading
 import time
@@ -71,9 +72,32 @@ from engine.auth import get_current_user, _get_jwks
 from engine import crypto
 from jose import jwt
 
-app = FastAPI(title="DynastyOS API")
+# The interactive docs enumerate every endpoint, request schema, and auth scheme
+# for anyone who finds the Railway URL. The endpoints are all authenticated, so
+# this is reconnaissance value only — but there's no reason to hand it out.
+# Kept on locally (DOCS_ENABLED=true) where they're genuinely useful.
+_DOCS_ON = os.getenv("DOCS_ENABLED", "").lower() in ("1", "true", "yes")
 
-allow_origins = os.getenv("ALLOWED_ORIGINS", "*").split(",")
+app = FastAPI(
+    title="DynastyOS API",
+    docs_url="/docs" if _DOCS_ON else None,
+    redoc_url="/redoc" if _DOCS_ON else None,
+    openapi_url="/openapi.json" if _DOCS_ON else None,
+)
+
+# Default to the production frontends rather than "*". Starlette computes
+# `preflight_explicit_allow_origin = not allow_all_origins or allow_credentials`,
+# so "*" combined with allow_credentials=True does NOT send a literal "*" — it
+# echoes whatever Origin asked and sets Access-Control-Allow-Credentials: true,
+# i.e. every origin is allowed. Auth is a Bearer header (no ambient cookie to
+# ride), so that was never directly exploitable, but the failure mode is silent:
+# an unset env var opens it up and nothing breaks or warns. Now it warns.
+_DEFAULT_ORIGINS = "https://dynastyos.app,https://www.dynastyos.app,http://localhost:3000"
+_origins_env = os.getenv("ALLOWED_ORIGINS", "").strip()
+if not _origins_env:
+    print("[cors] ALLOWED_ORIGINS unset — falling back to the built-in list. "
+          f"Set it explicitly in prod. ({_DEFAULT_ORIGINS})")
+allow_origins = [o.strip() for o in (_origins_env or _DEFAULT_ORIGINS).split(",") if o.strip()]
 
 app.add_middleware(
     CORSMiddleware,
@@ -1412,14 +1436,24 @@ def health():
     return {"ok": True}
 
 
+def _cron_secret_ok(supplied: str) -> bool:
+    """Constant-time check of the CRON_SECRET shared secret. `!=` on a str leaks
+    the matching-prefix length through timing; compare_digest doesn't. Remote
+    timing attacks on a high-entropy secret are near-unexploitable, but these
+    endpoints can trigger billed AI work, so it's worth the one line."""
+    secret = os.getenv("CRON_SECRET") or ""
+    if not secret:
+        return False
+    return hmac.compare_digest(supplied or "", secret)
+
+
 @app.post("/cron/refresh-widgets")
 async def cron_refresh_widgets(x_cron_secret: str = Header(default="")):
     """Machine-triggered re-warm of the AI dashboard widgets so users never wait
     on an on-demand generation. Guarded by the CRON_SECRET shared secret (not a
     user JWT). Only refreshes widgets that already have a cache entry near expiry,
     so dormant leagues incur no AI cost."""
-    secret = os.getenv("CRON_SECRET")
-    if not secret or x_cron_secret != secret:
+    if not _cron_secret_ok(x_cron_secret):
         raise HTTPException(status_code=401, detail="Unauthorized")
     # Only keep actively-used leagues warm — dormant ones cost nothing until the
     # owner opens the app again. (The digest no longer warms anything either, so
@@ -2068,8 +2102,7 @@ async def cron_daily_digest(background_tasks: BackgroundTasks, x_cron_secret: st
     """Machine-triggered morning digest: warms the widgets, then emails each
     opted-in league owner. Responds immediately and runs the pipeline as a
     background task; the run's outcome lands in app_events (admin page)."""
-    secret = os.getenv("CRON_SECRET")
-    if not secret or x_cron_secret != secret:
+    if not _cron_secret_ok(x_cron_secret):
         raise HTTPException(status_code=401, detail="Unauthorized")
     background_tasks.add_task(_daily_digest_job)
     return {"started": True}
@@ -2101,17 +2134,46 @@ def _build_standings(fantrax_league_id: str, my_team_id: str) -> dict:
 def require_league_owner(sb, user: dict, league_id: str) -> None:
     """Ensure the authenticated user owns this league. The backend uses the
     service key (bypassing RLS), so league ownership must be checked explicitly,
-    or any logged-in user could read/modify any league by id. Rows with no owner
-    set (legacy) are allowed; a row owned by someone else is blocked (403)."""
+    or any logged-in user could read/modify any league by id.
+
+    This gate **fails closed**. It used to fail open in three places — a failed
+    lookup returned silently, and a null owner or a token without `sub` fell
+    through the `if owner and sub` guard. The first one was live: supabase_client
+    documents that Supabase sends a GOAWAY under concurrent load which poisons
+    the pooled connection, so a transient query failure is an observed condition
+    here, not a hypothetical — and during it this check was open while a
+    dashboard_cache read on a separate code path could still succeed.
+
+    `leagues.owner_user_id` is `not null`, so the "legacy rows with no owner"
+    the old comment protected don't exist; nothing is locked out by requiring it.
+
+    Note the lookup deliberately avoids `.single()`: it raises on zero rows, which
+    would make a missing league indistinguishable from an infrastructure failure —
+    exactly the ambiguity that motivated the old fail-open.
+    """
     sub = (user or {}).get("sub")
+    if not sub:
+        raise HTTPException(status_code=401, detail="No user identity in token")
     try:
-        row = sb.table("leagues").select("owner_user_id").eq("id", league_id).single().execute()
+        row = (
+            sb.table("leagues")
+            .select("owner_user_id")
+            .eq("id", league_id)
+            .limit(1)
+            .execute()
+        )
     except Exception:
-        return  # lookup failed (e.g. not found) — let the endpoint's logic handle it
-    owner = (row.data or {}).get("owner_user_id")
-    # Block only when we have both a known owner and a known requester that differ —
-    # never lock out on a missing owner (legacy rows) or indeterminate identity.
-    if owner and sub and owner != sub:
+        # Infrastructure failure — we cannot prove ownership, so we don't grant it.
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=503,
+            detail="Couldn't verify league access right now. Try again in a moment.",
+        )
+    rows = row.data or []
+    if not rows:
+        raise HTTPException(status_code=404, detail="League not found.")
+    owner = rows[0].get("owner_user_id")
+    if owner != sub:
         raise HTTPException(status_code=403, detail="You don't have access to this league.")
 
 

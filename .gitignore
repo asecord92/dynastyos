@@ -7,8 +7,8 @@ __pycache__/
 *.pyo
 *.pyd
 
-# Environment variables
-.env
+# Environment variables (.env, .env.local, .env.production.local, ...)
+.env*
 
 # OS junk
 .DS_Store
