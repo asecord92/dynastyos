@@ -9,13 +9,25 @@
 # hour late). Off-peak minute + head start means typical drift still lands the
 # email near 9 AM Pacific rather than after it.
 #
+# TWO schedules, on purpose. GitHub's hosted runners intermittently never pick
+# the job up at all — "The job was not acquired by Runner of type hosted even
+# after multiple attempts" — which silently ate the entire 2026-08-06 digest
+# (the job sat queued 15 minutes and was cancelled with zero steps run, so the
+# backend was never called). A step-level retry can't help when no runner ever
+# executes the step, so the fix is a second scheduled attempt.
+#
+# The backstop is safe because the backend claims the day before doing any work
+# (`_digest_claim`): whichever attempt lands first sends, the other no-ops. That
+# also means the two can arrive out of order, which GitHub's drift makes likely.
+#
 # Secrets: API_URL (Railway backend base URL, no trailing slash) and
 # CRON_SECRET (must match the backend's CRON_SECRET env var).
 name: Daily Digest
 
 on:
   schedule:
-    - cron: "43 15 * * *"
+    - cron: "43 15 * * *"  # primary
+    - cron: "28 16 * * *"  # backstop, ~45m later — no-ops if the primary sent
   workflow_dispatch: {}
 
 jobs:
