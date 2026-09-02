@@ -3,8 +3,21 @@
 Full-app review (backend `api/` + `engine/`, frontend `web/`, Supabase config, CI/deploy).
 Remove entries as fixes ship.
 
-**Status:** #1, #3, #4, #9, #12, #15 shipped in #132; #5's access-control half in
-#132 + #133 (invite list + signup hook). Still open: the rate-limiting half of #5, #6, #7, #8, #10, #11, #13, #14.
+**Status (2026-09-02).** Shipped: #1, #3, #4, #9, #12, #15 in #132; #5's
+access-control half in #132 + #133 + #134 (invite list, signup hook, admin panel);
+#2 in #135 (Fantrax secret encrypted). Invite-only is live — migration applied,
+hook wired, allowlist populated, rando accounts deleted.
+
+**Still open, in the order I'd take them:**
+1. **#5, rate limiting** — nothing anywhere in the stack.
+2. **#6, RLS policies unversioned** — still zero `CREATE POLICY` in `supabase/migrations/`;
+   the whole multi-tenant boundary lives only in the Supabase dashboard.
+3. **#7** error-detail leakage (22 sites) and **#8** security headers — one small PR together.
+4. **#10** admin on `sub` not `email`, **#11** request-model length caps, **#13** Sleeper
+   username validation, **#14** `_ai_client_cache` keyed by plaintext keys.
+
+**Not a code finding, still outstanding:** Secret IDs written to Vercel/Railway logs
+before #135 are still there. Only regenerating them in Fantrax retires those.
 
 ## What's already right
 
