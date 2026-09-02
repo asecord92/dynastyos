@@ -31,3 +31,33 @@ def encrypt(plaintext: str) -> str:
 
 def decrypt(ciphertext: str) -> str:
     return _get_fernet().decrypt(ciphertext.encode()).decode()
+
+
+def looks_encrypted(value: str) -> bool:
+    """Whether `value` is one of our Fernet tokens. Fernet v1 tokens are
+    urlsafe-base64 of a payload whose first byte is 0x80, which always renders
+    as the prefix "gAAAAA" — no Fantrax Secret ID looks like that."""
+    return bool(value) and value.startswith("gAAAAA")
+
+
+def decrypt_tolerant(value: str | None) -> str | None:
+    """Decrypt a column that may still hold plaintext from before it was
+    encrypted, returning it either way.
+
+    Lets a secret be encrypted in place without a backfill migration or a
+    flag day: rows written before the change keep working and are re-written
+    encrypted the next time something saves them. Mirrors how `_select_id_map`
+    tolerates `player_id_map.age` being absent pre-migration.
+
+    Anything that fails to decrypt is returned as-is rather than raising — an
+    unreadable secret should degrade to "Fantrax rejects it", not a 500 that
+    strands the user with no way to re-enter it.
+    """
+    if not value:
+        return None
+    if not looks_encrypted(value):
+        return value  # written before this column was encrypted
+    try:
+        return decrypt(value)
+    except Exception:
+        return None

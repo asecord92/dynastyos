@@ -1034,7 +1034,10 @@ async def remove_allowed_email(email: str = Query(...), _user: dict = Depends(re
 
 
 class RosterSyncRequest(BaseModel):
-    user_secret_id: str
+    # Optional since the secret moved into the (encrypted) league row: the
+    # frontend no longer sends it, but a browser still running the previous
+    # bundle does, and Vercel/Railway deploy independently.
+    user_secret_id: str | None = None
     fantrax_league_id: str
 
 
@@ -2606,19 +2609,86 @@ async def roster_analyze(
                 pass
 
 
-@app.get("/fantrax/leagues")
+def _stored_fantrax_secret(sb, owner_id: str | None, fantrax_league_id: str) -> str | None:
+    """The caller's saved Fantrax Secret ID for this league, decrypted.
+
+    Scoped by `owner_user_id` as well as the Fantrax id because two people can
+    connect the same Fantrax league — each gets their own row and their own
+    secret (same reasoning as the league-row lookup in /roster/sync)."""
+    if not owner_id:
+        return None
+    try:
+        rows = (
+            sb.table("leagues")
+            .select("fantrax_secret_id")
+            .eq("owner_user_id", owner_id)
+            .eq("fantrax_league_id", fantrax_league_id)
+            .limit(1)
+            .execute()
+        ).data or []
+    except Exception:
+        traceback.print_exc()
+        return None
+    if not rows:
+        return None
+    return crypto.decrypt_tolerant(rows[0].get("fantrax_secret_id"))
+
+
+def _store_fantrax_secret(sb, league_row_id: str, secret: str) -> None:
+    sb.table("leagues").update(
+        {"fantrax_secret_id": crypto.encrypt(secret)}
+    ).eq("id", league_row_id).execute()
+
+
+class FantraxLeaguesRequest(BaseModel):
+    user_secret_id: str
+
+
+class FantraxSecretRequest(BaseModel):
+    league_id: str      # our leagues.id (UUID)
+    user_secret_id: str
+
+
+@app.post("/fantrax/leagues")
 async def fantrax_leagues(
-    user_secret_id: str = Query(...),
+    body: FantraxLeaguesRequest,
     _user: dict = Depends(get_current_user),
 ):
+    """Fantrax leagues for a Secret ID, during setup — before any league row
+    exists to read it from.
+
+    POST rather than GET specifically so the Secret ID travels in the body: as a
+    query parameter it was written verbatim into Vercel's edge logs, Railway's
+    request logs, and the user's browser history."""
     try:
-        leagues = get_leagues(user_secret_id)
+        leagues = await asyncio.to_thread(get_leagues, body.user_secret_id)
         return {"leagues": leagues}
     except Exception:
         # Don't echo the upstream error back — it's a Fantrax-side message about
         # someone's Secret ID, and the client only needs to know it failed.
         traceback.print_exc()
         raise HTTPException(status_code=502, detail="Couldn't reach Fantrax. Check your Secret ID.")
+
+
+@app.post("/fantrax/secret")
+async def save_fantrax_secret(body: FantraxSecretRequest, user: dict = Depends(get_current_user)):
+    """Store a league's Fantrax Secret ID, encrypted.
+
+    The browser used to write this column directly through Supabase, which meant
+    the credential was stored in the clear and had to be shipped back to the
+    client on every sync. It's written here instead so `crypto.encrypt` can be
+    applied — the client has no key, so this can't happen client-side."""
+    secret = (body.user_secret_id or "").strip()
+    if not secret:
+        raise HTTPException(status_code=400, detail="No Secret ID given.")
+    sb = get_supabase()
+    require_league_owner(sb, user, body.league_id)
+    try:
+        await asyncio.to_thread(_store_fantrax_secret, sb, body.league_id, secret)
+    except Exception:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Couldn't save the Secret ID.")
+    return {"ok": True}
 
 
 @app.get("/sleeper/leagues")
@@ -2866,8 +2936,23 @@ async def roster_sync(
     user: dict = Depends(get_current_user),
 ):
     try:
-        user_secret_id = body.user_secret_id
         fantrax_league_id = body.fantrax_league_id
+        sb = get_supabase()
+        owner_id = user.get("sub")
+
+        # The Secret ID normally comes from the caller's own saved league row, so
+        # the browser never has to hold or transmit it. It stays accepted in the
+        # body for the connect flow (the row is written moments earlier and may
+        # not have the secret yet) and so an older cached frontend keeps working
+        # while Vercel and Railway finish deploying independently.
+        user_secret_id = (body.user_secret_id or "").strip() or await asyncio.to_thread(
+            _stored_fantrax_secret, sb, owner_id, fantrax_league_id
+        )
+        if not user_secret_id:
+            raise HTTPException(
+                status_code=400,
+                detail="No Fantrax Secret ID saved for this league. Reconnect it in Settings.",
+            )
 
         # Step 1: Get the user's leagues to find their teamId and sport
         leagues = get_leagues(user_secret_id)
@@ -2899,11 +2984,9 @@ async def roster_sync(
         # makes .single() throw). Everything below is scoped to league_uuid.
         # Set which team is theirs up front so the dashboard works even if the
         # enrichment steps hiccup.
-        sb = get_supabase()
-        owner_id = user.get("sub")
         league_row = (
             sb.table("leagues")
-            .select("id")
+            .select("id, fantrax_secret_id")
             .eq("owner_user_id", owner_id)
             .eq("fantrax_league_id", fantrax_league_id)
             .limit(1)
@@ -2916,6 +2999,19 @@ async def roster_sync(
                 detail="This league isn't connected to your account. Reconnect it in Settings.",
             )
         sb.table("leagues").update({"fantrax_team_id": team_id}).eq("id", league_uuid).execute()
+
+        # Upgrade the stored secret in place. Rows written before this column was
+        # encrypted — or by the connect flow, which passes the secret in the body —
+        # get re-written as ciphertext on the first sync that works. That's what
+        # makes this a rolling migration instead of a backfill script: the value is
+        # only replaced once Fantrax has confirmed it authenticates, so a bad
+        # secret can never overwrite a good one.
+        stored = (league_row.data[0] or {}).get("fantrax_secret_id")
+        if not crypto.looks_encrypted(stored or ""):
+            try:
+                _store_fantrax_secret(sb, league_uuid, user_secret_id)
+            except Exception:
+                traceback.print_exc()  # cosmetic — the sync itself already worked
 
         # Step 2.5: Fetch league info and persist structural profile fields
         league_info = {}
