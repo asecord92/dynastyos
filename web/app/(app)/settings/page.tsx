@@ -273,9 +273,13 @@ export default function SettingsPage() {
     setConnectMsg(null);
     setConnectMsgTone("error");
     try {
-      const res = await authedFetch(
-        `/api/fantrax/leagues?user_secret_id=${encodeURIComponent(secretId)}`
-      );
+      // POST, not a query string: as a query parameter the Secret ID was
+      // written verbatim into Vercel/Railway request logs and browser history.
+      const res = await authedFetch("/api/fantrax/leagues", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_secret_id: secretId }),
+      });
       if (!res.ok) throw new Error(await res.text());
       const json = await res.json();
       const fetched: FantraxLeague[] = json.leagues ?? [];
@@ -424,7 +428,6 @@ export default function SettingsPage() {
         await supabase
           .from("leagues")
           .update({
-            fantrax_secret_id: secretId,
             name: picked.leagueName,
             sport: picked.sport,
           })
@@ -436,7 +439,6 @@ export default function SettingsPage() {
             owner_user_id: user.id,
             name: picked.leagueName,
             platform: "fantrax",
-            fantrax_secret_id: secretId,
             fantrax_league_id: picked.leagueId,
             sport: picked.sport,
           })
@@ -445,6 +447,15 @@ export default function SettingsPage() {
         if (error) throw new Error(error.message);
         leagueRowId = newLeague.id;
       }
+
+      // Encrypted at rest by the backend — the browser can't do this, it has no
+      // APP_ENCRYPTION_KEY, which is why the write moved off the Supabase client.
+      const secretRes = await authedFetch("/api/fantrax/secret", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ league_id: leagueRowId, user_secret_id: secretId }),
+      });
+      if (!secretRes.ok) throw new Error("Couldn't save the Secret ID. Try reconnecting.");
 
       setLeague(leagueRowId);
       setConnectStep("done");
@@ -455,7 +466,7 @@ export default function SettingsPage() {
       const syncRes = await fetch("/api/roster/sync", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ user_secret_id: secretId, fantrax_league_id: picked.leagueId }),
+        body: JSON.stringify({ fantrax_league_id: picked.leagueId }),
       });
       if (syncRes.ok) {
         const syncJson = await syncRes.json();

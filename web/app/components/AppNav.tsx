@@ -154,7 +154,7 @@ export function AppNav() {
     try {
       const { data: leagueData, error: leagueError } = await supabase
         .from("leagues")
-        .select("platform, sport, fantrax_secret_id, fantrax_league_id, sleeper_league_id")
+        .select("platform, sport, fantrax_league_id, sleeper_league_id")
         .eq("id", leagueId)
         .single();
 
@@ -188,7 +188,7 @@ export function AppNav() {
         });
         if (!res.ok) throw new Error(await res.text());
       } else {
-        if (!leagueData.fantrax_secret_id || !leagueData.fantrax_league_id) {
+        if (!leagueData.fantrax_league_id) {
           showSyncToast("Connect Fantrax in Settings first.");
           return;
         }
@@ -196,7 +196,6 @@ export function AppNav() {
           method: "POST",
           headers: authHeaders,
           body: JSON.stringify({
-            user_secret_id: leagueData.fantrax_secret_id,
             fantrax_league_id: leagueData.fantrax_league_id,
           }),
         });

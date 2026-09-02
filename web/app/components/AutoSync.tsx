@@ -24,14 +24,15 @@ export function AutoSync() {
       const isStale = !synced_at || Date.now() - new Date(synced_at).getTime() > FOUR_HOURS_MS;
       if (!isStale) return;
 
-      // Fetch Fantrax credentials from leagues table
+      // Only the league id — the backend reads the (encrypted) Secret ID from
+      // the league row itself, so the credential never reaches the browser.
       const { data: leagueData } = await supabase
         .from("leagues")
-        .select("fantrax_secret_id,fantrax_league_id")
+        .select("fantrax_league_id")
         .eq("id", leagueId)
         .single();
 
-      if (!leagueData?.fantrax_secret_id || !leagueData?.fantrax_league_id) return;
+      if (!leagueData?.fantrax_league_id) return;
 
       const { data: sessionData } = await supabase.auth.getSession();
       const accessToken = sessionData.session?.access_token;
@@ -44,7 +45,6 @@ export function AutoSync() {
           ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
         },
         body: JSON.stringify({
-          user_secret_id: leagueData.fantrax_secret_id,
           fantrax_league_id: leagueData.fantrax_league_id,
         }),
       }).catch(() => {});

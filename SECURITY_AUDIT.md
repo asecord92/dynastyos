@@ -4,8 +4,7 @@ Full-app review (backend `api/` + `engine/`, frontend `web/`, Supabase config, C
 Remove entries as fixes ship.
 
 **Status:** #1, #3, #4, #9, #12, #15 shipped in #132; #5's access-control half in
-#132 + #133 (invite list + signup hook). Still open: #2 (Fantrax secret handling),
-the rate-limiting half of #5, #6, #7, #8, #10, #11, #13, #14.
+#132 + #133 (invite list + signup hook). Still open: the rate-limiting half of #5, #6, #7, #8, #10, #11, #13, #14.
 
 ## What's already right
 
@@ -44,6 +43,17 @@ with the same upgrade.
 **Fix:** `next@16.3.4` + `eslint-config-next@16.3.4`, then `npm run build` as the gate.
 
 ### 2. The Fantrax Secret ID is a plaintext credential that round-trips through the browser
+
+> **SHIPPED (#135).** All three steps: `/fantrax/leagues` is POST so the ID leaves
+> the URL, the sync endpoints read it off the league row instead of the browser,
+> and it's Fernet-encrypted at rest via a new `POST /fantrax/secret` (the client
+> has no key, so the write had to move server-side). Encryption rolls forward
+> without a backfill — `crypto.decrypt_tolerant` returns legacy plaintext as-is,
+> and each successful sync re-writes the row as ciphertext *after* Fantrax has
+> confirmed the secret authenticates, so a bad secret can't overwrite a good one.
+> **Does not scrub history:** IDs already written to Vercel/Railway logs stay
+> there. Regenerating the Secret IDs in Fantrax is the only thing that retires
+> those, and that's a user action.
 
 `leagues.fantrax_secret_id` is a long-lived credential granting API access to that user's
 Fantrax account. Today it is:

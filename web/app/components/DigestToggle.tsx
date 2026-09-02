@@ -17,7 +17,9 @@ export function DigestToggle({ leagueId }: { leagueId: string }) {
     (async () => {
       const { data } = await supabase
         .from("leagues")
-        .select("*")
+        // Just this column: "*" also ships the encrypted fantrax_secret_id to
+        // the browser, and nothing here needs it.
+        .select("digest_enabled")
         .eq("id", leagueId)
         .single();
       if (!active) return;
