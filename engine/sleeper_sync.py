@@ -34,6 +34,9 @@ def build_nfl_rules(league_detail: dict) -> dict:
         "superflex": "SUPER_FLEX" in positions,
         "roster_positions": positions,
         "draft_rounds": settings.get("draft_rounds") or 4,
+        # Recorded so read-time pick refresh doesn't have to guess the year;
+        # `infer_league_season` falls back for leagues synced before this.
+        "season": league_detail.get("season"),
         "ppr": scoring.get("rec", 0),
         "pass_td": scoring.get("pass_td"),
         "taxi_slots": settings.get("taxi_slots"),
@@ -198,3 +201,53 @@ def refresh_roster_rows(rows: list | None, players: dict | None = None) -> list:
         {**r, "roster_items": refresh_item_meta(r.get("roster_items"), players)}
         for r in rows
     ]
+
+
+def infer_league_season(rules: dict | None, rows: list | None) -> int | None:
+    """The league's *current* season, needed to recompute pick inventory on read.
+
+    `build_nfl_rules` records it, but leagues synced before that don't have it,
+    so fall back to the stored picks: `compute_pick_inventory` writes the next
+    three classes, so the earliest stored season is this season + 1. None when
+    neither source can answer — the caller then keeps the stored picks rather
+    than guessing a year and silently reassigning everyone's draft capital.
+    """
+    season = (rules or {}).get("season")
+    if season:
+        try:
+            return int(season)
+        except (TypeError, ValueError):
+            pass
+    seasons = []
+    for row in rows or []:
+        for pick in row.get("draft_picks") or []:
+            try:
+                seasons.append(int(pick["season"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+    return min(seasons) - 1 if seasons else None
+
+
+def carry_forward_gaps(new_items: list | None, old_items: list | None) -> list:
+    """Keep the synced value wherever a freshly-built item has a hole.
+
+    Rebuilding a roster from the live dump (`build_roster_items`) takes every
+    field straight from it, so a player the dump has no age for comes back with
+    no age — losing a value we already knew. Same rule as `refresh_item_meta`:
+    for the best-effort fields, absence in the dump is a gap, not news. The
+    authoritative fields (team, injury) are deliberately left alone — there,
+    absence *is* the news.
+    """
+    old_by_id = {str(it.get("id")): it for it in old_items or []}
+    out = []
+    for it in new_items or []:
+        old = old_by_id.get(str(it.get("id")))
+        if not old:
+            out.append(it)
+            continue
+        filled = dict(it)
+        for field in _BEST_EFFORT_FIELDS:
+            if filled.get(field) in (None, "") and old.get(field) not in (None, ""):
+                filled[field] = old[field]
+        out.append(filled)
+    return out

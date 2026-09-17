@@ -2,7 +2,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 from .supabase_client import get_supabase
-from .mlb_stats_client import fetch_roster_status
+from .mlb_stats_client import fetch_roster_status, fetch_roster_statuses_bulk
 
 MLB_STATS_BASE = "https://statsapi.mlb.com/api/v1"
 
@@ -198,9 +198,9 @@ def resolve_player(
 
 def refresh_roster_statuses(fantrax_ids: list[str]) -> None:
     """
-    Refreshes roster_status and il_type for a list of fantrax IDs.
-    Called after each full sync since roster status changes frequently
-    unlike the underlying ID mappings.
+    Refreshes roster_status, il_type, mlb_team and age for a list of fantrax IDs.
+    Roster status changes far more often than the underlying ID mapping, so this
+    runs after each full sync and from the status cron.
     Never raises.
     """
     if not fantrax_ids:
@@ -219,15 +219,26 @@ def refresh_roster_statuses(fantrax_ids: list[str]) -> None:
         print(f"[refresh_status] Failed to load player IDs: {e}")
         return
 
+    rows = [r for r in rows if r.get("mlb_id")]
+    if not rows:
+        return
     print(f"[refresh_status] Refreshing roster status for {len(rows)} players...")
 
-    def refresh_one(row) -> bool:
+    # One bulk call per 100 players instead of one per player. `None` means every
+    # batch failed: that's an outage, and writing it would blank teams and IL
+    # flags across the league (same rule as the stat fetches — never persist an
+    # outage). Leave the previous values in place and let the next pass retry.
+    statuses = fetch_roster_statuses_bulk([r["mlb_id"] for r in rows])
+    if statuses is None:
+        print("[refresh_status] MLB status API unavailable — keeping stored values")
+        return
+
+    def write_one(row) -> bool:
         fantrax_id = row.get("fantrax_id", "")
-        mlb_id = row.get("mlb_id")
-        if not mlb_id:
-            return False
+        status_data = statuses.get(int(row["mlb_id"]))
+        if not status_data:
+            return False  # API had nothing for this player — don't overwrite
         try:
-            status_data = fetch_roster_status(int(mlb_id))
             update = {
                 "roster_status": status_data["roster_status"],
                 "il_type": status_data["il_type"],
@@ -244,10 +255,9 @@ def refresh_roster_statuses(fantrax_ids: list[str]) -> None:
             print(f"[refresh_status] Failed for {fantrax_id}: {e}")
             return False
 
-    # One MLB API call + one Supabase update per player — done sequentially this
-    # took ~0.5s/player (25s+ per sync for a full league). Bounded workers keep
-    # it polite to both APIs while finishing in a few seconds.
+    # The fetches are batched now; the Supabase writes are still one per player,
+    # so keep the bounded pool for those.
     with ThreadPoolExecutor(max_workers=12) as pool:
-        updated = sum(pool.map(refresh_one, rows))
+        updated = sum(pool.map(write_one, rows))
 
     print(f"[refresh_status] Done — {updated}/{len(rows)} statuses updated")

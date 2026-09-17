@@ -148,18 +148,20 @@ def test_refresh_covers_every_field_build_roster_items_embeds():
 
 # --- the read paths actually call it ------------------------------------------
 
-def test_every_nfl_read_path_refreshes():
-    """The helper is only worth anything if the read boundaries use it. These
-    four are every place a synced NFL roster becomes something a user or the AI
-    sees: the dashboard widgets, the three trade surfaces, the dynasty roster
-    page, and the football dashboard."""
+def test_every_nfl_read_path_goes_through_the_loader():
+    """The loader is only worth anything if the read boundaries use it. These are
+    every place a synced NFL roster becomes something a user or the AI sees. A
+    new read path that queries `rosters` directly is the way this bug comes
+    back."""
     import api.main
     from engine import nfl_dashboard, nfl_trade, nfl_widgets
 
-    assert "refresh_item_meta" in inspect.getsource(nfl_widgets.my_roster)
-    assert "refresh_roster_rows" in inspect.getsource(nfl_trade._load_rosters)
-    assert "refresh_roster_rows" in inspect.getsource(nfl_dashboard.build_nfl_dashboard)
-    assert "refresh_roster_rows" in inspect.getsource(api.main.dashboard_nfl_roster)
+    assert "load_rosters" in inspect.getsource(nfl_widgets.my_roster)
+    assert "load_rosters" in inspect.getsource(nfl_widgets.waiver_pool)
+    assert "load_rosters" in inspect.getsource(nfl_trade._load_rosters)
+    assert "load_rosters" in inspect.getsource(nfl_dashboard.build_nfl_dashboard)
+    assert "load_nfl_rosters" in inspect.getsource(api.main.dashboard_nfl_roster)
+    assert "load_nfl_rosters" in inspect.getsource(api.main.dashboard_trade_values)
 
 
 def test_the_football_dashboard_stays_off_the_event_loop():

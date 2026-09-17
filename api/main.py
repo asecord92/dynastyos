@@ -32,8 +32,8 @@ from engine.sleeper_sync import (
     build_nfl_rules,
     compute_pick_inventory,
     build_roster_items,
-    refresh_roster_rows,
 )
+from engine.nfl_rosters import load_rosters as load_nfl_rosters
 from engine import fantasycalc
 from engine import mlb_market_values
 from engine.trade_values import build_values_payload
@@ -1573,6 +1573,75 @@ async def cron_refresh_widgets(x_cron_secret: str = Header(default="")):
     return {"refreshed": refreshed, "count": len(refreshed)}
 
 
+# --- MLB player status refresh ------------------------------------------------
+# `player_id_map` carries each MLB player's current team, roster status, IL type
+# and age. Those were written once at resolution and refreshed only by a full
+# sync, so between syncs the trade and waiver prompts argued from a player's old
+# team and a healed player stayed on the IL. The NFL side fixes this by
+# overlaying a single cached dump on read (engine/nfl_rosters.py); MLB has no
+# equivalent feed — status is per-player — so it's a cheap scheduled refresh
+# instead, made affordable by the bulk endpoint (3 requests per ~300 players).
+#
+# Scoped to leagues someone actually opened recently, same gate and reasoning as
+# the widget warmer. Unlike that one this spends no AI money at all; the gate is
+# only about being polite to the MLB API.
+def _refresh_mlb_statuses(sb, only_league_ids: set[str] | None = None) -> dict:
+    """Refresh player_id_map status for every MLB league in the window. Returns
+    a small summary for the cron response / app_events. Never raises."""
+    try:
+        leagues = (
+            sb.table("leagues").select("id, sport").execute()
+        ).data or []
+    except Exception as e:
+        print(f"[status-cron] could not list leagues: {e}")
+        return {"leagues": 0, "players": 0, "error": str(e)}
+
+    league_ids = [
+        lg["id"] for lg in leagues
+        if lg.get("id")
+        and (lg.get("sport") or "MLB").upper() != "NFL"
+        and (only_league_ids is None or lg["id"] in only_league_ids)
+    ]
+    if not league_ids:
+        return {"leagues": 0, "players": 0}
+
+    # Dedupe across leagues: the same player is rostered in more than one, and
+    # player_id_map is global, so he only needs refreshing once per pass.
+    fantrax_ids: list[str] = []
+    for league_id in league_ids:
+        try:
+            rows = (
+                sb.table("rosters").select("roster_items")
+                .eq("league_id", league_id).execute()
+            ).data or []
+        except Exception as e:
+            print(f"[status-cron] roster read failed for {league_id}: {e}")
+            continue
+        for row in rows:
+            for item in row.get("roster_items") or []:
+                if item.get("id"):
+                    fantrax_ids.append(str(item["id"]))
+    fantrax_ids = list(dict.fromkeys(fantrax_ids))
+    if not fantrax_ids:
+        return {"leagues": len(league_ids), "players": 0}
+
+    refresh_roster_statuses(fantrax_ids)
+    return {"leagues": len(league_ids), "players": len(fantrax_ids)}
+
+
+@app.post("/cron/refresh-statuses")
+async def cron_refresh_statuses(x_cron_secret: str = Header(default="")):
+    """Machine-triggered refresh of MLB roster status / team / IL / age in
+    player_id_map. No AI spend — this is plain MLB Stats API data, and it is what
+    keeps the trade and waiver prompts from asserting a player's old team."""
+    if not _cron_secret_ok(x_cron_secret):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    sb = get_supabase()
+    active = await asyncio.to_thread(_recently_viewed_league_ids, sb)
+    summary = await asyncio.to_thread(_refresh_mlb_statuses, sb, active)
+    return summary
+
+
 async def _warm_stale_widgets(sb, only_league_ids: set[str] | None = None) -> list[str]:
     """Regenerate every near-expiry cached widget (the warmer's core). Can run
     for many minutes across leagues — callers over HTTP must background it or
@@ -2221,14 +2290,7 @@ async def dashboard_nfl_roster(body: DashboardRequest, user: dict = Depends(get_
             ).data or {}
             # Every team, not just the owner's: rival rosters + picks are what
             # turn the window read into league ranks instead of a bare percentage.
-            rows = refresh_roster_rows(
-                (
-                    sb.table("rosters")
-                    .select("fantrax_team_id, team_name, roster_items, draft_picks")
-                    .eq("league_id", body.league_id)
-                    .execute()
-                ).data or []
-            )
+            rows = load_nfl_rosters(sb, body.league_id)
             mine = next(
                 (r for r in rows if str(r.get("fantrax_team_id")) == str(body.my_team_id)),
                 None,
@@ -2289,13 +2351,20 @@ async def dashboard_trade_values(body: DashboardRequest, user: dict = Depends(ge
                 sb.table("leagues").select("sport, rules").eq("id", body.league_id)
                 .single().execute()
             ).data or {}
-            rosters = (
-                sb.table("rosters")
-                .select("fantrax_team_id, roster_items, draft_picks")
-                .eq("league_id", body.league_id)
-                .execute()
-            ).data or []
             sport = (league.get("sport") or "MLB").upper()
+            # NFL goes through the refreshing loader so the trade builder prices
+            # today's roster; MLB has no equivalent live feed (see the snapshot
+            # staleness note in CLAUDE.md) and reads the sync snapshot.
+            rosters = (
+                load_nfl_rosters(sb, body.league_id)
+                if sport == "NFL"
+                else (
+                    sb.table("rosters")
+                    .select("fantrax_team_id, roster_items, draft_picks")
+                    .eq("league_id", body.league_id)
+                    .execute()
+                ).data or []
+            )
             id_map: list = []
             if sport != "NFL":
                 ids = [
