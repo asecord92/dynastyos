@@ -40,8 +40,17 @@ jobs:
           # Check the status code explicitly and print the body, so a run that
           # did nothing cannot read the same as one that worked.
           URL="${KEEPWARM_URL%/}/cron/refresh-statuses"
-          code=$(curl -sS -L --max-time 300 -o /tmp/cron-body.txt -w '%{http_code}' -X POST "$URL" -H "x-cron-secret: $CRON_SECRET") || true
-          echo "HTTP $code"
+          # num_redirects is the diagnostic: a healthy KEEPWARM_URL hits the
+          # backend directly. Anything above 0 means we are relying on -L to
+          # save us, which also means a 301/302 would silently downgrade this
+          # POST to a GET. Worth knowing before it bites.
+          out=$(curl -sS -L --max-time 300 -o /tmp/cron-body.txt -w '%{http_code} %{num_redirects}' -X POST "$URL" -H "x-cron-secret: $CRON_SECRET") || true
+          code=${out%% *}
+          redirects=${out##* }
+          echo "HTTP $code (redirects: $redirects)"
+          if [ "$redirects" != "0" ]; then
+            echo "::warning::KEEPWARM_URL redirected $redirects time(s) — point it at the canonical backend URL"
+          fi
           cat /tmp/cron-body.txt; echo
           if [ "$code" != "200" ]; then
             echo "::error::expected HTTP 200 from /cron/refresh-statuses, got '$code'"
