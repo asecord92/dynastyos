@@ -39,7 +39,22 @@ jobs:
           # never reached. That is how this job can look green and do nothing.
           # Check the status code explicitly and print the body, so a run that
           # did nothing cannot read the same as one that worked.
-          URL="${KEEPWARM_URL%/}/cron/refresh-statuses"
+          # Never let the shared secret travel in cleartext. A schemeless
+          # KEEPWARM_URL makes curl assume http://, so the x-cron-secret header
+          # goes out unencrypted and only *then* gets redirected to https — and
+          # before the redirect was followed at all, that 3xx was the silent
+          # no-op this job used to report as success.
+          BASE="${KEEPWARM_URL%/}"
+          case "$BASE" in
+            https://*) ;;
+            http://*)
+              echo "::error::KEEPWARM_URL uses http:// — refusing to send CRON_SECRET in cleartext"
+              exit 1 ;;
+            *)
+              echo "::warning::KEEPWARM_URL has no scheme; assuming https:// (set it explicitly)"
+              BASE="https://$BASE" ;;
+          esac
+          URL="$BASE/cron/refresh-statuses"
           # num_redirects is the diagnostic: a healthy KEEPWARM_URL hits the
           # backend directly. Anything above 0 means we are relying on -L to
           # save us, which also means a 301/302 would silently downgrade this
