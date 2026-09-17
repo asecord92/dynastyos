@@ -25,5 +25,17 @@ jobs:
             echo "KEEPWARM_URL or CRON_SECRET not set; skipping."
             exit 0
           fi
-          curl -fsS --max-time 120 -X POST "${KEEPWARM_URL%/}/cron/refresh-widgets" \
-            -H "x-cron-secret: $CRON_SECRET" && echo " — refreshed"
+          # -L matters: without it a 301/308 (apex -> www, http -> https, a
+          # trailing-slash rewrite) is NOT an error to curl's -f, so curl exits 0
+          # with an empty body and the job reports success while the backend was
+          # never reached. That is how this job can look green and do nothing.
+          # Check the status code explicitly and print the body, so a run that
+          # did nothing cannot read the same as one that worked.
+          URL="${KEEPWARM_URL%/}/cron/refresh-widgets"
+          code=$(curl -sS -L --max-time 120 -o /tmp/cron-body.txt -w '%{http_code}' -X POST "$URL" -H "x-cron-secret: $CRON_SECRET") || true
+          echo "HTTP $code"
+          cat /tmp/cron-body.txt; echo
+          if [ "$code" != "200" ]; then
+            echo "::error::expected HTTP 200 from /cron/refresh-widgets, got '$code'"
+            exit 1
+          fi
