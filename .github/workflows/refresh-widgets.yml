@@ -36,12 +36,16 @@ jobs:
           # backend directly. Anything above 0 means we are relying on -L to
           # save us, which also means a 301/302 would silently downgrade this
           # POST to a GET. Worth knowing before it bites.
-          out=$(curl -sS -L --max-time 120 -o /tmp/cron-body.txt -w '%{http_code} %{num_redirects}' -X POST "$URL" -H "x-cron-secret: $CRON_SECRET") || true
-          code=${out%% *}
-          redirects=${out##* }
+          out=$(curl -sS -L --max-time 120 -o /tmp/cron-body.txt -w '%{http_code} %{num_redirects} %{url_effective}' -X POST "$URL" -H "x-cron-secret: $CRON_SECRET") || true
+          code=$(echo "$out" | cut -d' ' -f1)
+          redirects=$(echo "$out" | cut -d' ' -f2)
+          final=$(echo "$out" | cut -d' ' -f3)
           echo "HTTP $code (redirects: $redirects)"
           if [ "$redirects" != "0" ]; then
-            echo "::warning::KEEPWARM_URL redirected $redirects time(s) — point it at the canonical backend URL"
+            # The final URL is the redirect target, so it says exactly what
+            # KEEPWARM_URL should have been. It carries no credential — the
+            # secret is CRON_SECRET, which travels in a header.
+            echo "::warning::KEEPWARM_URL redirected $redirects time(s); it resolved to $final — set the secret to that origin (no trailing slash) so the POST goes direct"
           fi
           cat /tmp/cron-body.txt; echo
           if [ "$code" != "200" ]; then
