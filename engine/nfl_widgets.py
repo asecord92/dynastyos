@@ -1,30 +1,18 @@
 """Football dashboard AI widgets (start/sit, news, waiver): roster context and
 prompts built from synced Sleeper rosters + the players dump / season stats."""
 from .sleeper_client import get_players, get_season_stats
-from .sleeper_sync import refresh_item_meta
+from .nfl_rosters import load_rosters
 from .nfl_trade import STARTABLE, stats_season, _nfl_today_line
 
 
 def my_roster(sb, league_id: str, my_team_id: str):
-    rows = (
-        sb.table("rosters")
-        .select("team_name, roster_items")
-        .eq("league_id", league_id)
-        .eq("fantrax_team_id", my_team_id)
-        .limit(1)
-        .execute()
-        .data
-        or []
-    )
+    rows = load_rosters(sb, league_id, [my_team_id])
     if not rows:
         return None, []
-    # Live metadata, not the sync snapshot: these items go straight into the
-    # start/sit and news prompts, so a stale NFL team sends the model searching
-    # for the wrong depth chart and reporting back with confidence.
-    return (
-        rows[0].get("team_name", "Your Team"),
-        refresh_item_meta(rows[0].get("roster_items")),
-    )
+    # These items go straight into the start/sit and news prompts, so anything
+    # stale here sends the model searching the wrong depth chart and reporting
+    # back with confidence.
+    return rows[0].get("team_name", "Your Team"), (rows[0].get("roster_items") or [])
 
 
 def _lines(items: list) -> str:
@@ -71,9 +59,9 @@ bulleted list with the player name in bold. No preamble — start with the first
 
 def waiver_pool(sb, league_id: str, fmt_key: str, top: int = 40) -> list:
     """Top unrostered free agents by last-season points (startable positions)."""
-    rosters = (
-        sb.table("rosters").select("roster_items").eq("league_id", league_id).execute().data or []
-    )
+    # Live membership matters here in both directions: a player dropped since
+    # the last sync belongs in this pool, and one just added does not.
+    rosters = load_rosters(sb, league_id)
     claimed = {it["id"] for r in rosters for it in (r.get("roster_items") or [])}
     players = get_players()
     stats = get_season_stats(stats_season())

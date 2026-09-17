@@ -278,6 +278,64 @@ async def fetch_recent_stats(mlb_id: int, season: int, player_type: str) -> dict
     return {}
 
 
+_EMPTY_STATUS = {"roster_status": None, "il_type": None, "mlb_team": None, "age": None}
+
+# One request per player is what made a full-league status refresh 300 HTTP
+# calls. The bulk endpoint takes the same hydrate and returns the same person
+# shape, so both paths parse through _parse_person and can't drift.
+_STATUS_BATCH = 100  # 200 works; 100 keeps the URL ~1KB
+_STATUS_HYDRATE = "rosterEntries(team),currentTeam"
+
+
+def _parse_person(person: dict) -> dict:
+    """Roster status / IL type / current team / age out of one `people` entry."""
+    age = person.get("currentAge")
+
+    # Prefer rosterEntries — find the active entry (no endDate)
+    entries = person.get("rosterEntries", [])
+    active_entry = next((e for e in entries if e.get("endDate") is None), None)
+    if active_entry is None and entries:
+        active_entry = entries[0]
+
+    # Current team: the active roster entry's team is correct whether the player
+    # is on the MLB club or optioned; fall back to the person's currentTeam.
+    team_name = None
+    if active_entry:
+        team_name = active_entry.get("team", {}).get("name")
+    if not team_name:
+        team_name = person.get("currentTeam", {}).get("name")
+
+    if active_entry:
+        description = active_entry.get("status", {}).get("description", "")
+    else:
+        # Fall back to top-level status
+        description = person.get("status", {}).get("description", "")
+
+    d = description.lower()
+
+    if "60-day" in d or "60 day" in d:
+        roster_status, il_type = "IL", "60-Day IL"
+    elif "15-day" in d or "15 day" in d:
+        roster_status, il_type = "IL", "15-Day IL"
+    elif "10-day" in d or "10 day" in d:
+        roster_status, il_type = "IL", "10-Day IL"
+    elif "injured" in d or "il" in d:
+        roster_status, il_type = "IL", "IL"
+    elif "minor" in d or "rehabilitation" in d:
+        roster_status, il_type = "Minors", None
+    elif "active" in d:
+        roster_status, il_type = "Active", None
+    else:
+        roster_status, il_type = (description or None), None
+
+    return {
+        "roster_status": roster_status,
+        "il_type": il_type,
+        "mlb_team": team_name,
+        "age": age if isinstance(age, int) else None,
+    }
+
+
 def fetch_roster_status(mlb_id: int) -> dict:
     """
     Fetches current MLB roster status + current team + age for a player.
@@ -288,64 +346,62 @@ def fetch_roster_status(mlb_id: int) -> dict:
     try:
         resp = httpx.get(
             f"{MLB_STATS_BASE}/people/{mlb_id}",
-            params={"hydrate": "rosterEntries(team),currentTeam"},
+            params={"hydrate": _STATUS_HYDRATE},
             timeout=10,
         )
         resp.raise_for_status()
         people = resp.json().get("people", [])
         if not people:
-            return {"roster_status": None, "il_type": None, "mlb_team": None, "age": None}
-
-        person = people[0]
-        age = person.get("currentAge")
-
-        # Prefer rosterEntries — find the active entry (no endDate)
-        entries = person.get("rosterEntries", [])
-        active_entry = next((e for e in entries if e.get("endDate") is None), None)
-        if active_entry is None and entries:
-            active_entry = entries[0]
-
-        # Current team: the active roster entry's team is correct whether the player
-        # is on the MLB club or optioned; fall back to the person's currentTeam.
-        team_name = None
-        if active_entry:
-            team_name = active_entry.get("team", {}).get("name")
-        if not team_name:
-            team_name = person.get("currentTeam", {}).get("name")
-
-        if active_entry:
-            description = active_entry.get("status", {}).get("description", "")
-        else:
-            # Fall back to top-level status
-            description = person.get("status", {}).get("description", "")
-
-        d = description.lower()
-
-        if "60-day" in d or "60 day" in d:
-            roster_status, il_type = "IL", "60-Day IL"
-        elif "15-day" in d or "15 day" in d:
-            roster_status, il_type = "IL", "15-Day IL"
-        elif "10-day" in d or "10 day" in d:
-            roster_status, il_type = "IL", "10-Day IL"
-        elif "injured" in d or "il" in d:
-            roster_status, il_type = "IL", "IL"
-        elif "minor" in d or "rehabilitation" in d:
-            roster_status, il_type = "Minors", None
-        elif "active" in d:
-            roster_status, il_type = "Active", None
-        else:
-            roster_status, il_type = (description or None), None
-
-        return {
-            "roster_status": roster_status,
-            "il_type": il_type,
-            "mlb_team": team_name,
-            "age": age if isinstance(age, int) else None,
-        }
-
+            return dict(_EMPTY_STATUS)
+        return _parse_person(people[0])
     except Exception as e:
         print(f"[roster_status] Error fetching status for mlb_id {mlb_id}: {e}")
-        return {"roster_status": None, "il_type": None, "mlb_team": None, "age": None}
+        return dict(_EMPTY_STATUS)
+
+
+def fetch_roster_statuses_bulk(mlb_ids: list) -> dict | None:
+    """Roster status for many players at once — {mlb_id: {...}} for every id the
+    API answered for.
+
+    `/people?personIds=` accepts the same hydrate as the single lookup, so a full
+    league (~300 players) costs 3 requests instead of 300. Follows the module's
+    outage rule: **None** means every batch failed and the caller must not write
+    anything (an outage would otherwise blank teams and IL flags league-wide); a
+    dict means real data, and an id simply missing from it is a player the API
+    doesn't know — also left alone. Never raises.
+    """
+    ids = [int(i) for i in dict.fromkeys(mlb_ids or []) if i]
+    if not ids:
+        return {}
+
+    out: dict[int, dict] = {}
+    batches = attempted = failed = 0
+    for start in range(0, len(ids), _STATUS_BATCH):
+        chunk = ids[start:start + _STATUS_BATCH]
+        attempted += 1
+        try:
+            resp = httpx.get(
+                f"{MLB_STATS_BASE}/people",
+                params={"personIds": ",".join(str(i) for i in chunk),
+                        "hydrate": _STATUS_HYDRATE},
+                timeout=30,
+            )
+            resp.raise_for_status()
+            people = resp.json().get("people", []) or []
+        except Exception as e:
+            failed += 1
+            print(f"[roster_status] bulk batch {attempted} failed ({len(chunk)} ids): {e}")
+            continue
+        batches += 1
+        for person in people:
+            pid = person.get("id")
+            if isinstance(pid, int):
+                out[pid] = _parse_person(person)
+
+    if attempted and failed == attempted:
+        print("[roster_status] every bulk batch failed — refusing to write an outage")
+        return None
+    return out
 
 
 # MiLB sport IDs, highest level first.

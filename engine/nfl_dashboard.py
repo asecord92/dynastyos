@@ -7,7 +7,7 @@ from .supabase_client import get_supabase
 from .sleeper_client import get_rosters as sleeper_get_rosters
 from .nfl_trade import STARTABLE, stats_season, _format_key
 from .sleeper_client import get_season_stats
-from .sleeper_sync import refresh_roster_rows
+from .nfl_rosters import load_rosters
 
 _OUT_STATUSES = {"Out", "IR", "Doubtful", "PUP", "Sus", "Suspended"}
 
@@ -37,16 +37,7 @@ def build_nfl_dashboard(league_id: str, my_team_id: str) -> dict:
     fmt_key = _format_key(league.get("rules") or {})
     stats = get_season_stats(stats_season())
 
-    roster_rows = refresh_roster_rows(
-        (
-            sb.table("rosters")
-            .select("fantrax_team_id, team_name, roster_items")
-            .eq("league_id", league_id)
-            .execute()
-            .data
-            or []
-        )
-    )
+    roster_rows = load_rosters(sb, league_id)
     by_team = {r["fantrax_team_id"]: r for r in roster_rows}
 
     # Live records (wins/losses/points-for) from Sleeper, cached briefly.

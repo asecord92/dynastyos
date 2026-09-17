@@ -65,6 +65,50 @@ def get_players() -> dict:
     return _players_cache["data"] or {}
 
 
+# --- Short-TTL league state ---------------------------------------------------
+# Rosters and traded picks change on *transactions*, not on a clock, and the read
+# paths hit them on every request. A short cache keeps that from becoming a
+# Sleeper call per dashboard load, and stale-if-error means an upstream blip
+# serves the last good league rather than an empty one.
+_LIVE_TTL = 600  # seconds
+_live_cache: dict[str, dict] = {}
+
+
+def _cached_live(key: str, fetch, ttl: int = _LIVE_TTL, allow_empty: bool = False):
+    """Cached fetch that returns the last good value on failure, or None when
+    there has never been one — callers treat None as "fall back to the stored
+    snapshot". `allow_empty` says whether an empty result is a legitimate answer
+    (no picks have been traded) or a symptom (a league with no rosters isn't a
+    thing)."""
+    now = time.time()
+    hit = _live_cache.get(key)
+    if hit and now - hit["ts"] <= ttl:
+        return hit["data"]
+    try:
+        data = fetch()
+    except Exception as e:
+        print(f"[sleeper] {key} fetch failed, serving cached: {e}")
+        return (hit or {}).get("data")
+    if data or (allow_empty and data is not None):
+        _live_cache[key] = {"data": data, "ts": now}
+        return data
+    return (hit or {}).get("data")
+
+
+def get_rosters_cached(league_id: str) -> list | None:
+    """Current rosters, cached ~10min. None when Sleeper is unreachable and
+    nothing is cached yet."""
+    return _cached_live(f"rosters:{league_id}", lambda: get_rosters(league_id))
+
+
+def get_traded_picks_cached(league_id: str) -> list | None:
+    """Current traded picks, cached ~10min. An empty list is a real answer here
+    (nobody has traded a pick), so it caches."""
+    return _cached_live(
+        f"picks:{league_id}", lambda: get_traded_picks(league_id), allow_empty=True
+    )
+
+
 def get_season_stats(season: str | int) -> dict:
     """Per-player regular-season fantasy stats for a season (player_id -> stats incl.
     pts_half_ppr / pts_ppr / pts_std and pos_rank_*). Cached a day in-process; an
