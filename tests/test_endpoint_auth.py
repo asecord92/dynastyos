@@ -27,8 +27,8 @@ PUBLIC_PATHS = {
 }
 
 # Guarded by the CRON_SECRET shared header rather than a user JWT, checked
-# inside the handler (see cron_refresh_widgets / cron_daily_digest).
-CRON_PATHS = {"/cron/refresh-widgets", "/cron/daily-digest"}
+# inside the handler (see cron_refresh_widgets).
+CRON_PATHS = {"/cron/refresh-widgets"}
 
 
 def api_routes():

@@ -31,8 +31,8 @@ Worth stating, because it narrows the blast radius of everything below:
 - `trade_history` reads/writes are scoped `.eq("user_id", uid)` on top of the league check.
 - Anthropic keys are Fernet-encrypted at rest, `user_secrets` has RLS on with no policies,
   and `GET /settings/api-key` returns only last-4.
-- No `dangerouslySetInnerHTML` anywhere; the digest email escapes model output before
-  applying its mini-markdown. No secrets in the repo or in 324 commits of history.
+- No `dangerouslySetInnerHTML` anywhere. No secrets in the repo or in 324 commits of
+  history.
 - `safeRedirectPath` already blocks the open-redirect on `?redirectedFrom`.
 - CSV upload is chunk-capped at 2 MB and the temp file is removed in `finally`.
 

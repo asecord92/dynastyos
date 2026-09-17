@@ -4,8 +4,8 @@ Web search is a *server-side* tool: an outage doesn't raise, it comes back as
 `web_search_tool_result` blocks whose content is an error object. The model then
 obeys the widget prompts' hard rule ("don't assert team/role/health you couldn't
 verify") and answers with a compliance disclaimer instead of recommendations.
-That text used to be cached for the full 8h refresh window and shipped in the
-daily digest email — this helper is what keeps it out of `dashboard_cache`.
+That text would otherwise be cached for the full 8h refresh window and served
+to every load in it — this helper is what keeps it out of `dashboard_cache`.
 
 The fakes below mirror the SDK's `Message.content` block shapes; the distinction
 that matters is `.content` being a *list of results* (success) vs an object

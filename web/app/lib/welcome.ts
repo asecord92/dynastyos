@@ -36,8 +36,4 @@ export const WELCOME_HIGHLIGHTS: { title: string; body: string }[] = [
     title: "Waivers & start/sit",
     body: "Who to add, who to drop, and who to start — with the reasoning, not just a ranking.",
   },
-  {
-    title: "A daily digest, if you want it",
-    body: "One morning email with your league's news. Off by default; turn it on from the dashboard.",
-  },
 ];

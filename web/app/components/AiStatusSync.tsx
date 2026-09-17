@@ -6,11 +6,11 @@ import { aiIssueFromDetail, useAiStatus } from "../lib/aiStatus";
 
 /**
  * Seeds the app-wide AI banner from the owner's most recent AI call, so an
- * out-of-credits key discovered by a *background* job (the daily digest) shows
- * up on the next app load instead of only when the user trips a fresh failing
- * call. Reads `GET /api/me/ai-status` (latest `ai_usage` row) on mount and when
- * the tab regains focus — the morning-after case, when the digest hit the wall
- * hours before the user opened the app.
+ * out-of-credits key discovered by a *background* job (the widget warmer cron)
+ * shows up on the next app load instead of only when the user trips a fresh
+ * failing call. Reads `GET /api/me/ai-status` (latest `ai_usage` row) on mount
+ * and when the tab regains focus — the case where the key hit the wall hours
+ * before the user opened the app.
  *
  * It only ever *reports* a problem; clearing stays with the live success paths
  * (widget hook + trade page) to avoid a stale read racing a fresh failure.
