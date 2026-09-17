@@ -26,8 +26,7 @@ export function KeyUsageNote() {
         <li>
           <span className="font-medium text-gray-600">On its own — </span>
           your dashboard widgets (news, start/sit, waivers, minors) regenerate
-          every few hours as you use the app, and the daily digest sends each
-          morning if you&apos;ve turned it on. That spend happens without you
+          every few hours as you use the app. That spend happens without you
           clicking anything.
         </li>
         <li>

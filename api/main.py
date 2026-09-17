@@ -1,6 +1,5 @@
 import asyncio
 import hmac
-import html as _html
 import threading
 import time
 import traceback
@@ -9,7 +8,6 @@ import re
 import json as _json
 import tempfile
 
-import httpx
 from fastapi import FastAPI, UploadFile, File, Query, HTTPException, BackgroundTasks, Depends, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
@@ -197,16 +195,15 @@ def _get_standings_cached(fantrax_league_id: str) -> list:
 # Re-warm AI widgets in the background before their cache goes too stale, so a
 # user rarely triggers a slow on-demand Sonnet+web_search generation themselves.
 # Raised from 3h → 8h: the old cadence regenerated every widget ~8×/day around
-# the clock (the bulk of the AI bill). At 8h an active league warms ~2–3×/day;
-# the morning digest covers the overnight gap and an on-demand gen still fills in
-# the moment someone opens the app to a widget older than the 4h cache TTL.
+# the clock (the bulk of the AI bill). At 8h an active league warms ~2–3×/day,
+# and an on-demand gen still fills in the moment someone opens the app to a
+# widget older than the 4h cache TTL.
 REFRESH_AFTER = timedelta(hours=8)
 
-# The standalone widget warmer only keeps a league's AI widgets fresh while its
-# owner is actually opening the app — no point paying to re-warm a dormant
-# league round the clock. (The opt-in daily digest is exempt: it's meant to
-# reach owners who AREN'T currently in the app.) `last_viewed_at` is touched on
-# dashboard reads; everything tolerates the column being absent pre-migration.
+# The widget warmer only keeps a league's AI widgets fresh while its owner is
+# actually opening the app — no point paying to re-warm a dormant league round
+# the clock. `last_viewed_at` is touched on dashboard reads; everything
+# tolerates the column being absent pre-migration.
 WARM_VIEW_WINDOW = timedelta(hours=36)
 _LAST_VIEWED_COL_MISSING = False
 # In-process debounce so a dashboard load (which fires several widget calls)
@@ -588,10 +585,11 @@ async def get_api_key_status(user: dict = Depends(get_current_user)):
 @app.get("/me/ai-status")
 async def get_ai_status(user: dict = Depends(get_current_user)):
     """The caller's current AI key health, derived from their most recent
-    `ai_usage` row. Every AI call — including the background daily digest —
-    meters here, so if the digest hits an out-of-credits wall at 8:43am this
-    flips to `out_of_credits` and the frontend shows the banner on the next app
-    load, without the user having to trigger a fresh failing call. `null` when
+    `ai_usage` row. Every AI call — including the background widget warmer —
+    meters here, so if a cron-triggered generation hits an out-of-credits wall
+    overnight this flips to `out_of_credits` and the frontend shows the banner
+    on the next app load, without the user having to trigger a fresh failing
+    call. `null` when
     the last call succeeded (or there's no history / the table predates its
     migration). Mirrors `aiIssueFromDetail`, just sourced from the DB instead of
     a live response."""
@@ -1452,8 +1450,9 @@ def _web_search_failed(response: anthropic.types.Message) -> bool:
     upstream search outage. The widget prompts hard-forbid asserting player
     status without verification, so an all-errored run is a compliance
     disclaimer ("I was unable to complete the required web verification…"), not
-    an answer — never cache it (mirrors mlb_stats_client's outage rule; a cached
-    one shipped in the digest email). Zero attempts is NOT an outage: the model
+    an answer — never cache it (mirrors mlb_stats_client's outage rule): a
+    cached one freezes the disclaimer for a full REFRESH_AFTER window. Zero
+    attempts is NOT an outage: the model
     may legitimately answer from the provided data alone, and treating that as
     failure would loop the warmer on re-billing regenerations."""
     attempted = errored = 0
@@ -1475,9 +1474,9 @@ def _web_search_error_codes(message) -> list[str]:
     content is an error object), so they never reach an exception handler and
     `_web_search_failed` only answers yes/no. The codes are the missing `why`,
     and they point at different fixes: `unavailable` is an upstream outage to
-    wait out, `too_many_requests` is the owner's key being throttled (the daily
-    digest warms every opted-in league's widgets in a burst, which is exactly
-    how you'd earn that), and `max_uses_exceeded` is our own `max_uses` budget.
+    wait out, `too_many_requests` is the owner's key being throttled (a cron
+    sweep that warms several widgets back-to-back is how you'd earn that), and
+    `max_uses_exceeded` is our own `max_uses` budget.
     """
     codes: list[str] = []
     for block in getattr(message, "content", None) or []:
@@ -1562,8 +1561,8 @@ async def cron_refresh_widgets(x_cron_secret: str = Header(default="")):
     if not _cron_secret_ok(x_cron_secret):
         raise HTTPException(status_code=401, detail="Unauthorized")
     # Only keep actively-used leagues warm — dormant ones cost nothing until the
-    # owner opens the app again. (The digest no longer warms anything either, so
-    # this gate is now the ONLY thing that triggers background widget spend.)
+    # owner opens the app again. This gate is the ONLY thing that triggers
+    # background widget spend.
     active = await asyncio.to_thread(_recently_viewed_league_ids, get_supabase())
     refreshed = await _warm_stale_widgets(get_supabase(), only_league_ids=active)
     return {"refreshed": refreshed, "count": len(refreshed)}
@@ -1572,10 +1571,9 @@ async def cron_refresh_widgets(x_cron_secret: str = Header(default="")):
 async def _warm_stale_widgets(sb, only_league_ids: set[str] | None = None) -> list[str]:
     """Regenerate every near-expiry cached widget (the warmer's core). Can run
     for many minutes across leagues — callers over HTTP must background it or
-    Railway's edge cuts the request around the 5-minute mark (which is exactly
-    how the first digest run died). `only_league_ids` restricts the sweep — the
-    standalone cron passes recently-viewed leagues, the digest passes opted-in
-    ones; None warms every league (the pre-gate behavior)."""
+    Railway's edge cuts the request around the 5-minute mark. `only_league_ids`
+    restricts the sweep — the cron passes recently-viewed leagues; None warms
+    every league (the pre-gate behavior)."""
     leagues = (await asyncio.to_thread(
         lambda: sb.table("leagues").select("id, fantrax_team_id").execute()
     )).data or []
@@ -1592,7 +1590,7 @@ async def _warm_stale_widgets(sb, only_league_ids: set[str] | None = None) -> li
         if not league_id or not team_id:
             continue
         if only_league_ids is not None and league_id not in only_league_ids:
-            continue  # not in active use (cron) / not opted in (digest) — skip
+            continue  # not in active use — skip
         for widget, handler in handlers.items():
             age = await asyncio.to_thread(_cache_age, sb, league_id, widget)
             if age is None or age < REFRESH_AFTER:
@@ -1606,612 +1604,6 @@ async def _warm_stale_widgets(sb, only_league_ids: set[str] | None = None) -> li
             except Exception as e:
                 print(f"[cron] refresh failed {league_id}:{widget}: {e}")
     return refreshed
-
-
-# --- Daily digest email ---------------------------------------------------------
-# Assembled from the already-cached widgets plus one small no-search AI call for
-# "The Lead" — a punchy morning brief in the trade advisor's voice. Sent via the
-# Brevo HTTPS API (BREVO_API_KEY + DIGEST_FROM_EMAIL env). Opt-IN per league via
-# leagues.digest_enabled; recipients are each league owner's auth email.
-
-# Reading the cache for the digest: anything generated this morning (or still
-# within the widget TTL) qualifies — we never trigger a generation from here.
-_DIGEST_CACHE_WINDOW = timedelta(hours=6)
-
-
-def _truncate_readable(text: str, limit: int) -> str:
-    """Truncate to ~limit chars on a boundary — never mid-sentence or mid-word —
-    and append a marker so a trimmed section reads as intentional, not cut off.
-    Prefers a line break, then a sentence end, then a word boundary; falls back
-    to a hard cut only if no boundary sits in the back half. Returns the text
-    unchanged when it already fits."""
-    text = (text or "").strip()
-    if len(text) <= limit:
-        return text
-    window = text[:limit]
-    for sep in ("\n", ". ", "! ", "? ", " "):
-        idx = window.rfind(sep)
-        if idx >= limit // 2:  # only snap back to a boundary that isn't too greedy
-            window = window[: idx + (0 if sep == "\n" else 1)]
-            break
-    return window.rstrip(" ,;:—-\n") + "\n\n… more in the app"
-
-
-def _md_lite_html(text: str) -> str:
-    """Tiny markdown-to-HTML for email bodies: **bold**, bullet lines, paragraphs.
-    Everything is HTML-escaped first — widget content is model output."""
-    out: list[str] = []
-    in_list = False
-    for raw_line in (text or "").splitlines():
-        line = _html.escape(raw_line.strip())
-        line = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", line)
-        is_bullet = line.startswith(("- ", "* ", "• "))
-        if is_bullet:
-            if not in_list:
-                out.append('<ul style="margin:6px 0 12px;padding-left:20px;">')
-                in_list = True
-            out.append(f'<li style="margin:4px 0;">{line[2:].strip()}</li>')
-        else:
-            if in_list:
-                out.append("</ul>")
-                in_list = False
-            if line:
-                out.append(f'<p style="margin:6px 0;">{line}</p>')
-    if in_list:
-        out.append("</ul>")
-    return "\n".join(out)
-
-
-def _digest_start_sit_text(raw: str) -> str:
-    """Condense the cached start_sit JSON into a few readable lines."""
-    try:
-        content = _json.loads(raw)
-    except Exception:
-        return ""
-    by_rec: dict[str, list[str]] = {}
-    for p in content.get("players") or []:
-        rec = (p.get("recommendation") or "").lower()
-        if p.get("name"):
-            by_rec.setdefault(rec, []).append(p["name"])
-    lines = [
-        f"**{label}:** {', '.join(names)}"
-        for label, key in (("Start", "start"), ("Monitor", "monitor"), ("Sit", "sit"))
-        if (names := by_rec.get(key))
-    ]
-    for a in (content.get("alerts") or [])[:6]:
-        if a.get("name"):
-            status = f" ({a['status']})" if a.get("status") else ""
-            detail = f" — {a['detail']}" if a.get("detail") else ""
-            lines.append(f"- {a['name']}{status}{detail}")
-    return "\n".join(lines)
-
-
-def _digest_waiver_text(raw: str) -> str:
-    """Prefer the scannable Priority order section; fall back to a trimmed body."""
-    m = re.search(r"\*\*Priority order\*\*[:\s]*", raw or "", re.IGNORECASE)
-    if m:
-        return _truncate_readable(raw[m.start():], 2200)
-    return _truncate_readable(raw or "", 2200)
-
-
-def _digest_brief_context(sb, league: dict, sport: str) -> str | None:
-    """Assemble the digest's own grounding from data already in the database —
-    no AI, no web search, no widget generation. Returns None when the league has
-    nothing synced yet.
-
-    This is the whole point of the self-sufficient digest: the facts a morning
-    email needs are already stored. Roster and IL/minors status are refreshed on
-    every sync (`player_id_map.roster_status` / `il_type`), and MLB's announced
-    probable starters come from the schedule feed. What the old path spent
-    ~$1.27/league/day on was regenerating two full *interactive-quality* widgets
-    and then throwing away all but a few lines of each."""
-    team_id = league.get("fantrax_team_id")
-    league_id = league.get("id")
-    if not (team_id and league_id):
-        return None
-
-    try:
-        if sport == "NFL":
-            team_name, items = nfl_my_roster(sb, league_id, team_id)
-            if not items:
-                return None
-            lines = [
-                f"- {i.get('name') or i.get('id')} | {i.get('position', '')}"
-                f" | {i.get('status', '')}"
-                f"{' | ' + i['injury_status'] if i.get('injury_status') else ''}"
-                for i in items
-            ]
-            return f"Team: {team_name}\nRoster (name | position | slot | injury):\n" + "\n".join(lines)
-
-        team_name, roster_items, id_map = _load_my_roster(
-            sb, league_id, team_id,
-            map_columns="fantrax_id,full_name,mlb_team,roster_status,il_type",
-        )
-        if not roster_items:
-            return None
-        lines = []
-        for item in roster_items:
-            fid = item.get("id", "")
-            row = id_map.get(fid) or {}
-            name = row.get("full_name") or item.get("name") or fid
-            # The IL/minors flags are the load-bearing facts — they're why a
-            # start/sit call changes day to day, and they cost nothing to read.
-            flags = [f for f in (row.get("roster_status"), row.get("il_type")) if f]
-            suffix = f" | {' '.join(flags)}" if flags else ""
-            lines.append(
-                f"- {name} | {item.get('position', '')} | {row.get('mlb_team', '')}"
-                f" | {item.get('status', '')}{suffix}"
-            )
-        parts = [
-            f"Team: {team_name}",
-            "Roster (name | position | MLB team | roster slot | status flags):",
-            "\n".join(lines),
-        ]
-        schedule = get_schedule_context()
-        if schedule:
-            parts.append(schedule)
-        _, weak_cats = _weak_categories_context(sb, league_id)
-        if weak_cats:
-            parts.append(f"This team's weakest categories: {', '.join(weak_cats)}")
-        return "\n\n".join(parts)
-    except Exception:
-        traceback.print_exc()
-        return None
-
-
-def _digest_brief(sb, league: dict, sport: str) -> dict[str, str]:
-    """The digest's own 'Today's Calls' — ONE cheap Sonnet call, no web search
-    and no thinking, replacing the two full widget generations the digest used
-    to force. Returns {} on any failure; the digest still sends whatever else it
-    has, exactly as it does when the lead call fails.
-
-    No web search is deliberate. It makes this ~40x cheaper, and it removes the
-    failure mode that started this whole thread: with search attached, an
-    upstream outage made the model refuse to assert anything and the email
-    shipped a compliance disclaimer instead of recommendations. There is no
-    search here to fail, and every fact below comes from our own database."""
-    context = _digest_brief_context(sb, league, sport)
-    if not context:
-        return {}
-    sport_word = "football" if sport == "NFL" else "baseball"
-    schedule_rule = (
-        "- Say a pitcher starts today ONLY if the schedule above lists him as a probable "
-        "starter. NEVER infer a start from days of rest or rotation order."
-        if sport == "MLB" else
-        "- Do not claim a player is active or inactive for a game you have no data on."
-    )
-    prompt = f"""You are a dynasty {sport_word} advisor writing the "Today's Calls" section of a
-manager's morning email. {_today_line()}
-
-{context}
-
-Write a short, scannable markdown section:
-- One line each for **Start:**, **Monitor:**, and **Sit:** listing player names (omit a line if empty).
-- Then up to 5 bullets for the players whose situation actually changed or needs a decision —
-  injuries, minors/IL status, a favorable or brutal matchup. One concrete sentence each.
-
-Hard rules:
-- Use ONLY the data above. You have no web access — do not assert an injury timeline, a
-  transaction, or a role change that is not shown above.
-- The status flags above are current as of the last sync; treat them as fact.
-{schedule_rule}
-- No preamble, no headings, no sign-off. Start directly with the first line."""
-
-    try:
-        ai = get_ai_client_for_league(sb, league["id"], tool="digest")
-        response = ai.messages.create(
-            model=MODEL_DASHBOARD,
-            max_tokens=1200,
-            thinking=_NO_THINKING,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        text = _extract_text(response).strip()
-        return {"Today's Calls": text} if text else {}
-    except Exception:
-        traceback.print_exc()  # no key / API failure — digest still sends
-        return {}
-
-
-def _digest_lead(sb, league_id: str, sport: str, sections: dict[str, str], standings_line: str,
-                 prev_lead: str | None = None) -> str | None:
-    """One small no-web-search AI call that turns the cached intel into 'The
-    Lead'. Returns None (digest still sends, stitched-only) if the owner has no
-    key or the call fails — the lead is garnish, not load-bearing."""
-    intel = "\n\n".join(f"## {title}\n{body[:2500]}" for title, body in sections.items() if body)
-    if standings_line:
-        intel = f"## Standings\n{standings_line}\n\n{intel}"
-    if not intel:
-        return None
-    sport_word = "football" if sport == "NFL" else "baseball"
-    # Give the model yesterday's lead so it stops re-sending the same brief on a
-    # quiet news day (the main "it's all the same thing daily" complaint).
-    novelty = ""
-    if prev_lead and prev_lead.strip():
-        novelty = f"""
-
-Yesterday you sent this brief — do NOT repeat these points unless there's a genuinely new development:
-{prev_lead.strip()[:1200]}
-
-If nothing meaningful has changed since yesterday, reply with exactly this one line and nothing else: "{_DIGEST_QUIET_SENTINEL.capitalize()} — nothing new since yesterday."."""
-    prompt = f"""You write "The Lead" of a dynasty {sport_word} team's morning email digest. You are sharp,
-opinionated, and direct — a trusted advisor, not a newsletter bot. {_today_line()}
-
-Below is this morning's intel for the team (already generated — do not invent anything beyond it).
-
-{intel}{novelty}
-
-Write The Lead: 3-5 punchy markdown bullets, about 100 words TOTAL. Pick only what actually matters
-today — the one news item that changes something, a borderline lineup call with your verdict, the #1
-waiver move and why, the standings picture only if it's notable. No preamble, no headers, no
-sign-off — start directly with the first bullet."""
-    try:
-        ai = get_ai_client_for_league(sb, league_id, tool="digest")
-        response = ai.messages.create(
-            model=MODEL_DASHBOARD,
-            max_tokens=800,
-            thinking=_NO_THINKING,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        lead = _extract_text(response).strip()
-        return lead or None
-    except Exception as e:
-        print(f"[digest] lead generation failed for {league_id}: {e}")
-        return None
-
-
-# When several leagues share one email, each section gets trimmed harder — the
-# combined email should read like a newspaper (leads up top, compact sections
-# below), with the app holding the full content.
-_MULTI_SECTION_CAP = 1400
-
-_LEAD_BOX = (
-    '<div style="background:#f4f1fb;border-left:4px solid #7c3aed;border-radius:8px;'
-    'padding:10px 14px;margin-bottom:16px;">'
-)
-
-
-def _sport_emoji(sport: str) -> str:
-    return "🏈" if sport == "NFL" else "⚾"
-
-
-def _digest_email_bodies(parts: list[dict]) -> tuple[str, str, str]:
-    """(subject, html, plain-text) for one recipient's digest. Each part is one
-    league's content ({league_name, sport, sections, standings_line, lead}).
-    A single league renders as before; multiple leagues share one email in
-    newspaper form — every league's Lead up top, capped sections below."""
-    try:
-        from zoneinfo import ZoneInfo
-        today = datetime.now(ZoneInfo("America/Los_Angeles"))
-    except Exception:
-        today = datetime.now(timezone.utc)
-    multi = len(parts) > 1
-
-    if multi:
-        subject = f"🗞️ Your DynastyOS Daily — {today.strftime('%A, %B %d')}"
-        header = "🗞️ DynastyOS Daily"
-        header_sub = today.strftime("%A, %B %d, %Y")
-    else:
-        p = parts[0]
-        emoji = _sport_emoji(p["sport"])
-        subject = f"{emoji} {p['league_name']} Daily — {today.strftime('%A, %B %d')}"
-        header = f"{emoji} {_html.escape(p['league_name'])} Daily"
-        header_sub = today.strftime("%A, %B %d, %Y") + (
-            f" · {_html.escape(p['standings_line'])}" if p["standings_line"] else ""
-        )
-
-    html_parts = [
-        '<div style="max-width:600px;margin:0 auto;font-family:-apple-system,Segoe UI,Roboto,sans-serif;color:#1a1a1a;font-size:15px;line-height:1.5;padding:16px;">',
-        f'<h2 style="margin:0 0 2px;">{header}</h2>',
-        f'<div style="color:#777;font-size:13px;margin-bottom:14px;">{header_sub}</div>',
-    ]
-    text_parts = [f"{subject.split(' — ')[0]} — {today.strftime('%A, %B %d, %Y')}"]
-
-    def league_label(p: dict) -> str:
-        label = f"{_sport_emoji(p['sport'])} {p['league_name']}"
-        if p["standings_line"]:
-            label += f" · {p['standings_line']}"
-        return label
-
-    # The Lead — for a combined email, every league's bullets sit up top so the
-    # whole morning read is the first screen.
-    for p in parts:
-        if not p["lead"]:
-            continue
-        if multi:
-            html_parts.append(
-                f'<div style="font-weight:600;margin:12px 0 4px;">{_html.escape(league_label(p))}</div>'
-            )
-            text_parts += ["", league_label(p).upper()]
-        else:
-            text_parts += ["", "THE LEAD"]
-        html_parts.append(_LEAD_BOX + _md_lite_html(p["lead"]) + "</div>")
-        text_parts.append(p["lead"])
-
-    # Below the fold — each league's sections, trimmed harder when sharing.
-    for p in parts:
-        if multi:
-            html_parts.append(
-                f'<h2 style="margin:24px 0 2px;border-bottom:2px solid #e5e5e5;padding-bottom:4px;">'
-                f'{_sport_emoji(p["sport"])} {_html.escape(p["league_name"])}</h2>'
-            )
-            text_parts += ["", "=" * 8, league_label(p).upper()]
-        for title, body in p["sections"].items():
-            if not body:
-                continue
-            if multi:
-                body = _truncate_readable(body, _MULTI_SECTION_CAP)
-            html_parts.append(
-                f'<h3 style="margin:18px 0 4px;border-bottom:1px solid #e5e5e5;padding-bottom:4px;">{_html.escape(title)}</h3>'
-            )
-            html_parts.append(_md_lite_html(body))
-            text_parts += ["", title.upper(), body]
-
-    html_parts.append(
-        '<div style="color:#999;font-size:12px;margin-top:22px;border-top:1px solid #e5e5e5;padding-top:10px;">'
-        "Sent by DynastyOS. Turn the daily digest off in Settings.</div></div>"
-    )
-    text_parts += ["", "Sent by DynastyOS. Turn the daily digest off in Settings."]
-    return subject, "\n".join(html_parts), "\n".join(text_parts)
-
-
-def _send_digest_email(to_addr: str, subject: str, html: str, text: str) -> None:
-    """Deliver via Brevo's HTTPS API. Railway blocks ALL outbound SMTP ports
-    (25/465/587) on Hobby plans — a classic SMTP send dies with '[Errno 101]
-    Network is unreachable' — so email must go over HTTPS from here.
-    DIGEST_FROM_EMAIL must be a Brevo-verified sender address."""
-    api_key = os.getenv("BREVO_API_KEY")
-    sender = os.getenv("DIGEST_FROM_EMAIL")
-    if not api_key or not sender:
-        raise RuntimeError("BREVO_API_KEY / DIGEST_FROM_EMAIL not configured")
-    payload = {
-        "sender": {"name": "DynastyOS", "email": sender},
-        "to": [{"email": to_addr}],
-        "subject": subject,
-        "htmlContent": html,
-        "textContent": text,
-    }
-    # The sender address is send-only; route replies to a real inbox when
-    # configured so "hey, this digest is wrong" reaches the app owner.
-    reply_to = os.getenv("DIGEST_REPLY_TO")
-    if reply_to:
-        payload["replyTo"] = {"email": reply_to}
-    resp = httpx.post(
-        "https://api.brevo.com/v3/smtp/email",
-        headers={"api-key": api_key, "content-type": "application/json"},
-        json=payload,
-        timeout=30,
-    )
-    if resp.status_code >= 300:
-        raise RuntimeError(f"Brevo send failed ({resp.status_code}): {resp.text[:300]}")
-
-
-def _owner_email(sb, user_id: str | None) -> str | None:
-    if not user_id:
-        return None
-    try:
-        res = sb.auth.admin.get_user_by_id(user_id)
-        return getattr(getattr(res, "user", res), "email", None)
-    except Exception:
-        return None
-
-
-def _nfl_digest_offseason(today: datetime | None = None) -> bool:
-    """True during the NFL dead period (roughly mid-Feb → late Aug), when there's
-    no real weekly news and the widgets recycle the same evergreen roster takes
-    daily. Football is dropped from the digest in this window and auto-resumes for
-    training camp/preseason. Uses Pacific date to match the send time."""
-    if today is None:
-        try:
-            from zoneinfo import ZoneInfo
-            today = datetime.now(ZoneInfo("America/Los_Angeles"))
-        except Exception:
-            today = datetime.now(timezone.utc)
-    md = (today.month, today.day)
-    return (2, 16) <= md <= (8, 24)
-
-
-# Dedupe: the digest remembers what it sent each league yesterday (stored as a
-# `digest_prev` cache row) and drops sections that haven't meaningfully changed,
-# so a quiet news day doesn't re-send the same brief. A league with nothing new
-# is skipped entirely; a recipient with no fresh league drops out of the send.
-_DIGEST_STALE_SIMILARITY = 0.85
-_DIGEST_QUIET_SENTINEL = "quiet day"
-
-
-def _text_similarity(a: str, b: str) -> float:
-    """Jaccard overlap of lowercased word tokens — a cheap 'is this basically the
-    same text as yesterday' signal that tolerates minor model-prose drift."""
-    ta = set(re.findall(r"\w+", (a or "").lower()))
-    tb = set(re.findall(r"\w+", (b or "").lower()))
-    if not ta and not tb:
-        return 1.0
-    if not ta or not tb:
-        return 0.0
-    return len(ta & tb) / len(ta | tb)
-
-
-def _read_prev_digest(sb, league_id: str) -> dict:
-    """Yesterday's stitched digest for this league ({sections, lead}), or {}."""
-    try:
-        result = (
-            sb.table("dashboard_cache")
-            .select("content")
-            .eq("league_id", league_id)
-            .eq("widget", "digest_prev")
-            .limit(1)
-            .execute()
-        )
-        if result.data:
-            return _json.loads(result.data[0]["content"]) or {}
-    except Exception:
-        pass
-    return {}
-
-
-def _league_digest_part(sb, league: dict) -> tuple[str, dict | None]:
-    """Assemble one league's digest content (including its AI lead). Returns
-    (status, part) — part is None unless status is "ready". Blocking — run in
-    a worker thread."""
-    league_id = league.get("id")
-    if league.get("digest_enabled") is not True:  # opt-in: only explicit True sends
-        return "opted_out", None
-
-    sport = league.get("sport") or "MLB"
-    if sport == "NFL" and _nfl_digest_offseason():
-        return "offseason_skip", None
-
-    # "Today's Calls" is generated by the digest itself from synced data — one
-    # cheap no-search call. The digest no longer forces widget regeneration to
-    # feed itself (that was ~$1.27/league/day to keep a few lines of each).
-    sections: dict[str, str] = {}
-    row = _check_cache(sb, league_id, "start_sit", force=False, max_age=_DIGEST_CACHE_WINDOW)
-    if row:
-        # Free bonus: the owner opened the app recently, so the real widget is
-        # already warm and search-grounded. Prefer it over regenerating.
-        sections["Today's Calls"] = _digest_start_sit_text(row["content"])
-    else:
-        sections.update(_digest_brief(sb, league, sport))
-    # Waiver Watch rides along only when a fresh widget cache happens to exist —
-    # the digest never generates one. Waiver pools don't turn over daily, so an
-    # occasional section beats paying $0.78 every morning to restate it.
-    row = _check_cache(sb, league_id, "waiver", force=False, max_age=_DIGEST_CACHE_WINDOW)
-    if row:
-        sections["Waiver Watch"] = _digest_waiver_text(row["content"])
-    if not any(sections.values()):
-        return "no_content", None  # dormant/off-season league — nothing to say
-
-    standings_line = ""
-    if league.get("fantrax_league_id") and league.get("fantrax_team_id"):
-        try:
-            s = _build_standings(league["fantrax_league_id"], league["fantrax_team_id"])
-            if s.get("rank"):
-                standings_line = f"{s['record']}, #{s['rank']} of {s['total_teams']}"
-        except Exception:
-            pass
-
-    # Dedupe against yesterday: the lead is generated from the full sections (with
-    # yesterday's lead for context), but only sections that actually changed are
-    # shown below the fold. Persist today's full content for tomorrow either way.
-    prev = _read_prev_digest(sb, league_id)
-    prev_sections = prev.get("sections") or {}
-    fresh_sections = {
-        title: body for title, body in sections.items()
-        if body and _text_similarity(body, prev_sections.get(title, "")) < _DIGEST_STALE_SIMILARITY
-    }
-
-    lead = _digest_lead(sb, league_id, sport, sections, standings_line, prev_lead=prev.get("lead"))
-    try:
-        _upsert_cache(sb, league_id, "digest_prev", _json.dumps({"sections": sections, "lead": lead or ""}))
-    except Exception:
-        pass  # best-effort memory — a failed write just means no dedupe next run
-
-    lead_is_quiet = (lead or "").strip().lower().startswith(_DIGEST_QUIET_SENTINEL)
-    if not fresh_sections and (lead_is_quiet or not lead):
-        return "quiet", None  # nothing new since yesterday — drop from the email
-
-    return "ready", {
-        "league_name": league.get("name") or "Your League",
-        "sport": sport,
-        "sections": fresh_sections,
-        "standings_line": standings_line,
-        "lead": None if lead_is_quiet else lead,
-    }
-
-
-async def _daily_digest_job():
-    """Assemble + email each opted-in league's digest. Runs as a background task
-    — Railway's edge cuts a live HTTP request around the 5-minute mark. The
-    outcome is summarized to app_events so the admin page shows how each run
-    went.
-
-    It no longer warms the widget caches first. That step regenerated
-    `start_sit` and `waiver` for every opted-in league every morning (~$1.27 per
-    league per day) and then kept only a few condensed lines of each — and it
-    ran regardless of whether the owner had opened the app in weeks, because the
-    digest is deliberately exempt from the cron warmer's activity gate. The
-    digest now generates its own grounding instead (`_digest_brief`)."""
-    sb = get_supabase()
-
-    # Bail before any AI spend if the sender isn't configured — each league's
-    # digest generates a billed lead call before it would hit the email API, so
-    # a missing env var must not cost a lead generation per league per attempt.
-    if not (os.getenv("BREVO_API_KEY") and os.getenv("DIGEST_FROM_EMAIL")):
-        print("[digest] aborted: BREVO_API_KEY / DIGEST_FROM_EMAIL not configured")
-        await asyncio.to_thread(
-            _log_event, kind="digest", level="warning", status=500,
-            message="digest aborted: BREVO_API_KEY / DIGEST_FROM_EMAIL not configured",
-        )
-        return
-
-    leagues = (await asyncio.to_thread(
-        lambda: sb.table("leagues").select("*").execute()
-    )).data or []
-
-    # One email per person: group leagues by owner, assemble every opted-in
-    # league's content, and send a single combined digest per recipient.
-    by_owner: dict[str, list[dict]] = {}
-    for lg in leagues:
-        if lg.get("id"):
-            by_owner.setdefault(lg.get("owner_user_id") or "", []).append(lg)
-
-    results: dict[str, str] = {}
-    emails_sent = 0
-    for owner_id, owner_leagues in by_owner.items():
-        email = await asyncio.to_thread(_owner_email, sb, owner_id)
-        if not email:
-            # Resolve the address before assembling anything — each ready
-            # league costs a billed AI lead, pointless with nowhere to send.
-            for lg in owner_leagues:
-                results[lg["id"]] = "no_email"
-            continue
-
-        parts: list[dict] = []
-        ready_ids: list[str] = []
-        for lg in owner_leagues:
-            try:
-                status, part = await asyncio.to_thread(_league_digest_part, sb, lg)
-            except Exception as e:
-                print(f"[digest] failed for {lg['id']}: {e}")
-                results[lg["id"]] = f"error: {e}"
-                continue
-            results[lg["id"]] = status
-            if part is not None:
-                parts.append(part)
-                ready_ids.append(lg["id"])
-        if not parts:
-            continue
-
-        try:
-            subject, html_body, text_body = _digest_email_bodies(parts)
-            await asyncio.to_thread(_send_digest_email, email, subject, html_body, text_body)
-            emails_sent += 1
-            for lid in ready_ids:
-                results[lid] = "sent"
-        except Exception as e:
-            print(f"[digest] send failed for {email}: {e}")
-            for lid in ready_ids:
-                results[lid] = f"error: {e}"
-
-    sent = sum(1 for v in results.values() if v == "sent")
-    print(f"[digest] done: emails={emails_sent} leagues_sent={sent} results={results}")
-    await asyncio.to_thread(
-        _log_event,
-        kind="digest",
-        level="info" if sent or not results else "warning",
-        status=200,
-        message=_json.dumps({"emails": emails_sent, "sent": sent, "results": results}),
-    )
-
-
-@app.post("/cron/daily-digest")
-async def cron_daily_digest(background_tasks: BackgroundTasks, x_cron_secret: str = Header(default="")):
-    """Machine-triggered morning digest: warms the widgets, then emails each
-    opted-in league owner. Responds immediately and runs the pipeline as a
-    background task; the run's outcome lands in app_events (admin page)."""
-    if not _cron_secret_ok(x_cron_secret):
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    background_tasks.add_task(_daily_digest_job)
-    return {"started": True}
 
 
 def _build_standings(fantrax_league_id: str, my_team_id: str) -> dict:
