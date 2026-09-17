@@ -1,6 +1,7 @@
 """Football dashboard AI widgets (start/sit, news, waiver): roster context and
 prompts built from synced Sleeper rosters + the players dump / season stats."""
 from .sleeper_client import get_players, get_season_stats
+from .sleeper_sync import refresh_item_meta
 from .nfl_trade import STARTABLE, stats_season, _nfl_today_line
 
 
@@ -17,7 +18,13 @@ def my_roster(sb, league_id: str, my_team_id: str):
     )
     if not rows:
         return None, []
-    return rows[0].get("team_name", "Your Team"), (rows[0].get("roster_items") or [])
+    # Live metadata, not the sync snapshot: these items go straight into the
+    # start/sit and news prompts, so a stale NFL team sends the model searching
+    # for the wrong depth chart and reporting back with confidence.
+    return (
+        rows[0].get("team_name", "Your Team"),
+        refresh_item_meta(rows[0].get("roster_items")),
+    )
 
 
 def _lines(items: list) -> str:

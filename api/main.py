@@ -28,7 +28,12 @@ from engine.sleeper_client import (
     get_traded_picks as sleeper_get_traded_picks,
     get_players as sleeper_get_players,
 )
-from engine.sleeper_sync import build_nfl_rules, compute_pick_inventory, build_roster_items
+from engine.sleeper_sync import (
+    build_nfl_rules,
+    compute_pick_inventory,
+    build_roster_items,
+    refresh_roster_rows,
+)
 from engine import fantasycalc
 from engine import mlb_market_values
 from engine.trade_values import build_values_payload
@@ -1712,7 +1717,7 @@ async def nfl_dashboard(
     strength, and players currently out."""
     try:
         require_league_owner(get_supabase(), user, league_id)
-        return await build_nfl_dashboard(league_id, my_team_id)
+        return await asyncio.to_thread(build_nfl_dashboard, league_id, my_team_id)
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
@@ -2216,12 +2221,14 @@ async def dashboard_nfl_roster(body: DashboardRequest, user: dict = Depends(get_
             ).data or {}
             # Every team, not just the owner's: rival rosters + picks are what
             # turn the window read into league ranks instead of a bare percentage.
-            rows = (
-                sb.table("rosters")
-                .select("fantrax_team_id, team_name, roster_items, draft_picks")
-                .eq("league_id", body.league_id)
-                .execute()
-            ).data or []
+            rows = refresh_roster_rows(
+                (
+                    sb.table("rosters")
+                    .select("fantrax_team_id, team_name, roster_items, draft_picks")
+                    .eq("league_id", body.league_id)
+                    .execute()
+                ).data or []
+            )
             mine = next(
                 (r for r in rows if str(r.get("fantrax_team_id")) == str(body.my_team_id)),
                 None,

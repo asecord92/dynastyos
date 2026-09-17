@@ -114,3 +114,87 @@ def build_roster_items(
             "years_exp": meta.get("years_exp"),
         })
     return items
+
+
+# --- Keeping embedded metadata honest -----------------------------------------
+# `build_roster_items` freezes NFL-world facts (team, injury, age) into the
+# roster row at sync time, because the frontend has no NFL map of its own. But
+# those facts describe the real NFL, not the fantasy league: a player gets
+# traded, signed or hurt on the NFL's schedule, while the row they're embedded
+# in only changes when the *owner* runs a sync. Between the two, the app states
+# a stale fact with a fresh timestamp on it — Rachaad White was still being
+# shown on Tampa Bay weeks after Washington signed him, and the AI widgets were
+# reasoning (and web-searching) from that wrong team.
+#
+# So the snapshot is the fallback, not the source: every read overlays the live
+# players dump, which `get_players()` already keeps cached in-process for a day
+# and most of these paths already load anyway. The join is exact (item["id"] IS
+# the Sleeper player_id), so this costs a dict lookup per player.
+
+# Fields where the dump's *absence* of a value is itself the news — a player who
+# healed has no injury_status, a player who was cut has no team. Always taken
+# live, None included.
+_AUTHORITATIVE_FIELDS = ("team", "injury_status")
+
+# Fields where a missing value means the dump has a hole, not that the player
+# lost the attribute (Sleeper ages/experience go missing routinely — see the
+# maybeAge backfill in nfl_dynasty). Taken live only when actually present.
+_BEST_EFFORT_FIELDS = ("name", "position", "age", "years_exp")
+
+
+def refresh_item_meta(items: list | None, players: dict | None = None) -> list:
+    """Return `items` with their NFL metadata re-read from the players dump.
+
+    Never raises and never empties a roster: an unavailable or empty dump, or a
+    player the dump doesn't know (retired, or an id that predates a Sleeper
+    change), leaves the synced values exactly as they were. Fantasy-league facts
+    — `id` and `status` (starter/bench/taxi/ir) — are never touched here; they
+    come from the league, and only a sync can tell us they changed.
+    """
+    items = items or []
+    if players is None:
+        try:
+            from .sleeper_client import get_players
+            players = get_players()
+        except Exception as e:  # dump unreachable — stale beats empty
+            print(f"[nfl] players dump unavailable, serving synced metadata: {e}")
+            return items
+    if not players:
+        return items
+
+    out = []
+    for it in items:
+        meta = players.get(str(it.get("id") or ""))
+        if not meta:
+            out.append(it)
+            continue
+        fresh = dict(it)
+        for field in _AUTHORITATIVE_FIELDS:
+            fresh[field] = meta.get(field) or meta.get(f"{field}_abbr") or (
+                "" if field == "team" else None
+            )
+        for field in _BEST_EFFORT_FIELDS:
+            live = meta.get("full_name") if field == "name" else meta.get(field)
+            if live is not None and live != "":
+                fresh[field] = live
+        out.append(fresh)
+    return out
+
+
+def refresh_roster_rows(rows: list | None, players: dict | None = None) -> list:
+    """`refresh_item_meta` over a list of `rosters` rows, loading the dump once
+    for the whole league. Rows are copied, never mutated in place."""
+    rows = rows or []
+    if players is None:
+        try:
+            from .sleeper_client import get_players
+            players = get_players()
+        except Exception as e:
+            print(f"[nfl] players dump unavailable, serving synced metadata: {e}")
+            return rows
+    if not players:
+        return rows
+    return [
+        {**r, "roster_items": refresh_item_meta(r.get("roster_items"), players)}
+        for r in rows
+    ]

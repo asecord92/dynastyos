@@ -7,6 +7,7 @@ from .supabase_client import get_supabase
 from .sleeper_client import get_rosters as sleeper_get_rosters
 from .nfl_trade import STARTABLE, stats_season, _format_key
 from .sleeper_client import get_season_stats
+from .sleeper_sync import refresh_roster_rows
 
 _OUT_STATUSES = {"Out", "IR", "Doubtful", "PUP", "Sus", "Suspended"}
 
@@ -23,7 +24,10 @@ def _sleeper_rosters_cached(sleeper_lid: str, ttl: int = 600) -> list:
     return data
 
 
-async def build_nfl_dashboard(league_id: str, my_team_id: str) -> dict:
+def build_nfl_dashboard(league_id: str, my_team_id: str) -> dict:
+    """Blocking: Supabase reads plus the Sleeper roster/stat/player dumps. It was
+    declared `async` while awaiting nothing, which meant every one of those calls
+    ran on the event loop; callers must hand it to a thread."""
     sb = get_supabase()
     league = (
         sb.table("leagues").select("sleeper_league_id, rules").eq("id", league_id).single().execute().data
@@ -33,13 +37,15 @@ async def build_nfl_dashboard(league_id: str, my_team_id: str) -> dict:
     fmt_key = _format_key(league.get("rules") or {})
     stats = get_season_stats(stats_season())
 
-    roster_rows = (
-        sb.table("rosters")
-        .select("fantrax_team_id, team_name, roster_items")
-        .eq("league_id", league_id)
-        .execute()
-        .data
-        or []
+    roster_rows = refresh_roster_rows(
+        (
+            sb.table("rosters")
+            .select("fantrax_team_id, team_name, roster_items")
+            .eq("league_id", league_id)
+            .execute()
+            .data
+            or []
+        )
     )
     by_team = {r["fantrax_team_id"]: r for r in roster_rows}
 

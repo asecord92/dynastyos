@@ -14,6 +14,7 @@ from typing import Any
 
 from .supabase_client import get_supabase
 from .sleeper_client import get_season_stats
+from .sleeper_sync import refresh_roster_rows
 from . import fantasycalc
 from .nfl_dynasty import (
     derive_fc_params,
@@ -145,7 +146,9 @@ def _load_rosters(sb, league_id: str, team_ids: list | None = None) -> list:
     ).eq("league_id", league_id)
     if team_ids:
         q = q.in_("fantrax_team_id", team_ids)
-    return q.execute().data or []
+    # One chokepoint for all three trade surfaces — refresh here and analyze,
+    # finder and add/drop all argue from the players' current NFL teams.
+    return refresh_roster_rows(q.execute().data or [])
 
 
 def build_nfl_system_prompt(rules: dict) -> str:
